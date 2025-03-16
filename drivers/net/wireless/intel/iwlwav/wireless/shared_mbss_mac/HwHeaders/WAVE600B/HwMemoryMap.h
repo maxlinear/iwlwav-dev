@@ -3,6 +3,17 @@ File:				HwMemoryMap.h
 Module:				Hw Headers - wave600_B0_memory_map_ver1.10.6 .xlsx
 Purpose:
 Description:		This File was auto generated using Excel Memory Map Parser
+
+COPYRIGHT:
+  Copyright(c) 2020 - 2025, MaxLinear, Inc.
+  Copyright 2016 - 2020 Intel Corporation
+  Copyright 2014 - 2016 Lantiq Beteiligungs - GmbH & Co.KG
+  Copyright 2010 - 2014 Lantiq Deutschland GmbH
+  Copyright 2007 - 2010 Metalink Ltd.
+
+  For licensing information, see the file 'LICENSE' in the root folder of
+  this software module
+
 ************************************************************************************/
 #ifndef _MEMORY_MAP_H_ 
 #define _MEMORY_MAP_H_ 
