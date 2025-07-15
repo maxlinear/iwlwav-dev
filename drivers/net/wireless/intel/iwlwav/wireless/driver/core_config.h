@@ -134,6 +134,8 @@ int __MTLK_IFUNC mtlk_core_get_6ghz_beacon_format(mtlk_hw_band_e band,  mtlk_pdb
 mtlk_error_t __MTLK_IFUNC wave_core_set_duplicate_beacon (mtlk_core_t *core, mtlk_core_dup_beacon_t *duplicate_beacon);
 mtlk_error_t __MTLK_IFUNC wave_core_set_he_beacon (mtlk_core_t *core, uint8 he_beacon);
 
+mtlk_error_t __MTLK_IFUNC wave_core_set_pbac(mtlk_core_t *core, uint8 pbac);
+
 mtlk_error_t __MTLK_IFUNC mtlk_core_set_ap_beacon_info_by_params (mtlk_core_t *core, struct mtlk_beacon_info_parameters *params);
 
 int  mtlk_core_cfg_send_active_ant_mask (mtlk_core_t *core, uint32 mask);
@@ -398,7 +400,6 @@ int __MTLK_IFUNC wave_core_req_ml_sid (mtlk_handle_t hcore, const void *data, ui
 int __MTLK_IFUNC wave_core_set_ml_sid (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_ml_sta_add (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_remove_mld (mtlk_handle_t hcore, const void *data, uint32 data_size);
-int __MTLK_IFUNC wave_core_remove_sta_mld (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_set_ml_link_stats (mtlk_handle_t hcore, const void* data, uint32 data_size);
 int __MTLK_IFUNC wave_core_get_ml_link_stats (mtlk_handle_t hcore, const void* data, uint32 data_size);
 int __MTLK_IFUNC wave_core_set_ml_critical_update(mtlk_handle_t hcore, const void* data, uint32 data_size);
@@ -489,6 +490,11 @@ mtlk_error_t __MTLK_IFUNC wave_core_recovery_cfg_change_bss (mtlk_core_t *core);
 #ifdef WAVE_ENABLE_PIE
 mtlk_error_t __MTLK_IFUNC wave_core_pie_cfg_receive (mtlk_core_t *core, wave_pie_cfg_t *pie_cfg_params);
 mtlk_error_t __MTLK_IFUNC wave_core_pie_cfg_send(mtlk_core_t *core, wave_pie_cfg_t *pie_cfg_params);
+mtlk_error_t __MTLK_IFUNC
+wave_core_get_aqm_sta_en (mtlk_core_t *core, wave_aqm_sta_en_t *wave_aqm_sta_en);
+mtlk_error_t __MTLK_IFUNC
+wave_core_set_aqm_sta_en (mtlk_core_t *core, wave_aqm_sta_en_t *wave_aqm_sta_en);
+
 #endif /* WAVE_ENABLE_PIE */
 mtlk_error_t __MTLK_IFUNC wave_set_ie_test_mode_mpdu_density(mtlk_core_t *core, u8 *ies_data, size_t ies_len, BOOL enable);
 mtlk_error_t wave_core_set_vw_test_mode(mtlk_core_t *core, uint8 enable);
@@ -506,9 +512,10 @@ int __MTLK_IFUNC wave_core_cfg_set_debug_cmd          (mtlk_handle_t hcore, cons
 mtlk_error_t __MTLK_IFUNC wave_core_get_mu_group_plan (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC mtlk_core_set_mtlk_log_level (mtlk_handle_t hcore, const void* data, uint32 data_size);
 
+#endif /* CONFIG_WAVE_DEBUG */
 mtlk_error_t __MTLK_IFUNC mtlk_core_send_fixed_pwr_cfg (mtlk_core_t *core, FIXED_POWER *fixed_pwr_params);
 mtlk_error_t __MTLK_IFUNC mtlk_core_store_and_send_fixed_pwr_cfg (mtlk_core_t *core, FIXED_POWER *fixed_pwr_params);
 mtlk_error_t __MTLK_IFUNC wave_core_cfg_send_and_store_fixed_rate_thermal_cfg (mtlk_core_t *core, wave_thermal_cfg_t *rate_thermal_params);
-#endif /* CONFIG_WAVE_DEBUG */
+mtlk_error_t __MTLK_IFUNC wave_core_handle_rx_measure_event (mtlk_handle_t hcore, const void *payload, uint32 data_size);
 
 #endif /*__CORE_CONFIG_H__*/

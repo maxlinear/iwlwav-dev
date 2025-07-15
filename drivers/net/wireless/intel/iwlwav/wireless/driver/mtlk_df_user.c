@@ -2108,6 +2108,26 @@ _mtlk_df_user_get_pie_params_by_intvec(const uint32 *intvec, uint16 intvec_lengt
   return MTLK_ERR_OK;
 }
 
+static int
+_mtlk_df_user_get_aqm_sta_en_by_intvec(const uint32 *intvec, uint16 intvec_length, wave_aqm_sta_en_t *wave_aqm_sta_en)
+{
+  if (intvec_length != 2) {
+    ELOG_D("Incorrect vector length (%u), must be 2", intvec_length);
+    return MTLK_ERR_PARAMS;
+  }
+
+  wave_aqm_sta_en->staId  = intvec[0];
+  wave_aqm_sta_en->enable = intvec[1];
+  return MTLK_ERR_OK;
+}
+
+static void
+_mtlk_df_user_set_intvec_by_aqm_sta_en(uint32 *intvec, uint16 max_length, uint16 *intvec_length, const wave_aqm_sta_en_t *wave_aqm_sta_en)
+{
+  WAVE_CHECK_AND_SET_INTVEC_LENGTH(max_length, GEN7_STATION_BITMAP_SIZE_WORDS, *intvec_length);
+  wave_memcpy(intvec, max_length * INT_ITEM_SIZE, wave_aqm_sta_en->aqmStaEnBitmap, sizeof(wave_aqm_sta_en->aqmStaEnBitmap));
+}
+
 static void
 _mtlk_df_user_set_intvec_by_pie_params(uint32 *intvec, uint16 max_length, uint16 *intvec_length, const wave_pie_cfg_t *pie_cfg)
 {
@@ -4261,9 +4281,6 @@ _wave_df_user_fill_csi_auto_rate_cfg (uint32 *intvec, uint16 intvec_length, wave
   return MTLK_ERR_OK;
 }
 
-/************************* DEBUG SET/GET FUNCTIONS *************************/
-#ifdef CONFIG_WAVE_DEBUG
-
 #define MAX_POWER_DBM 32
 static mtlk_error_t
 _mtlk_df_user_fill_fixed_rate_thermal_by_intvec (int32 *intvec, uint16 intvec_length, wave_thermal_cfg_t *fixed_rate_thermal)
@@ -4307,19 +4324,6 @@ wave_thermal_cfg_t *fixed_rate_thermal)
 }
 
 static int
-_mtlk_df_user_set_counters_src_by_int (mtlk_wlan_counters_src_cfg_t *counters_src_out, uint32 data_in)
-{
-  int res = MTLK_ERR_OK;
-  if (data_in > 2) {
-    ELOG_D("The command argument (%d) is invalid. Allowed values are 0, 1 or 2.", data_in);
-    res = MTLK_ERR_VALUE;
-  } else {
-    counters_src_out->src = data_in;
-  }
-  return res;
-}
-
-static int
 _mtlk_df_user_fill_fixed_pwr_params (uint32 *intvec, uint16 intvec_length, FIXED_POWER *fixed_pwr_params)
 {
   if (intvec_length != 4) {
@@ -4358,6 +4362,22 @@ _mtlk_df_user_get_intvec_by_fixed_pwr_params (uint32 *intvec, uint16 max_length,
     ELOG_V("Fixed Power not Set, Getter invalid!");
     *intvec_length = 0;
   }
+}
+
+/************************* DEBUG SET/GET FUNCTIONS *************************/
+#ifdef CONFIG_WAVE_DEBUG
+
+static int
+_mtlk_df_user_set_counters_src_by_int (mtlk_wlan_counters_src_cfg_t *counters_src_out, uint32 data_in)
+{
+  int res = MTLK_ERR_OK;
+  if (data_in > 2) {
+    ELOG_D("The command argument (%d) is invalid. Allowed values are 0, 1 or 2.", data_in);
+    res = MTLK_ERR_VALUE;
+  } else {
+    counters_src_out->src = data_in;
+  }
+  return res;
 }
 
 static
@@ -4644,6 +4664,10 @@ _mtlk_df_user_iwpriv_get_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_GET_ON_PARAM_MEMBER(PRM_ID_PIE_CFG, WAVE_RADIO_REQ_GET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_cfg, wave_pie_cfg)
       MTLK_CFG_GET_ITEM_BY_FUNC_VOID(master_cfg, wave_pie_cfg, _mtlk_df_user_set_intvec_by_pie_params,
                                      ((uint32*)data, max_length, length, &master_cfg->wave_pie_cfg));
+
+    _DF_USER_GET_ON_PARAM_MEMBER(PRM_ID_AQM_STA_EN, WAVE_RADIO_REQ_GET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_cfg, wave_aqm_sta_en)
+      MTLK_CFG_GET_ITEM_BY_FUNC_VOID(master_cfg, wave_aqm_sta_en, _mtlk_df_user_set_intvec_by_aqm_sta_en,
+                                     ((uint32*)data, max_length, length, &master_cfg->wave_aqm_sta_en));
 #endif /* WAVE_ENABLE_PIE */
 
     _DF_USER_GET_ON_PARAM_MEMBER(PRM_ID_NICK_NAME, WAVE_CORE_REQ_GET_CORE_CFG, FALSE, mtlk_gen_core_cfg_t, core_cfg, nickname)
@@ -4768,9 +4792,6 @@ _mtlk_df_user_iwpriv_get_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
 
     _DF_USER_GET_ON_PARAM(PRM_ID_11H_RADAR_DETECTION, WAVE_RADIO_REQ_GET_SCAN_AND_CALIB_CFG, FALSE, mtlk_scan_and_calib_cfg_t, scan_and_calib_cfg)
       MTLK_CFG_GET_ITEM(scan_and_calib_cfg, radar_detect, *(uint32*)data);
-
-   _DF_USER_GET_ON_PARAM(PRM_ID_20MHZ_TX_POWER, WAVE_RADIO_REQ_GET_20MHZ_TX_POWER, FALSE, mtlk_tx_power_20mhz_cfg_t, tx_power_20mhz_cfg)
-      MTLK_CFG_GET_ITEM(tx_power_20mhz_cfg, tx_power_20mhz, *(uint32*)data);
 
     /* MU OFDMA Beamforming processing */
     _DF_USER_GET_ON_PARAM(PRM_ID_MU_OFDMA_BF, WAVE_RADIO_REQ_GET_MU_OFDMA_BF, FALSE, mtlk_mu_ofdma_bf_cfg_t, mu_ofdma_bf_cfg)
@@ -5007,21 +5028,22 @@ _mtlk_df_user_iwpriv_get_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_GET_ON_PARAM_MEMBER(PRM_ID_VW_TEST_MODE, WAVE_RADIO_REQ_GET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_cfg, vw_test_mode)
       MTLK_CFG_GET_ITEM(master_cfg, vw_test_mode, *(uint32*)data);
 
-/************************* DEBUG GET APIs *************************/
-#ifdef CONFIG_WAVE_DEBUG
     /* Fixed rate thermal */
     _DF_USER_GET_ON_PARAM(PRM_ID_FIXED_RATE_THERMAL, WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL, FALSE, wave_thermal_cfg_t, wave_thermal_cfg)
       MTLK_CFG_GET_ITEM_BY_FUNC_VOID(wave_thermal_cfg, thermal_cfg, _mtlk_df_user_get_intvec_by_fixed_rate_thermal,
                                      ((uint32*)data, max_length, length, wave_thermal_cfg));
 
-    /* Get WAVE counters source */
-    _DF_USER_GET_ON_PARAM(PRM_ID_SWITCH_COUNTERS_SRC, MTLK_HW_REQ_GET_COUNTERS_SRC, FALSE, mtlk_wlan_counters_src_cfg_t, wlan_counters_src_cfg)
-      MTLK_CFG_GET_ITEM(wlan_counters_src_cfg, src, *(uint32*)data);
-
     /* Fixed TX management power */
     _DF_USER_GET_ON_PARAM_MEMBER(PRM_ID_FIXED_POWER, WAVE_RADIO_REQ_GET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_core_cfg, fixed_pwr_params)
       MTLK_CFG_GET_ITEM_BY_FUNC_VOID(master_core_cfg, fixed_pwr_params, _mtlk_df_user_get_intvec_by_fixed_pwr_params,
                                      ((uint32*)data, max_length, length, &master_core_cfg->fixed_pwr_params));
+
+/************************* DEBUG GET APIs *************************/
+#ifdef CONFIG_WAVE_DEBUG
+
+    /* Get WAVE counters source */
+    _DF_USER_GET_ON_PARAM(PRM_ID_SWITCH_COUNTERS_SRC, MTLK_HW_REQ_GET_COUNTERS_SRC, FALSE, mtlk_wlan_counters_src_cfg_t, wlan_counters_src_cfg)
+      MTLK_CFG_GET_ITEM(wlan_counters_src_cfg, src, *(uint32*)data);
 
 #ifdef CPTCFG_IWLWAV_SET_PM_QOS
     /* CPU DMA latency */
@@ -5175,6 +5197,10 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_SET_ON_PARAM(PRM_ID_PIE_CFG, WAVE_RADIO_REQ_SET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_core_cfg)
       MTLK_CFG_SET_ITEM_BY_FUNC(master_core_cfg, wave_pie_cfg, _mtlk_df_user_get_pie_params_by_intvec,
                                 ((uint32*)data, length, &master_core_cfg->wave_pie_cfg), res);
+
+    _DF_USER_SET_ON_PARAM(PRM_ID_AQM_STA_EN, WAVE_RADIO_REQ_SET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_core_cfg)
+      MTLK_CFG_SET_ITEM_BY_FUNC(master_core_cfg, wave_aqm_sta_en, _mtlk_df_user_get_aqm_sta_en_by_intvec,
+                                ((uint32*)data, length, &master_core_cfg->wave_aqm_sta_en), res);
 #endif /* WAVE_ENABLE_PIE */
 
     _DF_USER_SET_ON_PARAM(PRM_ID_DFS_DEBUG, WAVE_RADIO_REQ_SET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_core_cfg)
@@ -5199,6 +5225,9 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
 
     _DF_USER_SET_ON_PARAM(PRM_ID_DUPLICATE_BEACON, WAVE_CORE_REQ_SET_CORE_CFG, FALSE, mtlk_gen_core_cfg_t, pcore_cfg)
       MTLK_CFG_SET_ITEM(pcore_cfg, duplicate_beacon, *(mtlk_core_dup_beacon_t *) data);
+
+    _DF_USER_SET_ON_PARAM(PRM_ID_PBAC, WAVE_CORE_REQ_SET_CORE_CFG, FALSE, mtlk_gen_core_cfg_t, pcore_cfg)
+      MTLK_CFG_SET_ITEM(pcore_cfg, pbac, *(uint32 *)data);
 
     _DF_USER_SET_ON_PARAM(PRM_ID_SB_TIMER_ACL, WAVE_CORE_REQ_SET_CORE_CFG, FALSE, mtlk_gen_core_cfg_t, pcore_cfg)
       MTLK_CFG_SET_ITEM(pcore_cfg, sb_timer_acl, *(wave_core_sb_timer_acl_t *)data); /*struct assignment */
@@ -5538,23 +5567,23 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_SET_ON_PARAM(PRM_ID_UNCONNECTED_STA_SCAN_TIME, WAVE_RADIO_REQ_SET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_core_cfg)
       MTLK_CFG_SET_ITEM(master_core_cfg, unconnected_sta_scan_time, *(uint32*)data);
 
-/************************* DEBUG SET APIs *************************/
-#ifdef CONFIG_WAVE_DEBUG
-
     /* Fixed rate thermal */
     _DF_USER_SET_ON_PARAM(PRM_ID_FIXED_RATE_THERMAL, WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL, FALSE, wave_thermal_cfg_t, wave_thermal_cfg)
       MTLK_CFG_SET_ITEM_BY_FUNC(wave_thermal_cfg, thermal_cfg, _mtlk_df_user_fill_fixed_rate_thermal_by_intvec,
                                 ((int32*)data, length, wave_thermal_cfg), res);
 
-    /* Select WAVE counters source */
-    _DF_USER_SET_ON_PARAM(PRM_ID_SWITCH_COUNTERS_SRC, MTLK_HW_REQ_SET_COUNTERS_SRC, FALSE, mtlk_wlan_counters_src_cfg_t, wlan_counters_src_cfg)
-      MTLK_CFG_SET_ITEM_BY_FUNC(wlan_counters_src_cfg, src, _mtlk_df_user_set_counters_src_by_int,
-                                (wlan_counters_src_cfg, *(uint32*)data), res);
-
     /* Fixed TX management power */
     _DF_USER_SET_ON_PARAM(PRM_ID_FIXED_POWER, WAVE_RADIO_REQ_SET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_core_cfg)
       MTLK_CFG_SET_ITEM_BY_FUNC(master_core_cfg, fixed_pwr_params, _mtlk_df_user_fill_fixed_pwr_params,
                                 ((uint32*)data, length, &master_core_cfg->fixed_pwr_params), res);
+
+/************************* DEBUG SET APIs *************************/
+#ifdef CONFIG_WAVE_DEBUG
+
+    /* Select WAVE counters source */
+    _DF_USER_SET_ON_PARAM(PRM_ID_SWITCH_COUNTERS_SRC, MTLK_HW_REQ_SET_COUNTERS_SRC, FALSE, mtlk_wlan_counters_src_cfg_t, wlan_counters_src_cfg)
+      MTLK_CFG_SET_ITEM_BY_FUNC(wlan_counters_src_cfg, src, _mtlk_df_user_set_counters_src_by_int,
+                                (wlan_counters_src_cfg, *(uint32*)data), res);
 
 #ifdef CPTCFG_IWLWAV_SET_PM_QOS
     /* CPU DMA latency */

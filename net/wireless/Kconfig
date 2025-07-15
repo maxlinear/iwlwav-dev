@@ -3,8 +3,8 @@ config CFG80211
 	tristate "cfg80211 - wireless configuration API"
 	depends on m
 	depends on RFKILL || !RFKILL
-	select CRC32
 	depends on FW_LOADER
+	depends on CRC32
 	# may need to update this when certificates are changed and are
 	# using a different algorithm, though right now they shouldn't
 	# (this is here rather than below to allow it to be a module)
@@ -22,6 +22,7 @@ config CFG80211
 if CFG80211
 
 config NL80211_TESTMODE
+	depends on !KERNEL_4_18
 	bool "nl80211 testmode command"
 	help
 	  The nl80211 testmode command helps implementing things like
@@ -204,8 +205,9 @@ config LIB80211_CRYPT_WEP
 config LIB80211_CRYPT_CCMP
 	tristate
 	depends on m
-	select CRYPTO_AES
-	select CRYPTO_CCM
+	depends on CRYPTO
+	depends on CRYPTO_AES
+	depends on CRYPTO_CCM
 
 config LIB80211_CRYPT_TKIP
 	tristate

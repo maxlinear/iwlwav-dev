@@ -65,8 +65,13 @@ struct wave_thermal {
   BOOL registration_status;
 };
 
+#define DEFAULT_TEMPERATURE_VALUE -128
 int __MTLK_IFUNC
+#if LINUX_VERSION_IS_LESS(6,0,0)
 wave_thermal_zone_get_temp (void *data, int *temperature)
+#else
+wave_thermal_zone_get_temp (struct thermal_zone_device *dev, int *temperature)
+#endif
 {
   int temp = 0;
   mtlk_core_t* master_core;
@@ -78,19 +83,28 @@ wave_thermal_zone_get_temp (void *data, int *temperature)
   uint32 data_size;
   mtlk_hw_band_e wave_band;
 
+#if LINUX_VERSION_IS_LESS(6,0,0)
   if (!data || !temperature) {
     ELOG_PP("Thermal: Invalid input params, data %p temperature %p", data, temperature);
     return _mtlk_df_mtlk_to_linux_error_code(MTLK_ERR_PARAMS);
   }
   radio = ((wave_radio_t*) data);
+#else
+  if (!dev || !temperature) {
+    ELOG_PP("Thermal: Invalid input params, dev %p temperature %p", dev, temperature);
+    return _mtlk_df_mtlk_to_linux_error_code(MTLK_ERR_PARAMS);
+  }
+  radio = (wave_radio_t*) dev->devdata;
+#endif
   wave_band = wave_radio_band_get(radio);
 
-  /* Query the temperature sensor value when core state is connected */
   master_core = wave_radio_master_core_get(radio);
   if (mtlk_core_get_net_state(master_core) != NET_STATE_CONNECTED) {
-    ILOG3_D("Thermal: Band-%d Failed to read temperature, core not ready", wave_band);
-    res = MTLK_ERR_NOT_READY;
-    goto end;
+  /* send the default temperature value to upper layer before interface UP */
+  /* convert to millicelsius */
+    *temperature = DEFAULT_TEMPERATURE_VALUE * MILLIDEGREE_PER_DEGREE;
+    ILOG3_DD("Thermal: Band-%d Default temperature %d", wave_band, *temperature);
+    return res;
   }
   master_df = mtlk_vap_manager_get_master_df(mtlk_vap_get_manager(master_core->vap_handle));
   if (master_df == NULL) {
@@ -98,6 +112,7 @@ wave_thermal_zone_get_temp (void *data, int *temperature)
     res = MTLK_ERR_UNKNOWN;
     goto end;
   }
+  /* Query the temperature sensor value to FW when core state is connected */
   res = _mtlk_df_user_pull_core_data(master_df, WAVE_HW_REQ_GET_TEMPERATURE_SENSOR,
                                      FALSE, (void**) &temperature_cfg, &data_size, &lhandle);
   if (res != MTLK_ERR_OK) {
@@ -439,9 +454,15 @@ wave_cooling_set_cur_state(struct thermal_cooling_device *cd,
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
-static struct thermal_zone_of_device_ops tzd_ops = {
+#if LINUX_VERSION_IS_LESS(6,0,0)
+static const struct thermal_zone_of_device_ops tzd_ops = {
   .get_temp = wave_thermal_zone_get_temp,
 };
+#else
+static struct thermal_zone_device_ops tzd_ops = {
+  .get_temp = wave_thermal_zone_get_temp,
+};
+#endif
 
 static const struct thermal_cooling_device_ops wave_cooling_ops = {
   .get_max_state = wave_cooling_get_max_state,
@@ -607,8 +628,13 @@ _wave_thermal_thermal_zone_register (mtlk_hw_t *hw, unsigned radio_idx)
   return MTLK_ERR_NO_ENTRY;
 
 register_sensor:
+#if LINUX_VERSION_IS_LESS(6,0,0)
   thermal->tzd = devm_thermal_zone_of_sensor_register(&pdev->dev,
                    0, radio, &tzd_ops);
+#else
+  thermal->tzd = devm_thermal_of_zone_register(&pdev->dev,
+                   0, radio, &tzd_ops);
+#endif
   if (IS_ERR(thermal->tzd)) {
     pr_err(" Thermal: Band-%d Failed to register thermal zone device"
            "( err %ld)", wave_band, PTR_ERR(thermal->tzd));
@@ -645,7 +671,11 @@ _wave_thermal_thermal_zone_unregister (mtlk_hw_t *hw, unsigned radio_idx)
     return;
 
   if (thermal->tzd) {
+#if LINUX_VERSION_IS_LESS(6,0,0)
     devm_thermal_zone_of_sensor_unregister(&pdev->dev, thermal->tzd);
+#else
+    devm_thermal_of_zone_unregister(&pdev->dev, thermal->tzd);
+#endif
     thermal->tzd = NULL;
   }
 

@@ -38,6 +38,24 @@
 #include <linux/kthread.h>
 #include <linux/ieee80211.h>
 
+#if LINUX_VERSION_IS_GEQ(6,0,0)
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#define PDE_DATA pde_data
+#endif
+
+#if LINUX_VERSION_IS_LESS(5,18,0)
+#include <linux/dma-direction.h>
+#define DMA_BIDIRECTIONAL   PCI_DMA_BIDIRECTIONAL
+#define DMA_TODEVICE        PCI_DMA_TODEVICE
+#define DMA_FROMDEVICE      PCI_DMA_FROMDEVICE
+#define DMA_NONE            PCI_DMA_NONE
+#endif
+
+#if LINUX_VERSION_IN_RANGE(6,1,20, 6,6,83)
+#undef ARCH_DMA_MINALIGN
+#endif
+
 // ------------------------------------------------------------------------------------------
 // wait stuff
 
@@ -324,6 +342,13 @@ struct  iw_michaelmicfailure
 #define IW_QUAL_ALL_INVALID     0x70
 #define IW_QUAL_DBM             0x08
 #endif /* WIRELESS_EXT < 19 */
+
+#if WIRELESS_EXT < 23
+#define IW_ENCODE_ALG_GCMP      6
+#define IW_ENCODE_ALG_GCMP_256  7
+#define IW_ENCODE_ALG_BIP_GMAC_128  8
+#define IW_ENCODE_ALG_BIP_GMAC_256  9
+#endif /*  WIRELESS_EXT < 23 */
 
 
 #define mtlk_iwe_stream_add_point  iwe_stream_add_point

@@ -2429,7 +2429,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
     /* TBD: BITRATE_MCS32 for BPSK */
 
     for (i = 3; i >= 0; i--) { /* we support max 4 nss */
-      uint8 rx_mask = mac80211_sta->ht_cap.mcs.rx_mask[i];
+      uint8 rx_mask = mac80211_sta->deflink.ht_cap.mcs.rx_mask[i];
       if (rx_mask) {
         ht_nss = i + 1;
         for (y = 7; y >= 0; y--) {
@@ -2442,7 +2442,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
       }
     }
 
-    ht_cap = mac80211_sta->ht_cap.cap;
+    ht_cap = mac80211_sta->deflink.ht_cap.cap;
     if ((ht_cap & IEEE80211_HT_CAP_SUP_WIDTH_20_40) &&
           !(ht_cap & IEEE80211_HT_CAP_40MHZ_INTOLERANT)) {
       ht_bw = IEEE80211_STA_RX_BW_40;
@@ -2479,7 +2479,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
     uint32 vht_max_phy_rate = 0;
     uint32 vht_1ss_phy_rate = 0;
 
-    vht_tx_mcs_map = WLAN_TO_HOST16(mac80211_sta->vht_cap.vht_mcs.rx_mcs_map);
+    vht_tx_mcs_map = WLAN_TO_HOST16(mac80211_sta->deflink.vht_cap.vht_mcs.rx_mcs_map);
     for (vht_nss = 8; vht_nss > 0; vht_nss--) {
       vht_mcs = ((vht_tx_mcs_map >> (2 * (vht_nss - 1))) & 3);
       if (vht_mcs != IEEE80211_VHT_MCS_NOT_SUPPORTED)
@@ -2493,7 +2493,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
       uint32 mcs_1ss, mcs_max;
 
       vht_mcs = 7 + vht_mcs;
-      vht_cap = mac80211_sta->vht_cap.cap;
+      vht_cap = mac80211_sta->deflink.vht_cap.cap;
 
       /* For 2.4 GHz and 5 GHz bands up to 40 MHz bandwidth, take bw and scp from HT IE's */
       if (width < CW_80) {
@@ -2545,7 +2545,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
     uint32 he_nss = 0;
     uint32 he_mcs = 0;
     uint16 he_tx_mcs_map = 0;
-    uint8  *he_phy_cap_info = mac80211_sta->he_cap.he_cap_elem.phy_cap_info;
+    uint8  *he_phy_cap_info = mac80211_sta->deflink.he_cap.he_cap_elem.phy_cap_info;
     uint32 he_max_phy_rate = 0;
     uint32 he_1ss_phy_rate = 0;
     uint32 he_bw= IEEE80211_STA_RX_BW_20;
@@ -2568,7 +2568,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
     }
 
     /* Process <= 80 MHz BW */
-    he_tx_mcs_map = WLAN_TO_HOST16(mac80211_sta->he_cap.he_mcs_nss_supp.rx_mcs_80);
+    he_tx_mcs_map = WLAN_TO_HOST16(mac80211_sta->deflink.he_cap.he_mcs_nss_supp.rx_mcs_80);
     for (he_nss = 8; he_nss > 0; he_nss--) {
       he_mcs = ((he_tx_mcs_map >> (2 * (he_nss - 1))) & 3);
        if (he_mcs != IEEE80211_HE_MCS_NOT_SUPPORTED)
@@ -2602,7 +2602,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
         he_mcs = 0;
         he_nss = 0;
 
-        he_tx_mcs_map = WLAN_TO_HOST16(mac80211_sta->he_cap.he_mcs_nss_supp.rx_mcs_160);
+        he_tx_mcs_map = WLAN_TO_HOST16(mac80211_sta->deflink.he_cap.he_mcs_nss_supp.rx_mcs_160);
         for (he_nss = 8; he_nss > 0; he_nss--) {
           he_mcs = ((he_tx_mcs_map >> (2 * (he_nss - 1))) & 3);
           if (he_mcs != IEEE80211_HE_MCS_NOT_SUPPORTED)
@@ -2636,7 +2636,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
       uint32 eht_max_phy_rate = 0;
       uint32 eht_1ss_phy_rate = 0;
       uint32 eht_scp = he_scp;
-      uint8  *eht_phy_cap_info = mac80211_sta->eht_cap.eht_cap_elem.phy_cap_info;
+      uint8  *eht_phy_cap_info = mac80211_sta->deflink.eht_cap.eht_cap_elem.phy_cap_info;
       uint8  *p_mcs_nss_supp = NULL;
 
       /* Process 320 MHz BW */
@@ -2645,7 +2645,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
             (eht_phy_cap_info[0] &  IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ)) {
  
           /* eht_mcs_group represents 0 -> 0-9 MCS  1 -> 10-11  2 -> 12-13 */
-          p_mcs_nss_supp = mac80211_sta->eht_cap.eht_mcs_nss_supp.bw._320.rx_tx_max_nss;
+          p_mcs_nss_supp = mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.bw._320.rx_tx_max_nss;
           for (eht_mcs_group = 2; eht_mcs_group >=0 ; eht_mcs_group--) {
           eht_tx_mcs_map = p_mcs_nss_supp[eht_mcs_group];
           eht_nss = eht_tx_mcs_map & 0x0f;
@@ -2660,7 +2660,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
         if ((MTLK_HW_BAND_5_2_GHZ == core_cfg_get_freq_band_cur(nic) || MTLK_HW_BAND_6_GHZ == core_cfg_get_freq_band_cur(nic)) &&
             (he_phy_cap_info[0] &  HE_5G_6G_PHY_CAP0_CHAN_WIDTH_SET_160MHZ)) {
 
-          p_mcs_nss_supp = mac80211_sta->eht_cap.eht_mcs_nss_supp.bw._160.rx_tx_max_nss;
+          p_mcs_nss_supp = mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.bw._160.rx_tx_max_nss;
           /* eht_mcs_group represents 0 -> 0-9 MCS  1 -> 10-11  2 -> 12-13 */
           for (eht_mcs_group = 2; eht_mcs_group >=0 ; eht_mcs_group--) {
             eht_tx_mcs_map = p_mcs_nss_supp[eht_mcs_group];
@@ -2671,7 +2671,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
           }
         }
       } else if (width == IEEE80211_STA_RX_BW_40 || width == IEEE80211_STA_RX_BW_80 || mtlk_sta_is_wds(sta)) { /* Process 40,80 MHz BW */
-        p_mcs_nss_supp = mac80211_sta->eht_cap.eht_mcs_nss_supp.bw._80.rx_tx_max_nss;
+        p_mcs_nss_supp = mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.bw._80.rx_tx_max_nss;
         /* eht_mcs_group represents 0 -> 0-9 MCS  1 -> 10-11  2 -> 12-13 */
         for (eht_mcs_group = 2; eht_mcs_group >= 0; eht_mcs_group--) {
           eht_tx_mcs_map = p_mcs_nss_supp[eht_mcs_group];
@@ -2682,7 +2682,7 @@ mtlk_core_find_max_sta_rate (struct nic *nic, sta_entry *sta, struct ieee80211_s
         }
       } else { /* Process 20 MHz BW. Only for Non-AP STA */
         /* eht_mcs_group represents 0 -> 0-7 MCS  1 -> 8-9  2 -> 10-11  3 -> 12-13 */
-        p_mcs_nss_supp = (uint8 *)&(mac80211_sta->eht_cap.eht_mcs_nss_supp.only_20mhz.rx_tx_mcs7_max_nss);
+        p_mcs_nss_supp = (uint8 *)&(mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.only_20mhz.rx_tx_mcs7_max_nss);
         for (eht_mcs_group = 3; eht_mcs_group >= 0; eht_mcs_group--) {
           eht_tx_mcs_map = p_mcs_nss_supp[eht_mcs_group];
           eht_nss = eht_tx_mcs_map & 0x0f;

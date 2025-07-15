@@ -42,7 +42,9 @@
     MAX - for both types FILE and GPIO (flash)
     MIN - for GPIO only
  */
-#define MTLK_MAX_EEPROM_SIZE  (2048)
+#define MTLK_MAX_EEPROM_2_4G_SIZE  (2048)
+#define MTLK_MAX_EEPROM_5G_SIZE  (2048)
+#define MTLK_MAX_EEPROM_6G_SIZE  (3072)
 #define MTLK_EEPROM_W700_TOTAL_SIZE  (8192)
 #define MTLK_MIN_EEPROM_SIZE   (256)
 
@@ -133,8 +135,14 @@ mtlk_get_eeprom_type(mtlk_eeprom_data_t *eeprom_data);
 BOOL __MTLK_IFUNC
 mtlk_get_cal_offset(mtlk_eeprom_type_e ee_type, uint8 fw_num, BOOL is_gen7, uint32 *offset);
 
+uint32 __MTLK_IFUNC
+mtlk_get_cal_size(uint8 fw_num);
+
 void __MTLK_IFUNC
 mtlk_get_eeprom_raw_data(mtlk_eeprom_data_t *eeprom_data, const uint8 **raw_data, uint32 *raw_data_size, uint32 offset);
+
+void __MTLK_IFUNC
+mtlk_set_eeprom_raw_data_size(mtlk_eeprom_data_t *eeprom_data, uint32 raw_data_size);
 
 mtlk_eeprom_data_t* __MTLK_IFUNC mtlk_eeprom_create(void);
 void __MTLK_IFUNC mtlk_eeprom_delete(mtlk_eeprom_data_t *eeprom_data);

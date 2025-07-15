@@ -62,6 +62,7 @@ typedef struct _mtlk_ml_vap_info_t
 #ifdef BEST_EFFORT_TID_SPREADING
   wave_ml_vap_str_tid_spreading_info_t *tid_spread_info;
 #endif
+  mtlk_osal_spinlock_t *ml_vap_rem_sync_lock;
 } mtlk_ml_vap_info_t;
 #endif
 
@@ -77,7 +78,8 @@ int                  __MTLK_IFUNC mtlk_vap_manager_create_vap(mtlk_vap_manager_t
                                                               BOOL is_master,
                                                               struct net_device* ndev);
 
-mtlk_error_t         __MTLK_IFUNC mtlk_vap_manager_get_free_vap_index(mtlk_vap_manager_t *obj, uint32 *vap_index);
+mtlk_error_t         __MTLK_IFUNC mtlk_vap_manager_get_free_vap_index(mtlk_vap_manager_t *obj, uint32 *vap_index,
+                                                                      mtlk_work_role_e role);
 mtlk_error_t         __MTLK_IFUNC mtlk_vap_manager_check_free_vap_index(mtlk_vap_manager_t *obj, uint32 vap_index);
 
 void                 __MTLK_IFUNC mtlk_vap_manager_set_master_ndev_taken (mtlk_vap_manager_t *obj, BOOL master_ndev_taken);
@@ -104,6 +106,8 @@ void                 __MTLK_IFUNC mtlk_vap_wait_ml_teardown(mtlk_vap_handle_t va
 int                  __MTLK_IFUNC mtlk_vap_initiate_ml_teardown(mtlk_vap_handle_t vap_handle);
 int                  __MTLK_IFUNC mtlk_vap_ml_teardown_inprogress(mtlk_vap_handle_t vap_handle);
 void                 __MTLK_IFUNC mtlk_vap_finish_ml_teardown(mtlk_vap_handle_t vap_handle);
+void                 __MTLK_IFUNC mtlk_vap_ml_lock_acquire(mtlk_vap_handle_t vap_handle);
+void                 __MTLK_IFUNC mtlk_vap_ml_lock_release(mtlk_vap_handle_t vap_handle);
 #endif
 int                  __MTLK_IFUNC mtlk_vap_manager_get_vap_handle_by_secondary_id (mtlk_vap_manager_t *obj,
                                                                                    uint8               vap_id,
@@ -605,11 +609,17 @@ wave_ml_vap_info_cleanup (mtlk_vap_handle_t vap_handle)
   if (MTLK_INVALID_VAP_HANDLE !=_info->ml_vap_info.sibling) {
     _sibling_info = (mtlk_vap_info_internal_t *)_info->ml_vap_info.sibling;
   }
+  if (_info->ml_vap_info.ml_vap_rem_sync_lock) {
+    mtlk_osal_lock_cleanup(_info->ml_vap_info.ml_vap_rem_sync_lock);
+    mtlk_osal_mem_free(_info->ml_vap_info.ml_vap_rem_sync_lock);
+  }
   _info->ml_vap_info.sibling = MTLK_INVALID_VAP_HANDLE;
   _info->ml_vap_info.ml_configured = FALSE;
+  _info->ml_vap_info.ml_vap_rem_sync_lock = NULL;
   if (_sibling_info) {
     _sibling_info->ml_vap_info.sibling = MTLK_INVALID_VAP_HANDLE;
     _sibling_info->ml_vap_info.ml_configured = FALSE;
+    _sibling_info->ml_vap_info.ml_vap_rem_sync_lock = NULL;
   }
 
 #ifdef BEST_EFFORT_TID_SPREADING

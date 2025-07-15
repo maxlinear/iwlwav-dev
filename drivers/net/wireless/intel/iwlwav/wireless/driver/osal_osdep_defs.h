@@ -47,6 +47,7 @@
 #include <linux/dma-map-ops.h>
 #endif /* CONFIG_DMA_MIXCOHERENT */
 #endif /* LINUX_VERSION_IS_GEQ */
+#include  <linux/if_arp.h>
 
 #include "mem_leak.h"
 #include "compat.h"
@@ -85,9 +86,9 @@ MTLK_DECLARE_OBJPOOL(g_objpool);
 
 typedef enum
 {
-  MTLK_DATA_BIDIRECTIONAL = PCI_DMA_BIDIRECTIONAL,
-  MTLK_DATA_FROM_DEVICE = PCI_DMA_FROMDEVICE,
-  MTLK_DATA_TO_DEVICE = PCI_DMA_TODEVICE
+  MTLK_DATA_BIDIRECTIONAL = DMA_BIDIRECTIONAL,
+  MTLK_DATA_FROM_DEVICE = DMA_FROM_DEVICE,
+  MTLK_DATA_TO_DEVICE = DMA_TO_DEVICE
 } mtlk_data_direction_e;
 
 

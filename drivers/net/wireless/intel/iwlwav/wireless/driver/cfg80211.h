@@ -58,6 +58,7 @@ int wv_cfg80211_get_out_of_scan_caching(struct wireless_dev *wdev);
 
 void wv_cfg80211_set_allow_scan_during_cac(struct wireless_dev *wdev, int allow);
 int wv_cfg80211_get_allow_scan_during_cac(struct wireless_dev *wdev);
+bool wv_cfg80211_get_pbac_capable(struct wireless_dev *wdev);
 void wv_cfg80211_set_scan_pause(struct wireless_dev *wdev, BOOL is_pause);
 
 BOOL _mtlk_is_rate_80211b(uint32 bitrate);

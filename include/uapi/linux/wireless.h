@@ -631,11 +631,6 @@
 #define IW_ENCODE_ALG_CCMP	3
 #define IW_ENCODE_ALG_PMK	4
 #define IW_ENCODE_ALG_AES_CMAC	5
-#define IW_ENCODE_ALG_GCMP	6
-#define IW_ENCODE_ALG_GCMP_256	7
-#define IW_ENCODE_ALG_BIP_GMAC_128  8
-#define IW_ENCODE_ALG_BIP_GMAC_256  9
-
 /* struct iw_encode_ext ->ext_flags */
 #define IW_ENCODE_EXT_TX_SEQ_VALID	0x00000001
 #define IW_ENCODE_EXT_RX_SEQ_VALID	0x00000002
@@ -840,7 +835,7 @@ struct iw_encode_ext {
 			       * individual keys */
 	__u16		alg; /* IW_ENCODE_ALG_* */
 	__u16		key_len;
-	__u8		key[0];
+	__u8		key[];
 };
 
 /* SIOCSIWMLME data */

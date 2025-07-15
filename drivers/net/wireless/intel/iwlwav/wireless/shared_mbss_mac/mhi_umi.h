@@ -605,6 +605,8 @@ typedef enum _UMI_Msgs
 	UMI_DBG_LOGGER_FIFO_MUX_CFG,
 	UMI_MAN_MLO_STA_REASSOC_NOTIFY,			// UMI_MLO_STA_REASSOC_NOTIFY
 	UMI_MAN_PCIE_CONTROL_TRAFFIC,			// UMI_PCIE_CONTROL_TRAFFIC
+	UMI_MAN_AQM_STA_EN,						// UMI_AQM_STA_EN
+	UMI_MAN_RX_MEASURE,        					// UMI_RX_MEASURE
 	UMI_TOTAL_NUM_MSGS
 } UMI_Msgs;
 
@@ -1091,6 +1093,12 @@ typedef enum _UMI_Msgs
 
 #define UM_MAN_PCIE_CONTROL_TRAFFIC_REQ		UMI_MSG_MAN_REQ(UMI_MAN_PCIE_CONTROL_TRAFFIC)     //0x049f
 #define MC_MAN_PCIE_CONTROL_TRAFFIC_CFM		UMI_MSG_MAN_CFM(UMI_MAN_PCIE_CONTROL_TRAFFIC)     //0x149f
+
+#define UM_MAN_AQM_STA_EN_REQ						UMI_MSG_MAN_REQ(UMI_MAN_AQM_STA_EN) // 0x04A0
+#define MC_MAN_AQM_STA_EN_CFM						UMI_MSG_MAN_CFM(UMI_MAN_AQM_STA_EN) // 0x14A0
+
+#define MC_MAN_RX_MEASURE_IND   UMI_MSG_MAN_IND(UMI_MAN_RX_MEASURE)  //0x3398
+#define UM_MAN_RX_MEASURE_RES   UMI_MSG_MAN_RES(UMI_MAN_RX_MEASURE)  //0x2398
 /***************************************************************************/
 /***                          Management Messages                        ***/
 /***************************************************************************/
@@ -3134,7 +3142,7 @@ typedef struct _UMI_BEACON_SET
 	uint8  non_tx_bss_critical_update;
 	uint8  sync_with_csa;
 	uint8  max_ch_switch_time_ie_add;
-	uint8  u8Reserved;
+	uint8  bssColorDisable;
 	uint32 max_ch_switch_time;
 } __MTLK_PACKED UMI_BEACON_SET;
 
@@ -4249,9 +4257,9 @@ typedef struct PieConvertP_s
 
 typedef enum PieUserMode
 {
-	PIE_USER_MODE_OFF,		
-	PIE_USER_MODE_ON,
-	PIE_USER_MODE_ON_WITH_DEFAULT_PARAMS,
+	PIE_USER_MODE_OFF,						/* PIE turned off. */
+	PIE_USER_MODE_ON_USER_PARAMS,			/* PIE runs with user configured params. */
+	PIE_USER_MODE_ON_WITH_DEFAULT_PARAMS,	/* PIE runs with default params. */
 	PIE_USER_MODE_NUM_OF_MODES,
 }PieUserMode_e;
 
@@ -4281,6 +4289,20 @@ typedef struct _UMI_PIE_CONTROL
 	uint8			userMode;									/* Feature enable switch: OFF, ON or ON with default parameters (values from PieUserMode_e)								*/
 	uint8			getSetOperation;
 }UMI_PIE_CONTROL;
+
+/***************************************************************************
+**
+** 	NAME:         UMI_AQM_STA_EN
+**
+****************************************************************************/
+#define GEN7_STATION_BITMAP_SIZE_WORDS	(GEN7_MAX_SID >> 5)
+typedef struct _UMI_AQM_STA_EN
+{
+	uint16 staId;
+	uint8  enable;
+	uint8  getSetOperation;
+	uint32 aqmStaEnBitmap[GEN7_STATION_BITMAP_SIZE_WORDS];
+}UMI_AQM_STA_EN;
 
 /***************************************************************************
 **

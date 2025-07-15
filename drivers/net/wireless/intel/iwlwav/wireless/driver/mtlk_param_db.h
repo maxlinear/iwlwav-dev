@@ -137,6 +137,8 @@ typedef enum {
   PARAM_DB_CORE_DUPLICATE_BEACON_ENABLED, /*!< Duplicate Beacon enable/disable flag */
   PARAM_DB_CORE_DUPLICATE_BEACON_BW,      /*!< Duplicate Beacon coresponding bw(if enabled) */
 
+  PARAM_DB_CORE_PBAC,                     /*!< PBAC - protected block ack capable */
+
   /* SoftBlock timer ACL control for probe requests */
   PARAM_DB_CORE_SB_TIMER_ACL_ON,          /*!< SoftBlock Timer ACL is ON */
   PARAM_DB_CORE_SB_TIMER_ACL_PROBE_DROP,  /*!< SoftBlock Timer ACL: drop all unicast probe requests */
@@ -163,9 +165,7 @@ typedef enum {
   PARAM_DB_CORE_MLD_INFO,                 /*!< MLD Info parameters received during the setup MLD */
 #endif
 
-#ifdef CONFIG_WAVE_DEBUG
   PARAM_DB_CORE_FIXED_RATE_THERMAL,       /*!< Fixed rate thermal power */
-#endif /* CONFIG_WAVE_DEBUG */
 
   PARAM_DB_CORE_LAST_VALUE_ID,            /*!< Last parameter ID */
 } mtlk_pdb_id_t;/*!< \Enum of the parameters IDs. When adding parameter - extend this enum */
@@ -290,9 +290,8 @@ typedef enum {
   PARAM_DB_RADIO_MU_GROUP_CFG,                              /*!< MU Group configuration params */
   PARAM_DB_RADIO_DYNAMIC_WMM,                               /*!< Dynamic WMM enable/disable flag */
   PARAM_DB_RADIO_DYNAMIC_EDCA,                              /*!< Dynamic EDCA enable/disable flag */
-
-#ifdef CONFIG_WAVE_DEBUG
   PARAM_DB_RADIO_FIXED_PWR,                                 /*!< Fixed TX management power */
+#ifdef CONFIG_WAVE_DEBUG
   PARAM_DB_RADIO_TEST_BUS_MODE,                             /*!< Test Bus mode */
   PARAM_DB_RADIO_PLAN_MU_GROUP_STATS,                       /*!< HE MU Group manager statistics */
 #endif
@@ -307,6 +306,7 @@ typedef enum {
   PARAM_DB_RADIO_6GHZ_OPER_POWER_MODE,                      /*!< 6GHz Operation power mode (SP/LPI)*/
   PARAM_DB_RADAR_FIFO_DUMP,                                 /*!< Radar signal phy fifo entries*/
   PARAM_DB_RADIO_VW_TEST_MODE,                              /*!< VW test mode */
+  PARAM_DB_RADIO_20MHZ_TX_POWER,                            /*!< 20MHz TX power */
   PARAM_DB_RADIO_LAST_VALUE_ID,                             /*!< Last parameter ID */
 } mtlk_pdb_radio_id_t;                                      /*!< \Enum of the parameters IDs. When adding parameter - extend this enum */
 

@@ -35,6 +35,13 @@ typedef enum {
   HE_CP_TYPES_NUM
 } he_cp_types_e;
 
+typedef enum {
+  EHT_CP_TYPE_SHORT,
+  EHT_CP_TYPE_MEDIUM,
+  EHT_CP_TYPE_LONG,
+  EHT_CP_TYPES_NUM
+} eht_cp_types_e;
+
 #define BITRATE_FIRST         0
 #define BITRATE_LAST          31
 

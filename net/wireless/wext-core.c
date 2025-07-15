@@ -582,6 +582,7 @@ void wireless_send_event(struct net_device *	dev,
 	nlmsg_end(skb, nlh);
 #ifdef CONFIG_COMPAT
 	hdr_len = compat_event_type_size[descr->header_type];
+
 	event_len = hdr_len + extra_len;
 
 	compskb = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_ATOMIC);
@@ -613,7 +614,7 @@ void wireless_send_event(struct net_device *	dev,
 		compat_wrqu.length = wrqu->data.length;
 		compat_wrqu.flags = wrqu->data.flags;
 		memcpy(&compat_event->pointer,
-			((char *) &compat_wrqu) + IW_EV_COMPAT_POINT_OFF,
+		        ((char *) &compat_wrqu) + IW_EV_COMPAT_POINT_OFF,
 			hdr_len - IW_EV_COMPAT_LCP_LEN);
 		if (extra_len)
 			memcpy(((char *) compat_event) + hdr_len,
@@ -633,13 +634,21 @@ void wireless_send_event(struct net_device *	dev,
 }
 EXPORT_SYMBOL(wireless_send_event);
 
+#ifdef CPTCFG_CFG80211_WEXT
+static void wireless_warn_cfg80211_wext(void)
+{
+	char name[sizeof(current->comm)];
 
+	pr_warn_once("warning: `%s' uses wireless extensions which will stop working for Wi-Fi 7 hardware; use nl80211\n",
+		     get_task_comm(name, current));
+}
+#endif
 
 /* IW handlers */
 
 struct iw_statistics *get_wireless_stats(struct net_device *dev)
 {
-#ifdef CPTCFG_WIRELESS_EXT
+#ifdef CPTCFG_CFG80211_WEXT
 	if ((dev->wireless_handlers != NULL) &&
 	   (dev->wireless_handlers->get_wireless_stats != NULL))
 		return dev->wireless_handlers->get_wireless_stats(dev);
@@ -649,8 +658,12 @@ struct iw_statistics *get_wireless_stats(struct net_device *dev)
 	if (dev->ieee80211_ptr &&
 	    dev->ieee80211_ptr->wiphy &&
 	    dev->ieee80211_ptr->wiphy->wext &&
-	    dev->ieee80211_ptr->wiphy->wext->get_wireless_stats)
+	    dev->ieee80211_ptr->wiphy->wext->get_wireless_stats) {
+		wireless_warn_cfg80211_wext();
+		if (dev->ieee80211_ptr->wiphy->flags & WIPHY_FLAG_SUPPORTS_MLO)
+			return NULL;
 		return dev->ieee80211_ptr->wiphy->wext->get_wireless_stats(dev);
+	}
 #endif
 
 	/* not found */
@@ -687,10 +700,14 @@ static iw_handler get_handler(struct net_device *dev, unsigned int cmd)
 	const struct iw_handler_def *handlers = NULL;
 
 #ifdef CPTCFG_CFG80211_WEXT
-	if (dev->ieee80211_ptr && dev->ieee80211_ptr->wiphy)
+	if (dev->ieee80211_ptr && dev->ieee80211_ptr->wiphy) {
+		wireless_warn_cfg80211_wext();
+		if (dev->ieee80211_ptr->wiphy->flags & WIPHY_FLAG_SUPPORTS_MLO)
+			return NULL;
 		handlers = dev->ieee80211_ptr->wiphy->wext;
+	}
 #endif
-#ifdef CPTCFG_WIRELESS_EXT
+#ifdef CPTCFG_CFG80211_WEXT
 	if (dev->wireless_handlers)
 		handlers = dev->wireless_handlers;
 #endif
@@ -703,7 +720,7 @@ static iw_handler get_handler(struct net_device *dev, unsigned int cmd)
 	if (index < handlers->num_standard)
 		return handlers->standard[index];
 
-#ifdef CPTCFG_WEXT_PRIV
+#ifdef CONFIG_WEXT_PRIV
 	/* Try as a private command */
 	index = cmd - SIOCIWFIRSTPRIV;
 	if (index < handlers->num_private)
@@ -795,6 +812,12 @@ static int ioctl_standard_iw_point(struct iw_point *iwp, unsigned int cmd,
 			 */
 		}
 	}
+
+	/* Sanity-check to ensure we never end up _allocating_ zero
+	 * bytes of data for extra.
+	 */
+	if (extra_size <= 0)
+		return -EFAULT;
 
 	/* kzalloc() ensures NULL-termination for essid_compat. */
 	extra = kzalloc(extra_size, GFP_KERNEL);
@@ -895,7 +918,7 @@ out:
  */
 int call_commit_handler(struct net_device *dev)
 {
-#ifdef CPTCFG_WIRELESS_EXT
+#ifdef CPTCFG_CFG80211_WEXT
 	if (netif_running(dev) &&
 	    dev->wireless_handlers &&
 	    dev->wireless_handlers->standard[0])
@@ -937,7 +960,7 @@ static int wireless_process_ioctl(struct net *net, struct iwreq *iwr,
 		return standard(dev, iwr, cmd, info,
 				&iw_handler_get_iwstats);
 
-#ifdef CPTCFG_WEXT_PRIV
+#ifdef CONFIG_WEXT_PRIV
 	if (cmd == SIOCGIWPRIV && dev->wireless_handlers)
 		return standard(dev, iwr, cmd, info,
 				iw_handler_get_private);

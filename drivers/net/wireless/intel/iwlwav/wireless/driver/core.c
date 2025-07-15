@@ -839,6 +839,10 @@ _mtlk_core_ap_disconnect_sta_blocked(struct nic *nic, struct ieee80211_sta * mac
     if (mtlk_vap_is_sta(nic->vap_handle)) {
         ELOG_V("Skipping remove sta for client mode");
         goto finish;
+    } else if (nic->is_stopped_by_sibling) /* If stopped by sibling, corresponding STA are already cleanedup, so not an error */ {
+      ILOG2_DY("CID-%04x: VAP is already stopped by sibling & STA %Y is cleaned up.", mtlk_vap_get_oid(nic->vap_handle), mac80211_sta->addr);
+      res = MTLK_ERR_OK;
+      goto finish;
     } else {
         ASSERT(FALSE);
     }
@@ -873,10 +877,15 @@ _mtlk_core_ap_disconnect_sta_blocked(struct nic *nic, struct ieee80211_sta * mac
 
   sid = mtlk_sta_get_sid(sta);
   if (!skip_stop_traffic) {
-    res = wave_core_ap_stop_traffic(nic, sid, &addr); /* Send Stop Traffic Request to FW */
-    if (MTLK_ERR_OK != res) {
-      ELOG_DY("CID-%04x: Failed to stop traffic for STA %Y. Proceed Driver STA entry cleanup", mtlk_vap_get_oid(nic->vap_handle), mac80211_sta->addr);
-      goto driver_sta_cleanup;
+    /* Send Stop Traffic Request to FW */
+    if (!sta->is_traffic_stopped) {
+      res = wave_core_ap_stop_traffic(nic, sid, &addr);
+      if (MTLK_ERR_OK != res) {
+        ELOG_DY("CID-%04x: Failed to stop traffic for STA %Y. Proceed Driver STA entry cleanup", mtlk_vap_get_oid(nic->vap_handle), mac80211_sta->addr);
+        goto driver_sta_cleanup;
+      }
+      sta->is_traffic_stopped = TRUE;
+      ILOG1_DYD("CID-%04x: Stopped traffic for STA %Y, SID %d", mtlk_vap_get_oid(nic->vap_handle), mac80211_sta->addr, sid);
     }
   }
 
@@ -3172,8 +3181,14 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
   mtlk_core_t *nic            = mtlk_vap_get_core(vap_handle);
   wave_radio_t *radio         = wave_vap_radio_get(vap_handle);
   sta_entry *sta              = NULL;
+  sta_entry *linked_sta       = NULL;
   nl80211_band_e band         = mtlkband2nlband(wave_radio_band_get(radio));
   const IEEE_ADDR               *addr;
+  wave_vap_id_t                 vap_id_fw;
+  mtlk_vap_handle_t sibling_vap_handle = NULL;
+  struct ieee80211_vif *sibling_vif = NULL;
+  bool eapol_on_sibling_vap   = FALSE;
+  wave_radio_t                  *sibling_radio;
 
   CAPWAP1(mtlk_hw_mmb_get_card_idx(mtlk_vap_get_hw(vap_handle)), data, data_len, 0, 0);
 
@@ -3181,12 +3196,27 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
   if (sta) {
     struct ieee80211_sta * mac80211_sta;
     struct ieee80211_vif *vif = wave_vap_get_vif(nic->vap_handle);
+#ifdef MTLK_WAVE_700
     /* Replace the non-ap mld addr with link addr */
     addr = mtlk_sta_get_addr(sta);
     wave_memcpy(ether_header->h_source, sizeof(ether_header->h_source), addr, IEEE_ADDR_LEN);
     mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
-    if (mac80211_sta->ml_sta_info.is_ml && vif != NULL)
+    if (mac80211_sta->ml_sta_info.is_ml && vif != NULL) {
       wave_memcpy(ether_header->h_dest, sizeof(ether_header->h_dest), vif->addr, IEEE_ADDR_LEN);
+      vap_id_fw = mtlk_vap_get_id_fw(nic->vap_handle);
+      if (sta->ml_sta_info.assoc_vap_id_fw != vap_id_fw) {
+        linked_sta = sta->ml_sta_info.sibling_sta;
+        if (linked_sta) {
+          mtlk_sta_incref(linked_sta);
+          sibling_vap_handle = wave_vap_get_sibling_vap_handle(vap_handle);
+          sibling_vif = wave_vap_get_vif(sibling_vap_handle);
+          wave_memcpy(ether_header->h_source, sizeof(ether_header->h_source), mtlk_sta_get_addr(linked_sta), IEEE_ADDR_LEN);
+          wave_memcpy(ether_header->h_dest, sizeof(ether_header->h_dest), sibling_vif->addr, IEEE_ADDR_LEN);
+          eapol_on_sibling_vap = TRUE;
+        }
+      }
+    }
+#endif
     /* If WDS WPS station sent EAPOL not to us, discard. */
     if (MTLK_BFIELD_GET(sta->info.flags, STA_FLAGS_WDS_WPA)) {
       if (MTLK_CORE_HOT_PATH_PDB_CMP_MAC(nic, CORE_DB_CORE_MAC_ADDR, ether_header->h_dest)) {
@@ -3194,9 +3224,28 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
         return MTLK_ERR_OK;
       }
     }
-    mtlk_sta_on_rx_packet_802_1x(sta);  /* Count 802_1x RX packets */
+#ifdef MTLK_WAVE_700
+    if (eapol_on_sibling_vap) {
+      mtlk_sta_on_rx_packet_802_1x(linked_sta);  /* Count 802_1x RX packets */
+      mtlk_sta_decref(linked_sta);
+    }
+    else {
+#endif
+      mtlk_sta_on_rx_packet_802_1x(sta);
+#ifdef MTLK_WAVE_700
+    }
+#endif
     mtlk_sta_decref(sta);               /* De-reference of find */
   }
+
+#ifdef MTLK_WAVE_700
+  if (eapol_on_sibling_vap) {
+    sibling_radio = wave_vap_radio_get(sibling_vap_handle);
+    return wv_ieee80211_eapol_rx(wave_radio_mac80211_get(sibling_radio),
+                                 wave_vap_get_vif(sibling_vap_handle),
+                                 data, data_len, mtlkband2nlband(wave_radio_band_get(sibling_radio)));
+  }
+#endif
 
   return wv_ieee80211_eapol_rx(wave_radio_mac80211_get(radio),
                                wave_vap_get_vif(nic->vap_handle),
@@ -3476,6 +3525,17 @@ _mtlk_core_set_mac_assert (mtlk_handle_t hcore, const void* data, uint32 data_si
   MTLK_CLPB_END
 }
 
+static void
+_wave_radio_fixed_pwr_params_get (wave_radio_t *radio, FIXED_POWER *fixed_pwr_params)
+{
+  mtlk_pdb_size_t fixed_pwr_cfg_size = sizeof(*fixed_pwr_params);
+
+  MTLK_ASSERT(NULL != radio);
+  if (MTLK_ERR_OK != WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_FIXED_PWR, fixed_pwr_params, &fixed_pwr_cfg_size)) {
+    ELOG_V("Failed to get Fixed TX management power parameters");
+  }
+}
+
 /********** DEBUG FUNCTIONS **********/
 #ifdef CONFIG_WAVE_DEBUG
 
@@ -3750,17 +3810,6 @@ static int _mtlk_get_dbg_nop (mtlk_scan_support_t* obj)
   MTLK_ASSERT(NULL != obj);
 
   return obj->dfs_debug_params.nop ? obj->dfs_debug_params.nop : (IEEE80211_DFS_MIN_NOP_TIME_MS / MTLK_OSAL_MSEC_IN_MIN);
-}
-
-static void
-_wave_radio_fixed_pwr_params_get (wave_radio_t *radio, FIXED_POWER *fixed_pwr_params)
-{
-  mtlk_pdb_size_t fixed_pwr_cfg_size = sizeof(*fixed_pwr_params);
-
-  MTLK_ASSERT(NULL != radio);
-  if (MTLK_ERR_OK != WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_FIXED_PWR, fixed_pwr_params, &fixed_pwr_cfg_size)) {
-    ELOG_V("Failed to get Fixed TX management power parameters");
-  }
 }
 
 static mtlk_error_t
@@ -4601,6 +4650,7 @@ _mtlk_core_get_master_specific_cfg (mtlk_handle_t hcore,
 
 #ifdef WAVE_ENABLE_PIE
   MTLK_CFG_CHECK_AND_SET_ITEM_BY_FUNC(master_cfg, wave_pie_cfg, wave_core_pie_cfg_receive, (core, &master_cfg->wave_pie_cfg), res);
+  MTLK_CFG_CHECK_AND_SET_ITEM_BY_FUNC(master_cfg, wave_aqm_sta_en, wave_core_get_aqm_sta_en, (core, &master_cfg->wave_aqm_sta_en), res);
 #endif /* WAVE_ENABLE_PIE */
 
   MTLK_CFG_CHECK_AND_SET_ITEM_BY_FUNC(master_cfg, slow_probing_mask, mtlk_core_receive_slow_probing_mask,
@@ -4609,10 +4659,9 @@ _mtlk_core_get_master_specific_cfg (mtlk_handle_t hcore,
   MTLK_CFG_CHECK_AND_SET_ITEM(master_cfg, unconnected_sta_scan_time,
                               WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_UNCONNECTED_STA_SCAN_TIME));
 
-#ifdef CONFIG_WAVE_DEBUG
   MTLK_CFG_CHECK_AND_SET_ITEM_BY_FUNC_VOID(master_cfg, fixed_pwr_params, _wave_radio_fixed_pwr_params_get,
                                            (radio, &master_cfg->fixed_pwr_params));
-#endif
+
   MTLK_CFG_CHECK_AND_SET_ITEM(master_cfg, vw_test_mode, WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_VW_TEST_MODE));
 
   MTLK_CLPB_FINALLY(res)
@@ -4893,6 +4942,9 @@ _mtlk_core_set_core_cfg (mtlk_handle_t hcore,
       MTLK_CFG_CHECK_ITEM_AND_CALL_VOID(core_cfg, duplicate_beacon, wave_core_set_duplicate_beacon,
                                        (core, &core_cfg->duplicate_beacon));
 
+      MTLK_CFG_CHECK_ITEM_AND_CALL_VOID(core_cfg, pbac, wave_core_set_pbac,
+                                       (core, core_cfg->pbac));
+
       MTLK_CFG_CHECK_ITEM_AND_CALL_VOID(core_cfg, sb_timer_acl, _wave_core_set_sb_timer_acl,
                                        (core, &core_cfg->sb_timer_acl));
 
@@ -4992,6 +5044,9 @@ _mtlk_core_set_master_specific_cfg (mtlk_handle_t hcore,
 #ifdef WAVE_ENABLE_PIE
       MTLK_CFG_CHECK_ITEM_AND_CALL(master_cfg, wave_pie_cfg, wave_core_pie_cfg_send,
                                   (core, &master_cfg->wave_pie_cfg), res);
+
+      MTLK_CFG_CHECK_ITEM_AND_CALL(master_cfg, wave_aqm_sta_en, wave_core_set_aqm_sta_en,
+                                  (core, &master_cfg->wave_aqm_sta_en), res);
 #endif /* WAVE_ENABLE_PIE */
 
       MTLK_CFG_CHECK_ITEM_AND_CALL_VOID(master_cfg, dfs_debug, _wave_core_set_dfs_debug,
@@ -5013,10 +5068,9 @@ _mtlk_core_set_master_specific_cfg (mtlk_handle_t hcore,
       MTLK_CFG_CHECK_ITEM_AND_CALL(master_cfg, dynamic_edca, wave_core_set_and_store_dynamic_edca,
                                   (core, master_cfg->dynamic_edca), res);
 
-#ifdef CONFIG_WAVE_DEBUG
       MTLK_CFG_CHECK_ITEM_AND_CALL(master_cfg, fixed_pwr_params, mtlk_core_store_and_send_fixed_pwr_cfg,
                                   (core, &master_cfg->fixed_pwr_params), res);
-#endif
+
       MTLK_CFG_CHECK_ITEM_AND_CALL(master_cfg, vw_test_mode, wave_core_set_vw_test_mode,
                                   (core, master_cfg->vw_test_mode), res);
 
@@ -6104,7 +6158,7 @@ _mtlk_core_add_vap_name (mtlk_handle_t hcore,
         MTLK_CLPB_EXIT(MTLK_ERR_RETRY);
     }
 
-    res = mtlk_vap_manager_get_free_vap_index(mtlk_vap_get_manager(nic->vap_handle), &_vap_index);
+    res = mtlk_vap_manager_get_free_vap_index(mtlk_vap_get_manager(nic->vap_handle), &_vap_index, mbss_cfg->role);
     if (MTLK_ERR_OK != res) {
       ELOG_V("No free slot for new VAP");
         MTLK_CLPB_EXIT(res);
@@ -7766,7 +7820,14 @@ static int _mtlk_core_ap_connect_sta_by_entry (mtlk_core_t *core, struct ieee802
 #endif
 
         wds_peer_disconnect (&core->slow_ctx->wds_mng, addr);
-        wave_core_ap_stop_traffic(core, sid, addr); /* Send Stop Traffic Request to FW */
+        /* Send Stop Traffic Request to FW */
+        if (!sta->is_traffic_stopped) {
+          res = wave_core_ap_stop_traffic(core, sid, addr);
+          if (res == MTLK_ERR_OK) {
+            sta->is_traffic_stopped = TRUE;
+            ILOG1_DYD("CID-%04x: Stopped traffic for STA %Y, SID %d", mtlk_vap_get_oid(core->vap_handle), addr, sid);
+          }
+        }
         wave_core_ap_remove_sta(core, sid, addr);
 
         if (connected_to_backhaul_ap) {
@@ -7871,6 +7932,10 @@ _mtlk_core_ap_authorizing_sta (mtlk_handle_t hcore, const void* data, uint32 dat
   if ((mtlk_core_get_net_state(core) & (NET_STATE_READY | NET_STATE_CONNECTED)) == 0) {
     ILOG1_D("CID-%04x: Invalid card state - request rejected", mtlk_vap_get_oid(core->vap_handle));
     res = MTLK_ERR_NOT_READY;
+    if (core->is_stopped_by_sibling) /* If stopped by sibling, corresponding STA are already cleanedup, so not an error */ {
+      ILOG2_D("CID-%04x: VAP is already stopped by sibling", mtlk_vap_get_oid(core->vap_handle));
+      res = MTLK_ERR_OK;
+    }
     goto FINISH;
   }
 
@@ -8512,9 +8577,11 @@ _mtlk_core_init(struct nic* nic, mtlk_vap_handle_t vap_handle, mtlk_df_t*   df)
       mtlk_osal_event_init, (&nic->eapol_acked));
 
     nic->is_stopped = TRUE;
-    ILOG1_SDDDS("%s: Inited: is_stopped=%u, is_stopping=%u, is_iface_stopping=%u, net_state=%s",
+    nic->is_stopped_by_sibling = FALSE;
+    ILOG1_SDDDDS("%s: Inited: is_stopped=%u, is_stopping=%u, is_iface_stopping=%u, is_stopped_by_sibling=%u, net_state=%s",
                 mtlk_df_get_name(mtlk_vap_get_df(nic->vap_handle)),
                 nic->is_stopped, nic->is_stopping, nic->is_iface_stopping,
+                nic->is_stopped_by_sibling,
                 mtlk_net_state_to_string(mtlk_core_get_net_state(nic)));
 
   MTLK_INIT_FINALLY(core, MTLK_OBJ_PTR(nic))
@@ -9635,6 +9702,10 @@ _mtlk_core_handle_rx_ctrl (mtlk_vap_handle_t   vap_handle,
     _mtlk_process_hw_task(master_nic, SERIALIZABLE, wave_core_handle_dynamic_wmm_event,
                           HANDLE_T(master_nic), payload, sizeof(UMI_BEACON_DYN_WMM_SET));
     break;
+  case MC_MAN_RX_MEASURE_IND:
+    _mtlk_process_hw_task(master_nic, SERIALIZABLE, wave_core_handle_rx_measure_event,
+                          HANDLE_T(master_nic), payload, sizeof(UMI_RX_MEASURE_REPORT));
+    break;
   default:
     _mtlk_process_hw_task(nic, SERIALIZABLE, _mtlk_handle_unknown_ind_type,
                            HANDLE_T(nic), &id, sizeof(uint32));
@@ -9986,7 +10057,6 @@ mtlk_core_handle_tx_ctrl (mtlk_vap_handle_t    vap_handle,
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_ML_SID,               wave_core_set_ml_sid);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_ML_STA_ADD,               wave_core_ml_sta_add);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_REMOVE_MLD,               wave_core_remove_mld);
-    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_REMOVE_STA_MLD,           wave_core_remove_sta_mld);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_ML_CRITICAL_UPDATE,   wave_core_set_ml_critical_update);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SCS_ADD,                   wave_core_scs_add_req);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SCS_REM,                   wave_core_scs_rem_req);
@@ -10012,11 +10082,11 @@ mtlk_core_handle_tx_ctrl (mtlk_vap_handle_t    vap_handle,
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_RADIO_REQ_GET_RADIO_PEER_LIST,      wave_core_get_radio_sta_list);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_LA_MIMO_OFDMA_STATS,   wave_core_get_link_adapt_mimo_statistics);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_LA_MU_HE_EHT_STATS,    wave_core_get_la_mu_he_eht_stats);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,    wave_core_set_fixed_rate_thermal);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,    wave_core_get_fixed_rate_thermal);
 
 /* DEBUG COMMANDS */
 #ifdef CONFIG_WAVE_DEBUG
-    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,    wave_core_set_fixed_rate_thermal);
-    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,    wave_core_get_fixed_rate_thermal);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(MTLK_HW_REQ_GET_COUNTERS_SRC,            mtlk_core_cfg_get_counters_src);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(MTLK_HW_REQ_SET_COUNTERS_SRC,            mtlk_core_cfg_set_counters_src);
 
@@ -11806,10 +11876,6 @@ static int _core_on_rcvry_configure (mtlk_core_t *core, uint32 target_net_state)
   mtlk_stadb_start(&core->slow_ctx->stadb);
   if (res != MTLK_ERR_OK) {goto ERR_END;}
 
-  RECOVERY_INFO("restore security", core_oid);
-  res = core_on_rcvry_security(core);
-  if (res != MTLK_ERR_OK) {goto ERR_END;}
-
   if (mtlk_vap_is_master(core->vap_handle)) {
     /* WDS */
     if (BR_MODE_WDS == MTLK_CORE_HOT_PATH_PDB_GET_INT(core, CORE_DB_CORE_BRIDGE_MODE)) {
@@ -11899,6 +11965,10 @@ static int _core_on_rcvry_configure (mtlk_core_t *core, uint32 target_net_state)
     if (res != MTLK_ERR_OK)
       RECOVERY_INFO("Set Broadcast TWT configuration FAILED!", core_oid);
   }
+
+  RECOVERY_INFO("restore security", core_oid);
+  res = core_on_rcvry_security(core);
+  if (res != MTLK_ERR_OK) {goto ERR_END;}
 
 continue_cac:
   if (mtlk_vap_is_master(core->vap_handle)) {

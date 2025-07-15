@@ -763,8 +763,12 @@ _pci_start (struct pci_dev *pdev, mtlk_mmb_drv_t *obj, mtlk_card_type_t hw_type,
   }
 
   if (FALSE == obj->g6_pci_aux) {
+#if LINUX_VERSION_IS_LESS(5,18,0)
     /* configure DMA */
     res = pci_set_dma_mask(pdev, PCI_SUPPORTED_DMA_MASK);
+#else
+    res = dma_set_mask(&pdev->dev, PCI_SUPPORTED_DMA_MASK);
+#endif
     if (0 != res) {
       return res;
     }

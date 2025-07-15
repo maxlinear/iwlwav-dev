@@ -432,7 +432,6 @@ typedef enum
   WAVE_CORE_REQ_SET_ML_SID,                      /*!< set SID for ML STA */
   WAVE_CORE_REQ_ML_STA_ADD,                      /*!< ML STA ADD */
   WAVE_CORE_REQ_REMOVE_MLD,                      /*!< MLD REMOVE */
-  WAVE_CORE_REQ_REMOVE_STA_MLD,                  /*!< MLD STA REMOVE */
   WAVE_CORE_REQ_SET_ML_CRITICAL_UPDATE,          /*!< MLD critical update */
   WAVE_CORE_REQ_GET_LA_MU_HE_EHT_STATS,
   WAVE_CORE_REQ_SCS_ADD,                         /*!< SCS ADD Request */
@@ -450,10 +449,10 @@ typedef enum
   WAVE_CORE_REQ_GET_ML_PEER_FLOW_STATUS,         /*!< Get ML peerflowstatus */
   WAVE_CORE_REQ_GET_ML_STA_LIST,                 /*!< Get connected ML sta list */
 #endif
-/* DEBUG COMMANDS */
-#ifdef CONFIG_WAVE_DEBUG
   WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,         /*!< Set Fixed Rate Thermal */
   WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,         /*!< Get Fixed Rate Thermal */
+/* DEBUG COMMANDS */
+#ifdef CONFIG_WAVE_DEBUG
   MTLK_HW_REQ_GET_COUNTERS_SRC,                 /*!< Get WAVE counters source */
   MTLK_HW_REQ_SET_COUNTERS_SRC,                 /*!< Set WAVE counters source */
 #ifdef CPTCFG_IWLWAV_SET_PM_QOS
@@ -740,6 +739,7 @@ MTLK_DECLARE_CFG_START(mtlk_gen_core_cfg_t)
   MTLK_CFG_ITEM(uint8, he_beacon)
   MTLK_CFG_ITEM(mtlk_core_dup_beacon_t, duplicate_beacon)
   MTLK_CFG_ITEM(wave_core_sb_timer_acl_t, sb_timer_acl)
+  MTLK_CFG_ITEM(uint8, pbac)
   MTLK_CFG_ITEM(BOOL, intra_vap_mcast)
   MTLK_CFG_ITEM(int, probereq_offload_mode)
   MTLK_CFG_ITEM(BOOL, pcie_auto_cfg)
@@ -799,6 +799,12 @@ typedef struct {
   uint8 user_mode;
 } wave_pie_cfg_t;
 
+typedef struct {
+  uint32 staId;
+  bool   enable;
+  uint32 aqmStaEnBitmap[GEN7_STATION_BITMAP_SIZE_WORDS];
+} wave_aqm_sta_en_t;
+
 #define WAVE_NUM_FORMATION_TYPES 4
 #define WAVE_DF_USER_MU_GROUP_CFG_PARAM_COUNT 3
 typedef struct mtlk_mu_group_config_params
@@ -818,9 +824,7 @@ MTLK_DECLARE_CFG_START(mtlk_master_core_cfg_t)
   MTLK_CFG_ITEM(uint32, active_ant_mask)
   MTLK_CFG_ITEM(uint32, slow_probing_mask)
   MTLK_CFG_ITEM(uint32, unconnected_sta_scan_time)
-#ifdef CONFIG_WAVE_DEBUG
   MTLK_CFG_ITEM(FIXED_POWER, fixed_pwr_params)
-#endif
   MTLK_CFG_ITEM(uint8, fast_drop)
   MTLK_CFG_ITEM(wave_pie_cfg_t, wave_pie_cfg)
   MTLK_CFG_ITEM(uint8, dfs_debug)
@@ -828,6 +832,7 @@ MTLK_DECLARE_CFG_START(mtlk_master_core_cfg_t)
   MTLK_CFG_ITEM(uint8, dynamic_wmm)
   MTLK_CFG_ITEM(uint8, dynamic_edca)
   MTLK_CFG_ITEM(uint8, vw_test_mode)
+  MTLK_CFG_ITEM(wave_aqm_sta_en_t, wave_aqm_sta_en)
 MTLK_DECLARE_CFG_END(mtlk_master_core_cfg_t)
 
 /* HSTDB structure */
@@ -875,7 +880,7 @@ MTLK_DECLARE_CFG_END(mtlk_eeprom_data_cfg_t)
 MTLK_DECLARE_CFG_START(mtlk_eeprom_cfg_t)
   MTLK_CFG_ITEM(mtlk_eeprom_data_cfg_t, eeprom_data)
   MTLK_CFG_ITEM(uint32, eeprom_total_size); /* real size of raw data */
-  MTLK_CFG_ITEM_ARRAY(uint8, eeprom_raw_data, MTLK_MAX_EEPROM_SIZE)
+  MTLK_CFG_ITEM_ARRAY(uint8, eeprom_raw_data, MTLK_MAX_EEPROM_2_4G_SIZE)
 MTLK_DECLARE_CFG_END(mtlk_eeprom_cfg_t)
 
 
@@ -1320,6 +1325,9 @@ typedef enum str_tid_spread_mode
   TID_SPREAD_INVALID,
 } str_tid_spread_mode_e;
 
+#ifdef OTF_MLO_STR_TID_SPREADING
+#define STATIC_TID_SPREAD_RATIO  2 /* Static tid spreading with 1:1 split ratio */
+#endif /* OTF_MLO_STR_TID_SPREADING */
 #define LOW_RATE_TID_IP_HDRLEN_THOLD  128
 #endif
 #define TTLM_ASSOC_LINK_DEFAULT      243 /* TID 0,1,4,5,6,7 */
@@ -1387,10 +1395,6 @@ MTLK_DECLARE_CFG_END(wave_retry_limit_cfg_t)
 MTLK_DECLARE_CFG_START(mtlk_exce_retry_limit_cfg_t)
   MTLK_CFG_ITEM(uint8, exce_retry_limit)
 MTLK_DECLARE_CFG_END(mtlk_exce_retry_limit_cfg_t)
-
-MTLK_DECLARE_CFG_START(mtlk_tx_power_20mhz_cfg_t)
-  MTLK_CFG_ITEM(uint32, tx_power_20mhz);
-MTLK_DECLARE_CFG_END(mtlk_tx_power_20mhz_cfg_t)
 
 MTLK_DECLARE_CFG_START(mtlk_max_mpdu_len_cfg_t)
   MTLK_CFG_ITEM(uint32, max_mpdu_length);

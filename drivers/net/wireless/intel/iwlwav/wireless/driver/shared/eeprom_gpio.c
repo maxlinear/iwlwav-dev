@@ -51,7 +51,7 @@
 
 #define EEPROM_CHIP_ID (0x50)
 
-#define GET_EEPROM_SIZE(gen7, type) (gen7 && (type == DUT_NV_MEMORY_EEPROM)) ? MTLK_EEPROM_W700_TOTAL_SIZE: MTLK_MAX_EEPROM_SIZE;
+#define GET_EEPROM_SIZE(gen7, type) (gen7 && (type == DUT_NV_MEMORY_EEPROM)) ? MTLK_EEPROM_W700_TOTAL_SIZE: MTLK_MAX_EEPROM_2_4G_SIZE;
 
 /**
   Amount of bytes to write at one request

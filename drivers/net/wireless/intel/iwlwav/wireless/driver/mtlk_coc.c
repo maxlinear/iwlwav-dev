@@ -802,7 +802,7 @@ set_state:
     } else if ((new_state > COC_POWER_1x1_STATE) && (current_state != COC_POWER_START_STATE)) {
       /* Upto hostapd to decide which higher BW to set */
       bw_params.coc_BW = COC_BW_SWITCH_UP;
-      if (wave_radio_chandef_width_get(&wdev->chandef) != 20)
+      if (wave_radio_chandef_width_get(&wdev->links[0].ap.chandef) != 20)
         bw_params.coc_BW = 0;
       bw_params.coc_omn_IE = new_state;
       if ((new_state == max_antennas) || (new_state == max_rx_antennas)) {

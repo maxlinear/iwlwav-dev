@@ -29,6 +29,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/module.h>
+#include "compat.h"
 
 #include "mtlk_df_priv.h"
 

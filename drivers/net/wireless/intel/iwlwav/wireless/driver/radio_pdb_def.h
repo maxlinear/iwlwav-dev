@@ -117,6 +117,7 @@ static const uint32 wave_radio_initial_cts_to_self_to = 32; /* Max CTS to self t
 static const uint32 wave_radio_initial_tx_ampdu_density_uint32 = MTLK_MIN_TX_AMPDU_DENSITY;
 static const uint32 wave_radio_initial_invalid_bf_mode = BF_NUMBER_OF_MODES;
 
+static const struct mxl_vendor_tx_power wave_radio_tx_power = {0};
 static const char    wave_radio_initial_fils_discovery_params[] = "";
 static const char    wave_radio_initial_unsolicit_probe_resp_templ[] = "";
 static const uint8   wave_radio_initial_unsolicit_frame_cfg_mode = WAVE_UNSOLICITED_FRAME_CFG_INVALID;
@@ -139,9 +140,9 @@ static const wave_radio_reg_data_t wave_radio_initial_reg_data = {
   .regd =  &default_regdata,
 };
 
+static const FIXED_POWER wave_radio_initial_fixed_pwr = {MTLK_PARAM_DB_INVALID_UINT8, 0, 0, 0, 0, {0}};
 /* DEBUG PARAMS INITIAL VALUES */
 #ifdef CONFIG_WAVE_DEBUG
-static const FIXED_POWER wave_radio_initial_fixed_pwr = {MTLK_PARAM_DB_INVALID_UINT8, 0, 0, 0, 0, {0}};
 static const UMI_DBG_HE_MU_GROUP_STATS wave_radio_umi_dbg_mu_group_stats[HE_MU_MAX_NUM_OF_GROUPS] = {{0}};
 #endif
 
@@ -262,10 +263,9 @@ static const mtlk_pdb_initial_value wave_radio_parameters[] =
   {PARAM_DB_RADIO_MU_GROUP_CFG,                               PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_mu_group_cfg),         &wave_radio_initial_mu_group_cfg},
   {PARAM_DB_RADIO_DYNAMIC_WMM,                                PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32),       &wave_radio_initial_invalid_uint32},
   {PARAM_DB_RADIO_DYNAMIC_EDCA,                               PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32),       &wave_radio_initial_invalid_uint32},
-
+  {PARAM_DB_RADIO_FIXED_PWR,                                  PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_fixed_pwr),            &wave_radio_initial_fixed_pwr},
 /* DEBUG PARAMS */
 #ifdef CONFIG_WAVE_DEBUG
-  {PARAM_DB_RADIO_FIXED_PWR,                                  PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_fixed_pwr),            &wave_radio_initial_fixed_pwr},
   {PARAM_DB_RADIO_TEST_BUS_MODE,                              PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32),       &wave_radio_initial_invalid_uint32},
   {PARAM_DB_RADIO_PLAN_MU_GROUP_STATS,                        PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_umi_dbg_mu_group_stats),       &wave_radio_umi_dbg_mu_group_stats},
 #endif
@@ -280,6 +280,7 @@ static const mtlk_pdb_initial_value wave_radio_parameters[] =
   {PARAM_DB_RADIO_6GHZ_OPER_POWER_MODE,                       PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32),       &wave_radio_initial_invalid_uint32},
   {PARAM_DB_RADAR_FIFO_DUMP,                                  PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_zero_int),             &wave_radio_initial_zero_int},
   {PARAM_DB_RADIO_VW_TEST_MODE,                               PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_zero_int),             &wave_radio_initial_zero_int},
+  {PARAM_DB_RADIO_20MHZ_TX_POWER,                             PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_tx_power),             &wave_radio_tx_power},
   {PARAM_DB_RADIO_LAST_VALUE_ID,                               0,                    0,                            0,                                          NULL},
 };
 

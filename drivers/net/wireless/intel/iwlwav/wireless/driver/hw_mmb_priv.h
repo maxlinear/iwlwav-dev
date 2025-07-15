@@ -53,6 +53,7 @@
 #include "scan_support.h"
 #include "mac80211.h"
 #include "eth_parser.h"
+#include "compat.h"
 
 #define LOG_LOCAL_GID   GID_HWMMB
 #define LOG_LOCAL_FID   2

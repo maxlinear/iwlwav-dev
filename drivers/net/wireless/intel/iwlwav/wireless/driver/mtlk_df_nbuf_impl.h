@@ -18,6 +18,7 @@
 #include "hw_mmb.h"
 #include "mtlkhal.h"
 
+#include <linux/if_vlan.h>
 #define LOG_LOCAL_GID   GID_NBUF
 #define LOG_LOCAL_FID   1
 

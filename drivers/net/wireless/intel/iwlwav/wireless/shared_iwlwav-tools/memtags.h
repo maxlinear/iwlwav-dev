@@ -169,6 +169,8 @@
 #define WAVE_MEM_TAG_THERMAL            'ther'
 #define WAVE_MEM_TAG_CSI_STATS          'csi '
 #define WAVE_MEM_TAG_TID_LINK_SPREADING 'TIDL'
+#define WAVE_MEM_TAG_REM_STA_MLD        'RMLD'
+#define WAVE_MEM_TAG_MLD_VAP_LOCK       'MLDL'
 #define WAVE_MEM_TAG_VLAN_PENDING_LIST  'vpls'
 
 #endif //_MTLK_MEMTAGS_H_

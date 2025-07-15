@@ -536,14 +536,16 @@ typedef struct _PerClientStats_t {
 
 typedef struct _PeerPhyRxStatus_t {
   int32   rssi;
+  int32   avg_rcpi;
   uint32  phyRate;
   uint32  irad;
   uint32  lastTsf;
   uint32  perClientRxtimeUsage;
-  uint32  noise[WAVE_STAT_MAX_ANTENNAS];
-  uint32  gain[WAVE_STAT_MAX_ANTENNAS];
   uint32  psduRate;
   uint32  phyRateSynchedToPsduRate;
+  int8    noise[WAVE_STAT_MAX_ANTENNAS];
+  uint8   gain[WAVE_STAT_MAX_ANTENNAS];
+  int8    rcpi[WAVE_STAT_MAX_ANTENNAS];
 } peerPhyRxStatus_t;
 
 typedef struct _PeerInfo_t {

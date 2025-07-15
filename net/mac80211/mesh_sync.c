@@ -3,6 +3,7 @@
  * Copyright 2011-2012, Pavel Zubarev <pavel.zubarev@gmail.com>
  * Copyright 2011-2012, Marco Porsch <marco.porsch@s2005.tu-chemnitz.de>
  * Copyright 2011-2012, cozybit Inc.
+ * Copyright (C) 2021 Intel Corporation
  */
 
 #include "ieee80211_i.h"
@@ -77,10 +78,10 @@ void mesh_sync_adjust_tsf(struct ieee80211_sub_if_data *sdata)
 }
 
 static void mesh_sync_offset_rx_bcn_presp(struct ieee80211_sub_if_data *sdata,
-				   u16 stype,
-				   struct ieee80211_mgmt *mgmt,
-				   struct ieee802_11_elems *elems,
-				   struct ieee80211_rx_status *rx_status)
+                                   u16 stype,
+                                   struct ieee80211_mgmt *mgmt,
+                                   struct ieee802_11_elems *elems,
+                                   struct ieee80211_rx_status *rx_status)
 {
 	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
 	struct ieee80211_local *local = sdata->local;

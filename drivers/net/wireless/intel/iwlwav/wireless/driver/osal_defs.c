@@ -429,7 +429,8 @@ _mtlk_osal_event_wait (mtlk_osal_event_t* event, uint32 msec)
 
   if (signal_pending(current)) {
     /* In case of signals we fallback to uninterruptible wait */
-    mtlk_osal_emergency_print("mtlk_osal_event_wait: signal is pending, using wait_uninterruptible");
+    if (printk_ratelimit())  /*WLANRTSYS-85700*/
+      mtlk_osal_emergency_print("mtlk_osal_event_wait: signal is pending, using wait_uninterruptible");
     return __mtlk_osal_event_wait_uninterruptible(event, wait_time);
   }
   res = msec ? wait_event_interruptible_timeout(event->wait_queue,

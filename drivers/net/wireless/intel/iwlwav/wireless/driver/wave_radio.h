@@ -71,12 +71,26 @@ enum {
 #define WAVE_PHY_STAT_AVG_TIME_MS     (3 * 1000)
 #define WAVE_PHY_STAT_AVG_WINSIZE     (WAVE_PHY_STAT_AVG_TIME_MS / _DF_STAT_POLL_PERIOD)
 
+/* ZWDFS Antenna RSSI averager*/
+// Time window (2 seconds)
+#define WAVE_ZWDFS_ANT_RSSI_AVG_TIME_MS     (2 * 1000)
+#define WAVE_ZWDFS_ANT_RSSI_AVG_WINSIZE     (WAVE_ZWDFS_ANT_RSSI_AVG_TIME_MS / _DF_STAT_POLL_PERIOD)
+// Number of max RSSI samples to be considered within the window
+#define WAVE_ZWDFS_ANT_NUM_MAX_RSSI_SAMPLES (3)
+
 typedef struct {
   uint32  summator;
   uint32  window_size;
   uint32  idx;
   uint8   values[WAVE_PHY_STAT_AVG_WINSIZE]; /* can be made dynamic later */
 } wave_phy_stat_averager_t;
+
+typedef struct {
+  int8    rssi_values[WAVE_ZWDFS_ANT_RSSI_AVG_WINSIZE];
+  uint8   window_size;
+  uint8   num_max_rssi_samples;
+  uint8   idx;
+} wave_zwdfs_ant_rssi_averager_t;
 
 /* UL DL OFDMA MPDU radio stats */
 typedef struct wave_mpdu_stats {
@@ -239,12 +253,28 @@ wave_phy_stat_averager_init (wave_phy_stat_averager_t *avg)
 }
 
 static __INLINE void
+wave_phy_stat_zwdfs_ant_rssi_averager_init (wave_zwdfs_ant_rssi_averager_t *averager)
+{
+  memset(averager->rssi_values, MIN_RSSI, sizeof(averager->rssi_values));
+  averager->window_size = WAVE_ZWDFS_ANT_RSSI_AVG_WINSIZE;
+  averager->num_max_rssi_samples = WAVE_ZWDFS_ANT_NUM_MAX_RSSI_SAMPLES;
+  averager->idx = 0;
+}
+
+static __INLINE void
 wave_phy_stat_averager_proc (wave_phy_stat_averager_t *avg, uint8 val)
 {
   avg->summator -= avg->values[avg->idx];
   avg->summator += val;
   avg->values[avg->idx] = val;
   INC_WRAP_IDX(avg->idx, avg->window_size);
+}
+
+static __INLINE void
+wave_phy_stat_zwdfs_ant_rssi_averager_proc (wave_zwdfs_ant_rssi_averager_t *averager, int8 curr_rssi)
+{
+  averager->rssi_values[averager->idx] = curr_rssi;
+  INC_WRAP_IDX(averager->idx, averager->window_size);
 }
 
 static __INLINE uint8
@@ -259,15 +289,17 @@ wave_phy_stat_averager_get (wave_phy_stat_averager_t *avg)
 /* Radio Phy Status according to devicePhyRxStatusDb */
 typedef struct {
   /* Phy Rx Status data */
-  int8                  noise;   /* noise                        dBm */
-  uint8                 ch_load; /* channel_load,            0..100% */
-  uint8                 ch_util; /* totalChannelUtilization, 0..100% */
+  int8                  noise;        /* noise                        dBm */
+  uint8                 ch_load;      /* channel_load,            0..100% */
+  uint8                 ch_util;      /* totalChannelUtilization, 0..100% */
+  int8                  zwdfs_ant_rssi; /* ZWDFS Antenna RSSI value    dBm */
   /* Calculated */
   uint8                 airtime;            /*   0..100% */
   uint32                airtime_efficiency; /* bytes/sec */
   /* Averagers */
   wave_phy_stat_averager_t  ch_load_averager;
   wave_phy_stat_averager_t  ch_util_averager;
+  wave_zwdfs_ant_rssi_averager_t zwdfs_ant_rssi_averager;
 } wave_radio_phy_stat_t;
 
 typedef struct _probe_req_info {
@@ -376,7 +408,7 @@ void *wave_radio_beacon_man_private_get(wave_radio_t *radio);
 int wave_radio_beacon_change(wave_radio_t *radio, struct net_device *ndev, struct cfg80211_beacon_data *beacon);
 int wave_radio_abort_and_prevent_scan (wave_radio_t *radio);
 int wave_radio_allow_or_resume_scan (wave_radio_t *radio);
-int wave_radio_ap_start(struct wiphy *wiphy, wave_radio_t *radio, struct net_device *ndev, struct ieee80211_bss_conf *bss_conf, struct cfg80211_beacon_data *beacon);
+int wave_radio_ap_start(struct wiphy *wiphy, wave_radio_t *radio, struct net_device *ndev, struct ieee80211_vif *vif, struct ieee80211_bss_conf *bss_conf, struct cfg80211_beacon_data *beacon);
 int wave_radio_ap_stop(wave_radio_t *radio, struct net_device *ndev);
 int wave_radio_sta_change(wave_radio_t *radio, struct net_device *ndev, const uint8 *mac, struct station_parameters *params, struct ieee80211_sta * sta);
 int wave_radio_scan(wave_radio_t *radio, struct net_device *ndev, struct cfg80211_scan_request *request);

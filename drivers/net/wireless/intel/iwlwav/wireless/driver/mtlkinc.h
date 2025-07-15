@@ -195,6 +195,7 @@ typedef uint16      K_MSG_TYPE;
 
 #ifdef MTLK_WAVE_700
 #define BEST_EFFORT_TID_SPREADING
+#define OTF_MLO_STR_TID_SPREADING /* Enable Static tid spreading with 1:1 tid split ratio */
 #endif
 
 #if defined(MTLK_PUMA_PLATFORM) || defined(MTLK_LGM_PLATFORM)

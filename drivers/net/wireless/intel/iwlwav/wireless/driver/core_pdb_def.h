@@ -73,10 +73,7 @@ static const char    wave_core_initial_bcast_twt_config[] = "";
 static const uint32  wave_core_initial_exce_retry_limit = 0;
 static const int32   wave_core_initial_rssi_ignore_probe_request = 0;
 static const uint32  wave_core_initial_he_bss_color = HE_OPERATION_BSS_COLOR_DISABLED_FLAG;
-
-#ifdef CONFIG_WAVE_DEBUG
 static const wave_thermal_cfg_t wave_core_initial_fixed_rate_thermal = {{0, 0, 0}};
-#endif /* CONFIG_WAVE_DEBUG */
 
 #define B_RATE 0x80
 #define MBIT_RATE_ENCODING_MUL 2
@@ -224,6 +221,7 @@ static const mtlk_pdb_initial_value mtlk_core_parameters[] =
   {PARAM_DB_CORE_BCAST_TWT_CONFIG,        PARAM_DB_TYPE_BINARY, PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(wave_core_initial_bcast_twt_config), wave_core_initial_bcast_twt_config},
   {PARAM_DB_CORE_DUPLICATE_BEACON_ENABLED, PARAM_DB_TYPE_INT,  PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mtlk_core_initial_zero_int),                 &mtlk_core_initial_zero_int},
   {PARAM_DB_CORE_DUPLICATE_BEACON_BW,     PARAM_DB_TYPE_INT,  PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mtlk_core_initial_zero_int),                 &mtlk_core_initial_zero_int},
+  {PARAM_DB_CORE_PBAC,                    PARAM_DB_TYPE_INT,  PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mtlk_core_initial_zero_int),                 &mtlk_core_initial_zero_int},
   {PARAM_DB_CORE_SB_TIMER_ACL_ON,         PARAM_DB_TYPE_INT,  PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mtlk_core_initial_zero_int),                 &mtlk_core_initial_zero_int},
   {PARAM_DB_CORE_SB_TIMER_ACL_PROBE_DROP, PARAM_DB_TYPE_INT,  PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mtlk_core_initial_zero_int),                 &mtlk_core_initial_zero_int},
   {PARAM_DB_CORE_INTRA_VAP_MCAST,         PARAM_DB_TYPE_INT,  PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mtlk_core_initial_zero_int),                 &mtlk_core_initial_zero_int},
@@ -247,9 +245,7 @@ static const mtlk_pdb_initial_value mtlk_core_parameters[] =
   {PARAM_DB_CORE_MLD_INFO,                PARAM_DB_TYPE_BINARY, PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mld_info),                                 &mld_info},
 #endif
 
-#ifdef CONFIG_WAVE_DEBUG
   {PARAM_DB_CORE_FIXED_RATE_THERMAL,      PARAM_DB_TYPE_BINARY, PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(wave_core_initial_fixed_rate_thermal),     &wave_core_initial_fixed_rate_thermal},
-#endif /* CONFIG_WAVE_DEBUG */
 
   {PARAM_DB_CORE_LAST_VALUE_ID,       0,                    0,                            0,                               NULL},
 };

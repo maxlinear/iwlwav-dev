@@ -425,6 +425,9 @@ enum ltq_nl80211_vendor_subcmds {
   LTQ_NL80211_VENDOR_SUBCMD_SET_PCIE_AUTO_GEN_ENABLE,
   LTQ_NL80211_VENDOR_SUBCMD_SET_VW_TEST_MODE,
   LTQ_NL80211_VENDOR_SUBCMD_GET_VW_TEST_MODE,
+  LTQ_NL80211_VENDOR_SUBCMD_SET_PBAC,
+  LTQ_NL80211_VENDOR_SUBCMD_SET_AQM_STA_EN,
+  LTQ_NL80211_VENDOR_SUBCMD_GET_AQM_STA_EN,
   /* add new iw sub commands here */
 
   /* used to define LTQ_NL80211_VENDOR_SUBCMD_MAX below */
@@ -453,6 +456,7 @@ enum ltq_nl80211_vendor_events {
   LTQ_NL80211_VENDOR_EVENT_CSI_STATS           = 16,
   LTQ_NL80211_VENDOR_EVENT_DYNAMIC_WMM_UPDATE  = 17,
   LTQ_NL80211_VENDOR_EVENT_REGDB_INFO_UPDATE   = 18,
+  LTQ_NL80211_VENDOR_EVENT_RX_MEASURE          = 19,
 };
 
 
@@ -690,6 +694,12 @@ struct intel_vendor_he_capa {
   u8 he_ppe_thresholds[25];
 } __attribute__ ((packed));
 
+/* Data for LTQ_NL80211_VENDOR_SUBCMD_GET_20MHZ_TX_POWER vendor command */
+struct mxl_vendor_tx_power {
+  u32 rnr_20mhz_tx_power;
+  u32 max_tx_power;
+  u32 cur_tx_power;
+} __attribute__ ((packed));
 
 /* Data for LTQ_NL80211_VENDOR_SUBCMD_GET_HE_OPERATION vendor commands */
 struct intel_vendor_he_oper {
@@ -1055,5 +1065,14 @@ struct mxl_ml_sta_list {
   u16 sid[MLD_MAX_ACTIVE_LINKS];
   DEF_IEEE_ADDR(mld_addr);
   DEF_IEEE_ADDR(sta_addr[MLD_MAX_ACTIVE_LINKS]);
+} __attribute__ ((packed));
+
+struct mxl_rx_measure_report {
+  s8 rcpi[4];
+  s8 rssi[4];
+  s8 noise[4];
+  u32 snr[4];
+  u32 captures_rem;
+  u8 evm[4];
 } __attribute__ ((packed));
 #endif /* _VENDOR_CMDS_H_ */

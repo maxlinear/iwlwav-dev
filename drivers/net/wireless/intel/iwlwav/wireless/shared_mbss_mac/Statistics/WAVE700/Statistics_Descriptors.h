@@ -961,7 +961,7 @@ typedef struct
 	//word 3-5
     uint16  backgroundNoise[PHY_STATISTICS_MAX_RX_ANT_700]; /* Long term average Background Noise per antenna */
 	int8	noiseFloor[PHY_STATISTICS_MAX_RX_ANT_700];
-	uint8 	reserved;
+	int8 	zwdfsAntRssi;
 } devicePhyRxStatusDb_t_wave700;
 #ifdef CPU_ARC
 typedef devicePhyRxStatusDb_t_wave700 devicePhyRxStatusDb_t;

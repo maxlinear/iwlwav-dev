@@ -683,7 +683,6 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
   man_entry->id = UM_MAN_SET_BEACON_TEMPLATE_REQ;
   man_entry->payload_size = sizeof(UMI_BEACON_SET);
   psUmiBeacon = (UMI_BEACON_SET *) man_entry->payload;
-
   psUmiBeacon->u32hostAddress = HOST_TO_MAC32(tmpl->dma_addr);
   psUmiBeacon->u16part1Len    = HOST_TO_MAC16(part1_len);
   psUmiBeacon->u16part2Len    = HOST_TO_MAC16(part2_len);
@@ -711,7 +710,7 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
     }
   }
 #endif
-
+  psUmiBeacon->bssColorDisable = (MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_HE_BSS_COLOR) & HE_OPERATION_BSS_COLOR_DISABLED_FLAG) ? 1 : 0;
   psUmiBeacon->u8vapIndex     = mtlk_vap_get_id(core->vap_handle);
   psUmiBeacon->addBssLoadIe   = mtlk_df_user_get_hs20_status(mtlk_vap_get_df(core->vap_handle)) ? 1 : 0;
   psUmiBeacon->addBssLoadIe  |= MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_IS_BSS_LOAD_ENABLE) ? 1 : 0;

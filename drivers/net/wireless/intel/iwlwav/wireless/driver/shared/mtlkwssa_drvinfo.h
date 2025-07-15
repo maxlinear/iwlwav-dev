@@ -233,6 +233,7 @@ typedef struct mtlk_wssa_drv_hw_stats{
   mtlk_wssa_drv_mgmt_stats_t     mgmt_stats;
   uint32 RadarsDetected;
   uint32 zwdfs_RadarsDetected;
+  int32 zwdfsAntRssiAvg;
   uint32 AirtimeEfficiency;
   uint8  ChannelLoad;
   uint8  ChannelUtil;

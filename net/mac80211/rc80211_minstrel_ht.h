@@ -74,7 +74,6 @@
 
 struct minstrel_priv {
 	struct ieee80211_hw *hw;
-	bool has_mrr;
 	unsigned int cw_min;
 	unsigned int cw_max;
 	unsigned int max_retry;
@@ -84,7 +83,7 @@ struct minstrel_priv {
 	u8 cck_rates[4];
 	u8 ofdm_rates[NUM_NL80211_BANDS][8];
 
-#ifdef CONFIG_MAC80211_DEBUGFS
+#ifdef CPTCFG_MAC80211_DEBUGFS
 	/*
 	 * enable fixed rate processing per RC
 	 *   - write static index to debugfs:ieee80211/phyX/rc/fixed_rate_idx
@@ -180,7 +179,7 @@ struct minstrel_ht_sta {
 
 	/* tx flags to add for frames for this sta */
 	u32 tx_flags;
-
+	bool use_short_preamble;
 	u8 band;
 
 	u8 sample_seq;

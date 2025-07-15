@@ -3492,7 +3492,13 @@ _mtlk_mmb_load_firmware(mtlk_hw_t* hw)
     flag = mtlk_get_cal_offset(ee_type, fw_num, is_gen7, &offset);
 
     if (flag) {
+    /* The size of the cal files in EEPROM is varied - either 2KB for 2.4/5GHz or 3KB for 6GHz.
+       This size couldn't been updated in the EEPROM parsing stage, but now it can be decided by fw_num */ 	
+      if (is_gen7 && (ee_type == EEPROM_TYPE_GPIO)) {
+        mtlk_set_eeprom_raw_data_size(hw->ee_data, mtlk_get_cal_size(fw_num));
+      }
       mtlk_get_eeprom_raw_data(hw->ee_data, &fb.buffer, &fb.size, offset);
+	  
     /* validate EEPROM content for each band before load to the shared RAM.*/
     /* if it is invalid , take the cal file from flash */
       if (is_gen7 && (ee_type == EEPROM_TYPE_GPIO)) {
@@ -5156,6 +5162,12 @@ _wave_hw_radio_dev_status_get_chan_noise (devicePhyRxStatusDb_t *dev_status)
     return dev_status->CWIvalue;
 }
 
+static __INLINE int8
+_wave_hw_radio_dev_status_get_zwdfs_ant_rssi (devicePhyRxStatusDb_t *dev_status)
+{
+    return dev_status->zwdfsAntRssi;
+}
+
 static void
 _wave_hw_phy_rx_status_update_dev_info (mtlk_hw_t *hw,  mtlk_core_t *core)
 {
@@ -5172,9 +5184,10 @@ _wave_hw_phy_rx_status_update_dev_info (mtlk_hw_t *hw,  mtlk_core_t *core)
     else
       dev_status = _wave_hw_radio_get_dev_status(hw, radio_id);
 
-    radio_status->ch_load = _wave_hw_radio_dev_status_get_chan_load(dev_status);
-    radio_status->ch_util = _wave_hw_radio_dev_status_get_chan_util(dev_status);
-    radio_status->noise   = _wave_hw_radio_dev_status_get_chan_noise(dev_status);
+    radio_status->ch_load        = _wave_hw_radio_dev_status_get_chan_load(dev_status);
+    radio_status->ch_util        = _wave_hw_radio_dev_status_get_chan_util(dev_status);
+    radio_status->noise          = _wave_hw_radio_dev_status_get_chan_noise(dev_status);
+    radio_status->zwdfs_ant_rssi = _wave_hw_radio_dev_status_get_zwdfs_ant_rssi(dev_status);
 
     wave_radio_phy_status_update(__mtlk_hw_wave_radio_get(hw, radio_id), radio_status);
     scan_update_curr_chan_info(core, radio_status->noise, radio_status->ch_load);

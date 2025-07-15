@@ -60,7 +60,7 @@ typedef struct _drv_params_t
 typedef struct {
   uint16             freq;
   uint8              tx_lim;
-  uint8              spectrum;
+  uint16             spectrum;
   uint8              phy_mode;
   uint8              reg_domain;
 } __MTLK_IDATA mtlk_hw_limits_stat_entry_t;

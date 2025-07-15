@@ -270,6 +270,7 @@ typedef struct devicePhyRxStatusDb
   uint8    channelNum;
   uint8    activeAntMask;
   uint16   backgroundNoise[WAVE_STAT_MAX_ANTENNAS]; /* Long term average Background Noise per antenna */
+  int8     zwdfsAntRssi;
 }devicePhyRxStatusDb_t;
 
 typedef struct stationPhyRxStatusDb
@@ -654,13 +655,16 @@ typedef struct _sta_stats
   uint32                max_tx_data_rate;
   uint32                rx_psdu_data_rate_info; /* psdu_rate */
   int8                  max_rssi;
-  int8                  data_rssi[WAVE_STAT_MAX_ANTENNAS];
+  int8                  data_rssi[WAVE_STAT_MAX_ANTENNAS];	/* RSSI per antenna */
   int8                  mgmt_max_rssi;
   int8                  mgmt_rssi[WAVE_STAT_MAX_ANTENNAS];
   int8                  snr[WAVE_STAT_MAX_ANTENNAS];
   int8                  avg_rssi;
   int8                  noise[WAVE_STAT_MAX_ANTENNAS];
-  uint8                 gain[WAVE_STAT_MAX_ANTENNAS];
+  uint8                 gain[WAVE_STAT_MAX_ANTENNAS];	/* RF_GAIN. This field is not valid in Wav700 */
+#ifdef MTLK_WAVE_700
+  int8                  rcpi[WAVE_STAT_MAX_ANTENNAS]; /* RCPI per antenna */
+#endif
   uint32                perClientRxtimeUsage;
   uint32                lastTsf;
   uint32                irad;
@@ -687,6 +691,9 @@ typedef struct _sta_info
   mtlk_pckt_filter_e  filter;      /* flag to filter packets */
   mtlk_peer_analyzer_t sta_analyzer;
   wave_rssi_avg_info_t rssi_avg;
+#ifdef MTLK_WAVE_700
+  wave_rssi_avg_info_t rcpi_avg;
+#endif
   int32               rssi_dbm;
   uint32              tx_bf_cap_info;
   uint8               opmode_notif;
@@ -715,14 +722,23 @@ typedef struct _wave_ml_str_sta_tid_spreading_info {
 } __MTLK_IDATA wave_ml_str_sta_tid_spreading_info_t;
 #endif /* BEST_EFFORT_TID_SPREADING */
 
+typedef struct _wave_ml_remove_sta_mld
+{
+  mtlk_osal_spinlock_t lock;
+  mtlk_atomic_t        remove_sta_cnt;
+} wave_ml_rem_sta_mld_t;
+
 typedef struct _wave_ml_sta_info
 {
-  sta_entry          *sibling_sta;     /* affiliated sta */
-  BOOL               remove_sta_mld;   /* flag to denote REMOVE_STA_MLD is intimated to FW */
-  uint8              ml_supp_mode;     /* MLD STA supported mode - refer multilink_modes_e */
-  mtlk_osal_event_t  ml_discnt_event;
+  wave_ml_rem_sta_mld_t *remove_sta_mld;
+  sta_entry             *sibling_sta;           /* affiliated sta */
+  BOOL                  rem_sta_mld_done;       /* flag to denote REMOVE_STA_MLD is intimated to FW */
+  BOOL                  rem_sta_mld_inprogress; /* flag to indicate REMOVE_STA_MLD is ongoing */
+  uint8                 ml_supp_mode;           /* MLD STA supported mode - refer multilink_modes_e */
+  mtlk_osal_event_t     ml_discnt_event;
+  wave_vap_id_t         assoc_vap_id_fw;
 #ifdef BEST_EFFORT_TID_SPREADING
-  uint32            prev_eff_phy_rate;
+  uint32                prev_eff_phy_rate;
   wave_ml_str_sta_tid_spreading_info_t *sta_tid_spread_info;
 #endif /* BEST_EFFORT_TID_SPREADING */
 } __MTLK_IDATA wave_ml_sta_info_t;
@@ -824,6 +840,7 @@ struct _sta_entry {
 #ifdef MTLK_WAVE_700
   wave_ml_sta_info_t           ml_sta_info;
 #endif
+  BOOL                         is_traffic_stopped;
   MTLK_DECLARE_INIT_STATUS;
   MTLK_DECLARE_START_STATUS;
   MTLK_DECLARE_START_LOOP(ROD_QUEs);
@@ -1011,6 +1028,14 @@ mtlk_sta_get_avg_rssi (const sta_entry *sta)
 {
    return sta->info.rssi_avg.avg_rssi_dbm;
 }
+
+#ifdef MTLK_WAVE_700
+static __INLINE int8
+mtlk_sta_get_avg_rcpi (const sta_entry *sta)
+{
+   return sta->info.rcpi_avg.avg_rssi_dbm;
+}
+#endif
 
 /* with checking ALLOWED option */
 #define mtlk_sta_get_cnt(sta, id)         (TRUE == id##_ALLOWED) ? __mtlk_sta_get_cnt(sta, id) : 0
@@ -1203,7 +1228,7 @@ mtlk_sta_get_network_modes (const sta_entry *sta)
 static __INLINE BOOL
 mtlk_sta_is_ml_disconnected(sta_entry *sta)
 {
-  return sta->ml_sta_info.remove_sta_mld;
+  return sta->ml_sta_info.rem_sta_mld_done;
 }
 /********************************************************/
 void  __MTLK_IFUNC mtlk_sta_wait_ml_discnt(sta_entry *sta);
@@ -1360,7 +1385,7 @@ mtlk_sta_update_rx_rate_rssi_on_man_frame (sta_entry *sta, const mtlk_phy_info_t
 
 #ifdef MTLK_WAVE_700
 void __MTLK_IFUNC
-wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 main_vap_id);
+wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 main_vap_id, wave_vap_id_t vap_id_fw);
 
 void __MTLK_IFUNC
 wave_cleanup_ml_sta_info (sta_entry *sta);

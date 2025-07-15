@@ -456,9 +456,9 @@ _mtlk_sta_get_peer_capabilities(const sta_entry* sta, mtlk_wssa_drv_peer_capabil
    * IEEE Std 802.11-2012 -- 8.4.2.58.2 HT Capabilities Info field */
   rcu_read_lock();
   mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
-  if (mac80211_sta->ht_cap.ht_supported && memcmp(zero_rx_mask, mac80211_sta->ht_cap.mcs.rx_mask,
+  if (mac80211_sta->deflink.ht_cap.ht_supported && memcmp(zero_rx_mask, mac80211_sta->deflink.ht_cap.mcs.rx_mask,
      sizeof(zero_rx_mask)) != 0){
-        ht_capabilities_info   = MAC_TO_HOST16(mac80211_sta->ht_cap.cap);
+        ht_capabilities_info   = MAC_TO_HOST16(mac80211_sta->deflink.ht_cap.cap);
   }
   rcu_read_unlock();
   capabilities->LDPCSupported         = MTLK_BFIELD_GET(ht_capabilities_info, MTLK_STA_HTCAP_LDPC_SUPPORTED);
@@ -731,6 +731,7 @@ end:
 #endif
 
 #ifdef MTLK_WAVE_700
+#define MAX_NUM_OF_STA_PER_ML 2
 static void _mtlk_sta_ml_info_cleanup(sta_entry *sta)
 {
 #ifdef BEST_EFFORT_TID_SPREADING
@@ -743,6 +744,13 @@ static void _mtlk_sta_ml_info_cleanup(sta_entry *sta)
     }
   }
 #endif /* BEST_EFFORT_TID_SPREADING */
+  if (sta->ml_sta_info.remove_sta_mld) {
+    if (mtlk_osal_atomic_inc(&sta->ml_sta_info.remove_sta_mld->remove_sta_cnt) == (MAX_NUM_OF_STA_PER_ML)) {
+      mtlk_osal_lock_cleanup(&sta->ml_sta_info.remove_sta_mld->lock);
+      mtlk_osal_mem_free(sta->ml_sta_info.remove_sta_mld);
+    }
+  }
+  sta->ml_sta_info.remove_sta_mld = NULL;
   mtlk_osal_event_cleanup(&sta->ml_sta_info.ml_discnt_event);
 }
 #ifdef BEST_EFFORT_TID_SPREADING
@@ -820,7 +828,7 @@ _mtlk_sta_cleanup (sta_entry *sta)
 
 #ifdef MTLK_WAVE_700
 void __MTLK_IFUNC
-wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 main_vap_id)
+wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 main_vap_id, wave_vap_id_t vap_id_fw)
 {
   sta_entry *linked_sta = ml_sta_info->sibling_sta;
 
@@ -834,6 +842,8 @@ wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 
   sta->info.MainVapId = main_vap_id;
   /* update mld sta supporting mode */
   sta->ml_sta_info.ml_supp_mode = ml_sta_info->ml_supp_mode;
+  sta->ml_sta_info.assoc_vap_id_fw = vap_id_fw;
+  sta->ml_sta_info.remove_sta_mld = ml_sta_info->remove_sta_mld;
 #ifdef BEST_EFFORT_TID_SPREADING
   sta->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
 #endif
@@ -844,6 +854,8 @@ wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 
     linked_sta->info.MainVapId = main_vap_id;
     /* update mld sta supporting mode */
     linked_sta->ml_sta_info.ml_supp_mode = ml_sta_info->ml_supp_mode;
+    linked_sta->ml_sta_info.assoc_vap_id_fw = vap_id_fw;
+    linked_sta->ml_sta_info.remove_sta_mld = ml_sta_info->remove_sta_mld;
 #ifdef BEST_EFFORT_TID_SPREADING
     linked_sta->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
 #endif
@@ -855,7 +867,7 @@ wave_cleanup_ml_sta_info (sta_entry *sta)
 {
   sta_entry *linked_sta = sta->ml_sta_info.sibling_sta;
 
-  sta->ml_sta_info.remove_sta_mld = TRUE;
+  sta->ml_sta_info.rem_sta_mld_done = TRUE;
   sta->ml_sta_info.sibling_sta = NULL;
 #ifdef BEST_EFFORT_TID_SPREADING
   if (sta->ml_sta_info.sta_tid_spread_info) {
@@ -865,7 +877,7 @@ wave_cleanup_ml_sta_info (sta_entry *sta)
 #endif
   /* MLSR/EMLSR/STR */
   if (linked_sta) {
-    linked_sta->ml_sta_info.remove_sta_mld = TRUE;
+    linked_sta->ml_sta_info.rem_sta_mld_done = TRUE;
     linked_sta->ml_sta_info.sibling_sta = NULL;
 #ifdef BEST_EFFORT_TID_SPREADING
     linked_sta->ml_sta_info.sta_tid_spread_info = NULL;
@@ -1090,6 +1102,7 @@ _mtlk_sta_init (sta_entry *sta,
   sta->info.stats.rx_data_rate_info   = MTLK_BITRATE_INFO_INVALID;
   sta->info.stats.rx_mgmt_rate_info   = MTLK_BITRATE_INFO_INVALID;
 
+  sta->is_traffic_stopped             = FALSE;
 #ifdef MTLK_PER_RATE_STAT
   if (MTLK_PER_RATE_STAT_MAX_STA_NUM > mtlk_num_of_stations_supports_per_rate_stats)
   {
@@ -1243,6 +1256,8 @@ mtlk_sta_update_phy_info (sta_entry *sta, mtlk_hw_t *hw, stationPhyRxStatusDb_t 
     MTLK_STATIC_ASSERT(WAVE_STAT_MAX_ANTENNAS <= sizeof(sta->info.stats.snr));
 
     mtlk_osal_lock_acquire(&sta->lock);
+    if (sta->is_traffic_stopped == TRUE)
+      goto end;
     /* Calculate RSSI [dBm] per antenna and MAX RSSI by PHY RSSI of STA status */
     sta->info.stats.max_rssi = mtlk_hw_get_rssi_max_by_rx_phy_rssi(hw,
                                 sta_status->rssi, sta->info.stats.data_rssi);
@@ -1268,8 +1283,21 @@ mtlk_sta_update_phy_info (sta_entry *sta, mtlk_hw_t *hw, stationPhyRxStatusDb_t 
         sta_status->noise[i] = noise;
         sta->info.stats.noise[i] = noise;
       }
-      sta->info.stats.gain[i] = sta_status->gain[i]; 
+      sta->info.stats.gain[i] = sta_status->gain[i];
     }
+
+#ifdef MTLK_WAVE_700
+    if (hw_mmb_get_chip_id(hw) == WAVE_WAVE700_B0_CHIP_ID) {
+      /* Process gain and ant_rcpi */
+      for (i = 0; i < MTLK_ARRAY_SIZE(sta_status->gain); i++) {
+        /* In Wav700 phy_rx_status->gain contains RCPI instead of rf_gain */
+        sta->info.stats.gain[i] = 0;
+        sta->info.stats.rcpi[i] = sta_status->gain[i];
+      }
+      /* Calculate average RCPI */
+      mtlk_hw_get_avg_rssi(&sta->info.rcpi_avg, sta->info.stats.rcpi);
+    }
+#endif
 
     /* Process SNR */
     for (i = 0; i < MTLK_ARRAY_SIZE(sta_status->noise); i++) {
@@ -1356,7 +1384,7 @@ mtlk_sta_update_phy_info (sta_entry *sta, mtlk_hw_t *hw, stationPhyRxStatusDb_t 
     wave_peer_analyzer_proc_txrx_rates(&sta->info.sta_analyzer,
                                         sta->info.stats.last_tx_data_rate,
                                         sta->info.stats.last_phy_rate_synched_to_psdu_rate);
-
+end:
     mtlk_osal_lock_release(&sta->lock);
 }
 
@@ -1393,7 +1421,7 @@ wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAs
 {
   uint32 band_width;
   int i;
-  static const char *operating_standard[] = {"802.11a","802.11b","802.11g","802.11n","802.11ac","802.11ax"};
+  static const char *operating_standard[] = {"802.11a","802.11b","802.11g","802.11n","802.11ac","802.11ax","802.11be"};
 
   MTLK_ASSERT(sta != NULL);
   MTLK_ASSERT(dev_diagnostic_stats != NULL);
@@ -1423,6 +1451,7 @@ wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAs
       /* sta_net_modes - bit 3 - 802.11n  */
       /* sta_net_modes - bit 4 - 802.11ac */
       /* sta_net_modes - bit 5 - 802.11ax */
+      /* sta_net_modes - bit 6 - 802.11be */
       wave_strcopy(dev_diagnostic_stats->OperatingStandard, operating_standard[i], sizeof(dev_diagnostic_stats->OperatingStandard));
       break;
     }
@@ -3410,6 +3439,16 @@ mtlk_sta_get_phy_rx_status (const sta_entry* sta, peerPhyRxStatus_t *phy_rx_stat
     phy_rx_status->noise[antenna] = sta->info.stats.noise[antenna];
     phy_rx_status->gain[antenna]  = sta->info.stats.gain[antenna];
   }
+
+#ifdef MTLK_WAVE_700
+  /* We have RCPI in dBm per antenna available in Wav700B0 */
+  if (hw_mmb_get_chip_id(mtlk_vap_get_hw(sta->vap_handle)) == WAVE_WAVE700_B0_CHIP_ID) {
+    phy_rx_status->avg_rcpi = mtlk_sta_get_avg_rcpi(sta);
+    for(antenna=0 ; antenna < WAVE_STAT_MAX_ANTENNAS; antenna++) {
+      phy_rx_status->rcpi[antenna] = sta->info.stats.rcpi[antenna];
+    }
+  }
+#endif
   return;
 }
 

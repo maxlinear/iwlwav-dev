@@ -342,7 +342,7 @@ end:
 }
 
 mtlk_error_t __MTLK_IFUNC
-mtlk_vap_manager_get_free_vap_index (mtlk_vap_manager_t *obj, uint32 *vap_index)
+mtlk_vap_manager_get_free_vap_index (mtlk_vap_manager_t *obj, uint32 *vap_index, mtlk_work_role_e role)
 {
   uint32 i;
   mtlk_error_t res = MTLK_ERR_NO_RESOURCES;
@@ -354,6 +354,12 @@ mtlk_vap_manager_get_free_vap_index (mtlk_vap_manager_t *obj, uint32 *vap_index)
     if (MTLK_ERR_OK != res) {
       return res;
     }
+  }
+
+  if (role == MTLK_ROLE_STA && !obj->guest_vap_array[obj->max_vaps_count - 2] && !obj->secondary_id_vap_array[obj->max_vaps_count - 2]) {
+      *vap_index = obj->max_vaps_count - 2;  //Master vap takes the last vap_id of band.So assign prev vap_id to last vap_id for sta vap.
+      res = MTLK_ERR_OK;
+      return res;
   }
 
   for (i = 0; i < obj->max_vaps_count; i++)
@@ -575,6 +581,8 @@ wave_vap_manager_update_ml_vap_info (mtlk_vap_handle_t vap_handle,
   _info->ml_vap_info.ml_configured = TRUE;
   _sibling_info->ml_vap_info.sibling = vap_handle;
   _sibling_info->ml_vap_info.ml_configured = TRUE;
+  _info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
+  _sibling_info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
 }
 
 void __MTLK_IFUNC
@@ -619,6 +627,26 @@ mtlk_vap_finish_ml_teardown(mtlk_vap_handle_t vap_handle)
   ref_cnt = mtlk_osal_atomic_dec(&_info->ml_vap_info.ml_teardown_initiated);
   if (ref_cnt == 0) {
     mtlk_osal_event_set(&_info->ml_vap_info.ml_teardown_completed);
+  }
+}
+
+void __MTLK_IFUNC
+mtlk_vap_ml_lock_acquire(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+
+  if (_info->ml_vap_info.ml_vap_rem_sync_lock) {
+    mtlk_osal_lock_acquire(_info->ml_vap_info.ml_vap_rem_sync_lock);
+  }
+}
+
+void __MTLK_IFUNC
+mtlk_vap_ml_lock_release(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+
+  if (_info->ml_vap_info.ml_vap_rem_sync_lock) {
+    mtlk_osal_lock_release(_info->ml_vap_info.ml_vap_rem_sync_lock);
   }
 }
 

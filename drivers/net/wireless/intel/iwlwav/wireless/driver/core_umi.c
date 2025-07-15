@@ -556,7 +556,7 @@ wave_core_ap_remove_sta (struct nic *nic, uint16 sid, IEEE_ADDR *sta_addr)
     goto finish;
   }
 
-  ILOG1_DYD("CID-%04x: Station %Y disconnected (SID = %u)",
+  ILOG0_DYD("CID-%04x: Station %Y disconnected (SID = %u)",
             mtlk_vap_get_oid(vap_handle), sta_addr, sid);
 
 #ifdef MTLK_WAVE_700
@@ -655,6 +655,7 @@ mtlk_core_send_vap_remove (struct nic *nic)
   mtlk_txmm_msg_t    man_msg;
   mtlk_txmm_data_t  *man_entry = NULL;
   UMI_REMOVE_VAP    *req;
+  IEEE_ADDR          mac_addr;
   int net_state = mtlk_core_get_net_state(nic);
   uint8 vap_id = mtlk_vap_get_id(nic->vap_handle);
 
@@ -702,14 +703,11 @@ mtlk_core_send_vap_remove (struct nic *nic)
 
   /* update disconnections statistics */
   nic->pstats.num_disconnects++;
-#if (IWLWAV_RTLOG_MAX_DLEVEL >= 1)
-  {
-    IEEE_ADDR mac_addr;
-    MTLK_CORE_PDB_GET_MAC(nic, PARAM_DB_CORE_MAC_ADDR, &mac_addr);
-    ILOG1_DDYD("CID-%04x: VapID %u at %Y disconnected (status %u)", mtlk_vap_get_oid(nic->vap_handle),
+
+  MTLK_CORE_PDB_GET_MAC(nic, PARAM_DB_CORE_MAC_ADDR, &mac_addr);
+  ILOG0_DDYD("CID-%04x: VapID %u at %Y disconnected (status %u)", mtlk_vap_get_oid(nic->vap_handle),
               vap_id, mac_addr.au8Addr, MAC_TO_HOST16(req->u16Status));
-  }
-#endif
+
 FINISH:
   if (man_entry)
     mtlk_txmm_msg_cleanup(&man_msg);
@@ -887,10 +885,6 @@ mtlk_core_get_temperature_req (mtlk_core_t *core, uint32 *temperature, uint32 ca
   mtlk_txmm_data_t    *man_entry = NULL;
   UMI_HDK_USER_DEMAND *pTemperature = NULL;
 
-  mtlk_df_t *df             = mtlk_vap_get_df(core->vap_handle);
-  mtlk_df_user_t *df_user   = mtlk_df_get_user(df);
-  struct wireless_dev *wdev = mtlk_df_user_get_wdev(df_user);
-  BOOL cac_started = wdev->cac_started;
   mtlk_card_type_info_t  card_type_info;
 
   mtlk_hw_get_prop(mtlk_vap_get_hwapi(core->vap_handle), MTLK_HW_PROP_CARD_TYPE_INFO,
@@ -901,10 +895,6 @@ mtlk_core_get_temperature_req (mtlk_core_t *core, uint32 *temperature, uint32 ca
   }
 
   if (!is_channel_certain(__wave_core_chandef_get(core))) {
-    return MTLK_ERR_NOT_READY;
-  }
-
-  if (cac_started) {
     return MTLK_ERR_NOT_READY;
   }
 
@@ -1992,9 +1982,9 @@ mtlk_core_ap_add_sta_req (struct nic *nic, struct ieee80211_sta *mac80211_sta)
   psUmiStaAdd->u8UAPSD_Queues   = mac80211_sta->uapsd_queues;
   psUmiStaAdd->u8Max_SP         = mac80211_sta->max_sp;
   psUmiStaAdd->u16AID           = HOST_TO_MAC16(mac80211_sta->aid);
-  if (mac80211_sta->ht_cap.ht_supported && memcmp(zero_rx_mask, mac80211_sta->ht_cap.mcs.rx_mask,
+  if (mac80211_sta->deflink.ht_cap.ht_supported && memcmp(zero_rx_mask, mac80211_sta->deflink.ht_cap.mcs.rx_mask,
       sizeof(zero_rx_mask)) != 0) {
-    psUmiStaAdd->u16HT_Cap_Info   = MAC_TO_HOST16(mac80211_sta->ht_cap.cap);  /* Do not convert to MAC format */
+    psUmiStaAdd->u16HT_Cap_Info   = MAC_TO_HOST16(mac80211_sta->deflink.ht_cap.cap);  /* Do not convert to MAC format */
   }
 
   ampdu_density = mtlk_core_get_max_tx_ampdu_density(nic, (uint32)MTLK_BFIELD_GET(info->ampdu_param, MTLK_STA_AMPDU_PARAMS_MIN_START_SPACING));
@@ -2004,15 +1994,15 @@ mtlk_core_ap_add_sta_req (struct nic *nic, struct ieee80211_sta *mac80211_sta)
   psUmiStaAdd->u8Rates_Length   = info->supported_rates_len;
   psUmiStaAdd->u8ListenInterval = info->listen_interval;
 
- if(mac80211_sta->vht_cap.vht_supported && memcmp(&zero_vht_info, &mac80211_sta->vht_cap.vht_mcs,
+ if(mac80211_sta->deflink.vht_cap.vht_supported && memcmp(&zero_vht_info, &mac80211_sta->deflink.vht_cap.vht_mcs,
      sizeof(zero_vht_info)) != 0) {
-    psUmiStaAdd->u32VHT_Cap_Info  = MAC_TO_HOST32(mac80211_sta->vht_cap.cap);
+    psUmiStaAdd->u32VHT_Cap_Info  = MAC_TO_HOST32(mac80211_sta->deflink.vht_cap.cap);
   }
 
-  if(mac80211_sta->he_cap.has_he) {
+  if(mac80211_sta->deflink.he_cap.has_he) {
     psUmiStaAdd->u8HE_Mac_Phy_Cap_Info[0] = WLAN_EID_EXT_HE_CAPABILITY;
     wave_memcpy(psUmiStaAdd->u8HE_Mac_Phy_Cap_Info + 1, sizeof(psUmiStaAdd->u8HE_Mac_Phy_Cap_Info) - 1,
-          &mac80211_sta->he_cap.he_cap_elem, sizeof(mac80211_sta->he_cap.he_cap_elem));
+          &mac80211_sta->deflink.he_cap.he_cap_elem, sizeof(mac80211_sta->deflink.he_cap.he_cap_elem));
   }
 
   psUmiStaAdd->rssi = rssi;
@@ -2048,43 +2038,43 @@ mtlk_core_ap_add_sta_req (struct nic *nic, struct ieee80211_sta *mac80211_sta)
   wave_memcpy(psUmiStaAdd->u8Rates, sizeof(psUmiStaAdd->u8Rates),
       info->rates, psUmiStaAdd->u8Rates_Length);
   wave_memcpy(psUmiStaAdd->u8HT_MCS_Set, sizeof(psUmiStaAdd->u8HT_MCS_Set),
-      &mac80211_sta->ht_cap.mcs, sizeof(mac80211_sta->ht_cap.mcs));
+      &mac80211_sta->deflink.ht_cap.mcs, sizeof(mac80211_sta->deflink.ht_cap.mcs));
   wave_memcpy(psUmiStaAdd->u32VHT_Mcs_Nss, sizeof(psUmiStaAdd->u32VHT_Mcs_Nss),
-      &mac80211_sta->vht_cap.vht_mcs, sizeof(mac80211_sta->vht_cap.vht_mcs));
+      &mac80211_sta->deflink.vht_cap.vht_mcs, sizeof(mac80211_sta->deflink.vht_cap.vht_mcs));
   wave_memcpy(psUmiStaAdd->u8HE_Mcs_Nss, sizeof(psUmiStaAdd->u8HE_Mcs_Nss),
-      &mac80211_sta->he_cap.he_mcs_nss_supp,
-      MIN(sizeof(psUmiStaAdd->u8HE_Mcs_Nss), sizeof(mac80211_sta->he_cap.he_mcs_nss_supp))); /* 80P80 not supported by FW */
+      &mac80211_sta->deflink.he_cap.he_mcs_nss_supp,
+      MIN(sizeof(psUmiStaAdd->u8HE_Mcs_Nss), sizeof(mac80211_sta->deflink.he_cap.he_mcs_nss_supp))); /* 80P80 not supported by FW */
 
   wave_memcpy(psUmiStaAdd->u8HE_Ppe_Th, sizeof(psUmiStaAdd->u8HE_Ppe_Th),
-      &mac80211_sta->he_cap.ppe_thres,
-      MIN(sizeof(psUmiStaAdd->u8HE_Ppe_Th), sizeof(mac80211_sta->he_cap.ppe_thres)));  /* 8 NSS not supported by FW */
+      &mac80211_sta->deflink.he_cap.ppe_thres,
+      MIN(sizeof(psUmiStaAdd->u8HE_Ppe_Th), sizeof(mac80211_sta->deflink.he_cap.ppe_thres)));  /* 8 NSS not supported by FW */
 
   band = wave_radio_band_get(radio);
-  if ((mac80211_sta->he_cap.has_he) && (MTLK_HW_BAND_6_GHZ == band)) {
-    ILOG1_DD("STA_ADD for band %d: he_6ghz_cap = %x", band, mac80211_sta->he_6ghz_capa.capa);
-    psUmiStaAdd->u16HE_6ghz_Cap_Info = MAC_TO_HOST16(mac80211_sta->he_6ghz_capa.capa);
+  if ((mac80211_sta->deflink.he_cap.has_he) && (MTLK_HW_BAND_6_GHZ == band)) {
+    ILOG1_DD("STA_ADD for band %d: he_6ghz_cap = %x", band, mac80211_sta->deflink.he_6ghz_capa.capa);
+    psUmiStaAdd->u16HE_6ghz_Cap_Info = MAC_TO_HOST16(mac80211_sta->deflink.he_6ghz_capa.capa);
     MTLK_BFIELD_SET(u8FlagsExt, STA_ADD_FLAGS_EXT_IS_HE_6GHZ, MTLK_BFIELD_GET(info->flags, STA_FLAGS_11ax_6ghz));
     psUmiStaAdd->u8FlagsExt = u8FlagsExt;
   }
 #ifdef MTLK_WAVE_700
   if(wave_radio_is_gen7(radio)) {
-    if (mac80211_sta->eht_cap.has_eht) {
+    if (mac80211_sta->deflink.eht_cap.has_eht) {
       psUmiStaAdd->u8EHT_Mac_Phy_Cap_Info[0] = WLAN_EID_EXT_EHT_CAPABILITY;
       wave_memcpy(psUmiStaAdd->u8EHT_Mac_Phy_Cap_Info + 1, sizeof(psUmiStaAdd->u8EHT_Mac_Phy_Cap_Info) - 1,
-                  &mac80211_sta->eht_cap.eht_cap_elem, sizeof(mac80211_sta->eht_cap.eht_cap_elem));
+                  &mac80211_sta->deflink.eht_cap.eht_cap_elem, sizeof(mac80211_sta->deflink.eht_cap.eht_cap_elem));
       /*Handle MCS/NSS support for 20 MHz-only STA */
-      if (!(mac80211_sta->he_cap.he_cap_elem.phy_cap_info[0] & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_MASK_ALL)) {
-        wave_memcpy(psUmiStaAdd->u8EHT_Mcs_Nss, sizeof(mac80211_sta->eht_cap.eht_mcs_nss_supp.only_20mhz),
-                    &mac80211_sta->eht_cap.eht_mcs_nss_supp,
-                    MIN(sizeof(psUmiStaAdd->u8EHT_Mcs_Nss), sizeof(mac80211_sta->eht_cap.eht_mcs_nss_supp.only_20mhz)));
+      if (!(mac80211_sta->deflink.he_cap.he_cap_elem.phy_cap_info[0] & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_MASK_ALL)) {
+        wave_memcpy(psUmiStaAdd->u8EHT_Mcs_Nss, sizeof(mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.only_20mhz),
+                    &mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp,
+                    MIN(sizeof(psUmiStaAdd->u8EHT_Mcs_Nss), sizeof(mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.only_20mhz)));
       } else {
-        wave_memcpy(&psUmiStaAdd->u8EHT_Mcs_Nss[EHT_MCS_MAP_BW_LE_80MHZ_IDX], sizeof(mac80211_sta->eht_cap.eht_mcs_nss_supp),
-                    &mac80211_sta->eht_cap.eht_mcs_nss_supp,
-                    MIN(sizeof(psUmiStaAdd->u8EHT_Mcs_Nss), sizeof(mac80211_sta->eht_cap.eht_mcs_nss_supp)));
+        wave_memcpy(&psUmiStaAdd->u8EHT_Mcs_Nss[EHT_MCS_MAP_BW_LE_80MHZ_IDX], sizeof(mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp),
+                    &mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp,
+                    MIN(sizeof(psUmiStaAdd->u8EHT_Mcs_Nss), sizeof(mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp)));
       }
       wave_memcpy(psUmiStaAdd->u8EHT_Ppe_Th, sizeof(psUmiStaAdd->u8EHT_Ppe_Th),
-                  &mac80211_sta->eht_cap.eht_ppe_thres,
-                  MIN(sizeof(psUmiStaAdd->u8EHT_Ppe_Th), sizeof(mac80211_sta->eht_cap.eht_ppe_thres)));  /* 8 NSS not supported by FW */
+                  &mac80211_sta->deflink.eht_cap.eht_ppe_thres,
+                  MIN(sizeof(psUmiStaAdd->u8EHT_Ppe_Th), sizeof(mac80211_sta->deflink.eht_cap.eht_ppe_thres)));  /* 8 NSS not supported by FW */
 
       MTLK_BFIELD_SET(u8FlagsExt, STA_ADD_FLAGS_EXT_IS_EHT, MTLK_BFIELD_GET(info->flags, STA_FLAGS_11be));
       psUmiStaAdd->u8FlagsExt = u8FlagsExt;
@@ -2143,7 +2133,7 @@ mtlk_core_ap_add_sta_req (struct nic *nic, struct ieee80211_sta *mac80211_sta)
     mtlk_dump(1, psUmiStaAdd->u8EHT_Mac_Phy_Cap_Info, sizeof(psUmiStaAdd->u8EHT_Mac_Phy_Cap_Info), "dump of UMI_STA_ADD->u8EHT_Mac_Phy_Cap_Info:");
     mtlk_dump(1, psUmiStaAdd->u8EHT_Mcs_Nss, sizeof(psUmiStaAdd->u8EHT_Mcs_Nss), "dump of UMI_STA_ADD->u8EHT_Mcs_Nss:");
     mtlk_dump(1, psUmiStaAdd->u8EHT_Ppe_Th, sizeof(psUmiStaAdd->u8EHT_Ppe_Th), "dump of UMI_STA_ADD->u8EHT_Ppe_Th:");
-    mtlk_dump(1, &mac80211_sta->eht_oper, sizeof(mac80211_sta->eht_oper), "dump of info->eht_oper_params:");
+    mtlk_dump(1, &mac80211_sta->deflink.eht_oper, sizeof(mac80211_sta->deflink.eht_oper), "dump of info->eht_oper_params:");
   }
 #endif
 
@@ -2630,6 +2620,70 @@ wave_core_pie_cfg_send (mtlk_core_t *core, wave_pie_cfg_t *pie_cfg_params)
   res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
   if (MTLK_ERR_OK != res) {
     ELOG_DD("CID-%04x: Sending UM_MAN_PIE_REQ failed (res = %d)", mtlk_vap_get_oid(vap_handle), res);
+  }
+
+  mtlk_txmm_msg_cleanup(&man_msg);
+  return res;
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_get_aqm_sta_en (mtlk_core_t *core, wave_aqm_sta_en_t *wave_aqm_sta_en)
+{
+  mtlk_error_t       res;
+  mtlk_txmm_msg_t    man_msg;
+  mtlk_txmm_data_t  *man_entry = NULL;
+  UMI_AQM_STA_EN    *umi_aqm_en = NULL;
+  mtlk_vap_handle_t  vap_handle = core->vap_handle;
+
+  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(vap_handle), NULL);
+  if (NULL == man_entry) {
+    ELOG_D("CID-%04x: No man entry available", mtlk_vap_get_oid(vap_handle));
+    return MTLK_ERR_NO_RESOURCES;
+  }
+
+  man_entry->id = UM_MAN_AQM_STA_EN_REQ;
+  man_entry->payload_size = sizeof(UMI_AQM_STA_EN);
+
+  umi_aqm_en = (UMI_AQM_STA_EN *)(man_entry->payload);
+  umi_aqm_en->getSetOperation = API_GET_OPERATION;
+
+  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
+  if (MTLK_ERR_OK == res) {
+    wave_memcpy(wave_aqm_sta_en->aqmStaEnBitmap, sizeof(wave_aqm_sta_en->aqmStaEnBitmap), umi_aqm_en->aqmStaEnBitmap, sizeof(umi_aqm_en->aqmStaEnBitmap));
+  } else {
+    ELOG_DD("CID-%04x: Receiving UM_MAN_AQM_STA_EN_REQ failed, res %d", mtlk_vap_get_oid(vap_handle), res);
+  }
+
+  mtlk_txmm_msg_cleanup(&man_msg);
+  return res;
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_set_aqm_sta_en (mtlk_core_t *core, wave_aqm_sta_en_t *wave_aqm_sta_en)
+{
+  mtlk_error_t       res;
+  mtlk_txmm_msg_t    man_msg;
+  mtlk_txmm_data_t  *man_entry = NULL;
+  UMI_AQM_STA_EN    *umi_aqm_en = NULL;
+  mtlk_vap_handle_t  vap_handle = core->vap_handle;
+
+  ILOG1_DD("Sending UM_MAN_AQM_STA_EN_REQ: staId=%d enable=%d\n", wave_aqm_sta_en->staId, wave_aqm_sta_en->enable);
+
+  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(vap_handle), NULL);
+  if (NULL == man_entry) {
+    ELOG_D("CID-%04x: No man entry available", mtlk_vap_get_oid(vap_handle));
+    return MTLK_ERR_NO_RESOURCES;
+  }
+
+  man_entry->id = UM_MAN_AQM_STA_EN_REQ;
+  man_entry->payload_size = sizeof(UMI_AQM_STA_EN);
+  umi_aqm_en = (UMI_AQM_STA_EN *)man_entry->payload;
+  umi_aqm_en->staId = wave_aqm_sta_en->staId;
+  umi_aqm_en->enable = wave_aqm_sta_en->enable;
+
+  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
+  if (MTLK_ERR_OK != res) {
+    ELOG_DD("CID-%04x: Sending UMI_AQM_STA_EN failed (res = %d)", mtlk_vap_get_oid(vap_handle), res);
   }
 
   mtlk_txmm_msg_cleanup(&man_msg);
@@ -3269,9 +3323,6 @@ wave_core_recovery_cfg_change_bss (mtlk_core_t *core)
   return res;
 }
 
-/*----------------------------------------------------------------------------*/
-#ifdef CONFIG_WAVE_DEBUG
-
 mtlk_error_t __MTLK_IFUNC
 mtlk_core_send_fixed_pwr_cfg (mtlk_core_t *core, FIXED_POWER *fixed_pwr_params)
 {
@@ -3306,5 +3357,3 @@ mtlk_core_send_fixed_pwr_cfg (mtlk_core_t *core, FIXED_POWER *fixed_pwr_params)
   mtlk_txmm_msg_cleanup(&man_msg);
   return res;
 }
-
-#endif /* CONFIG_WAVE_DEBUG */

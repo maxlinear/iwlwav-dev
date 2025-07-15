@@ -1792,6 +1792,7 @@ int wave_radio_ap_start(
   struct wiphy *wiphy,
   wave_radio_t *radio,
   struct net_device *ndev,
+  struct ieee80211_vif *vif,
   struct ieee80211_bss_conf *bss_conf,
   struct cfg80211_beacon_data *beacon)
 {
@@ -1823,17 +1824,17 @@ int wave_radio_ap_start(
   /* FIXCFG80211: add all necessary configuration */
   MTLK_CHECK_DF_USER(df_user);
 
-  if (MAX_SSID_LEN < bss_conf->ssid_len)
+  if (MAX_SSID_LEN < vif->cfg.ssid_len)
     goto finish;
 
   df = mtlk_df_user_get_df(df_user);
   nic = mtlk_vap_get_core(mtlk_df_get_vap_handle(df));
   if (!mtlk_vap_is_sta(mtlk_df_get_vap_handle(df))) {
-    MTLK_CORE_PDB_SET_BINARY(nic, PARAM_DB_CORE_ESSID, bss_conf->ssid, bss_conf->ssid_len);
+    MTLK_CORE_PDB_SET_BINARY(nic, PARAM_DB_CORE_ESSID, vif->cfg.ssid, vif->cfg.ssid_len);
     wave_pdb_set_int(mtlk_vap_get_param_db(nic->vap_handle), PARAM_DB_CORE_HIDDEN_SSID, bss_conf->hidden_ssid);
 
     /* Compute short SSID and store it in Param DB for later use */
-    ap_short_ssid = cpu_to_le32(ieee80211_crc32(bss_conf->ssid, bss_conf->ssid_len));
+    ap_short_ssid = cpu_to_le32(ieee80211_crc32(vif->cfg.ssid, vif->cfg.ssid_len));
     wave_pdb_set_int(mtlk_vap_get_param_db(nic->vap_handle), PARAM_DB_CORE_SHORT_SSID, ap_short_ssid);
 
     if(mtlk_hw_type_is_gen6_d2_or_gen7(radio->hw_api->hw)) {
@@ -1856,7 +1857,7 @@ int wave_radio_ap_start(
     goto finish;
   }
 
-  if ((res = _wave_radio_set_ap_beacon_info(radio, ndev, bss_conf)) != 0) {
+  if ((res = _wave_radio_set_ap_beacon_info(radio, ndev, &vif->bss_conf)) != 0) {
     ELOG_SD("%s: failed to set beacon info (res=%i)", ndev->name, res);
     goto finish;
   }
@@ -4480,6 +4481,7 @@ __wave_radio_phy_status_avg_reset (wave_radio_phy_stat_t *radio_phy_stat)
 {
   wave_phy_stat_averager_init(&radio_phy_stat->ch_util_averager);
   wave_phy_stat_averager_init(&radio_phy_stat->ch_load_averager);
+  wave_phy_stat_zwdfs_ant_rssi_averager_init(&radio_phy_stat->zwdfs_ant_rssi_averager);
 }
 
 static __INLINE uint8
@@ -4506,11 +4508,47 @@ __wave_radio_phy_status_avg_proc (wave_radio_phy_stat_t *radio_phy_stat)
 {
   wave_phy_stat_averager_proc(&radio_phy_stat->ch_util_averager, radio_phy_stat->ch_util);
   wave_phy_stat_averager_proc(&radio_phy_stat->ch_load_averager, radio_phy_stat->ch_load);
+  wave_phy_stat_zwdfs_ant_rssi_averager_proc(&radio_phy_stat->zwdfs_ant_rssi_averager, radio_phy_stat->zwdfs_ant_rssi);
 
-  ILOG3_DDDDD("ch_util %u -> %u, ch_load %u -> %u, airtime %u",
+  ILOG3_DDDDDD("ch_util %u -> %u, ch_load %u -> %u, airtime %u, zwdfs_ant_rssi %d",
               radio_phy_stat->ch_util, __wave_radio_phy_stat_get_ch_util_avg(radio_phy_stat),
               radio_phy_stat->ch_load, __wave_radio_phy_stat_get_ch_load_avg(radio_phy_stat),
-              __wave_radio_phy_stat_get_airtime_avg(radio_phy_stat));
+              __wave_radio_phy_stat_get_airtime_avg(radio_phy_stat),
+              radio_phy_stat->zwdfs_ant_rssi);
+}
+
+static int8
+__wave_radio_phy_stat_get_zwdfs_ant_rssi_avg (wave_radio_phy_stat_t *radio_phy_stat)
+{
+  wave_zwdfs_ant_rssi_averager_t *averager = &radio_phy_stat->zwdfs_ant_rssi_averager;
+  int16 max_rssi_sum;
+  int8 max_rssi_1 = MIN_RSSI, max_rssi_2 = MIN_RSSI, max_rssi_3 = MIN_RSSI;
+  uint8 idx;
+
+  for (idx = 0; idx < averager->window_size; idx++)
+  {
+    if (averager->rssi_values[idx] != 0)
+    {
+      if (averager->rssi_values[idx] > max_rssi_1) {
+        max_rssi_3 = max_rssi_2;
+        max_rssi_2 = max_rssi_1;
+        max_rssi_1 = averager->rssi_values[idx];
+      }
+      else if (averager->rssi_values[idx] > max_rssi_2)
+      {
+        max_rssi_3 = max_rssi_2;
+        max_rssi_2 = averager->rssi_values[idx];
+      }
+      else if (averager->rssi_values[idx] > max_rssi_3)
+      {
+        max_rssi_3 = averager->rssi_values[idx];
+      }
+    }
+  }
+
+  max_rssi_sum = max_rssi_1 + max_rssi_2 + max_rssi_3;
+
+  return (max_rssi_sum / averager->num_max_rssi_samples);
 }
 
 /* Update Radio Phy Status by data from devicePhyRxStatus */
@@ -4537,6 +4575,7 @@ wave_radio_phy_status_update (wave_radio_t *radio, wave_radio_phy_stat_t *params
   radio_status->noise   = params->noise;
   radio_status->ch_load = params->ch_load;
   radio_status->ch_util = params->ch_util;
+  radio_status->zwdfs_ant_rssi = params->zwdfs_ant_rssi;
   radio_status->airtime = (uint8)airtime;
   radio_status->airtime_efficiency = efficiency;
   __wave_radio_phy_status_avg_proc(radio_status); /* Averager */
@@ -4642,6 +4681,7 @@ wave_radio_get_hw_stats (wave_radio_t *radio, mtlk_wssa_drv_hw_stats_t *stats)
   stats->ChannelUtil        = radio->phy_status.ch_util;
   stats->Airtime            = radio->phy_status.airtime;
   stats->AirtimeEfficiency  = radio->phy_status.airtime_efficiency;
+  stats->zwdfsAntRssiAvg    = __wave_radio_phy_stat_get_zwdfs_ant_rssi_avg(&radio->phy_status);
   mtlk_osal_lock_release(&radio->phy_status_lock);
 
   /* HW statisticss */
@@ -8457,7 +8497,7 @@ wv_cfg80211_radio_ch_switch_notify (wave_radio_t *radio, struct mtlk_chan_def *c
     if (NET_STATE_CONNECTED != mtlk_core_get_net_state(core))
       continue;
 
-    cfg80211_ch_switch_notify(mtlk_df_user_get_ndev(mtlk_df_get_user(mtlk_vap_get_df(vap_handle))), &chandef);
+    cfg80211_ch_switch_notify(mtlk_df_user_get_ndev(mtlk_df_get_user(mtlk_vap_get_df(vap_handle))), &chandef, 0, 0);
   }
 }
 

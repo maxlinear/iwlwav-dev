@@ -2929,6 +2929,7 @@ _mtlk_hw_parse_statistics (mtlk_hw_t *hw)
       phy_rx_status->db_data->devicePhyRxStatus[i].txPower = ((devicePhyRxStatusDb_t_wave600b*)dev_stats)->txPower;
       phy_rx_status->db_data->devicePhyRxStatus[i].channelNum = ((devicePhyRxStatusDb_t_wave600b*)dev_stats)->channelNum;
       phy_rx_status->db_data->devicePhyRxStatus[i].activeAntMask = ((devicePhyRxStatusDb_t_wave600b*)dev_stats)->activeAntMask;
+      phy_rx_status->db_data->devicePhyRxStatus[i].zwdfsAntRssi = RSSI_INVALID; /*data avaiable only for wave 700*/
       wave_memcpy(&phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise,
                   sizeof(phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise),
                   &((devicePhyRxStatusDb_t_wave600b*)dev_stats)->backgroundNoise,
@@ -2952,6 +2953,7 @@ _mtlk_hw_parse_statistics (mtlk_hw_t *hw)
       phy_rx_status->db_data->devicePhyRxStatus[i].txPower = ((devicePhyRxStatusDb_t_wave600d2 *)dev_stats)->txPower;
       phy_rx_status->db_data->devicePhyRxStatus[i].channelNum = ((devicePhyRxStatusDb_t_wave600d2 *)dev_stats)->channelNum;
       phy_rx_status->db_data->devicePhyRxStatus[i].activeAntMask = ((devicePhyRxStatusDb_t_wave600d2 *)dev_stats)->activeAntMask;
+      phy_rx_status->db_data->devicePhyRxStatus[i].zwdfsAntRssi = RSSI_INVALID; /* data available only for wave 700*/
       wave_memcpy(&phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise,
                   sizeof(phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise),
                   &((devicePhyRxStatusDb_t_wave600d2 *)dev_stats)->backgroundNoise,
@@ -2973,6 +2975,7 @@ _mtlk_hw_parse_statistics (mtlk_hw_t *hw)
       phy_rx_status->db_data->devicePhyRxStatus[i].txPower = ((devicePhyRxStatusDb_t_wave700 *)dev_stats)->txPower;
       phy_rx_status->db_data->devicePhyRxStatus[i].channelNum = ((devicePhyRxStatusDb_t_wave700 *)dev_stats)->channelNum;
       phy_rx_status->db_data->devicePhyRxStatus[i].activeAntMask = ((devicePhyRxStatusDb_t_wave700 *)dev_stats)->activeAntMask;
+      phy_rx_status->db_data->devicePhyRxStatus[i].zwdfsAntRssi = ((devicePhyRxStatusDb_t_wave700 *)dev_stats)->zwdfsAntRssi;
       wave_memcpy(&phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise,
                   sizeof(phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise),
                   &((devicePhyRxStatusDb_t_wave700 *)dev_stats)->backgroundNoise,

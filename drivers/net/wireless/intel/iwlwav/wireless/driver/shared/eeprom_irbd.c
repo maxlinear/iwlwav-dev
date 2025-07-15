@@ -181,6 +181,29 @@ __mtlk_eeprom_gen7_get_offset (uint32 offset, uint8 wlan_index, dutNvMemoryType_
   return offset;
 }
 
+static __INLINE uint32
+__mtlk_eeprom_gen7_get_size (uint8 wlan_index)
+{
+  uint32 size = 0;	
+
+  switch (wlan_index) {
+    case 0:
+      size = MTLK_MAX_EEPROM_2_4G_SIZE;
+      break;
+    case 2:
+	  size = MTLK_MAX_EEPROM_5G_SIZE;
+	  break;
+    case 4:
+	  size = MTLK_MAX_EEPROM_6G_SIZE;
+	  break;
+    default:
+      ILOG0_D(" Received invalid wlan_index from DUT : %d", wlan_index);
+      break;
+  }
+
+  return size;
+}
+
 /**
   Flush routine for direct EEPROM access
 
@@ -222,6 +245,7 @@ static mtlk_error_t
 _mtlk_eeprom_irbd_eeprom_read (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileType_e file_type, uint8 wlan_index, uint32 *size, uint8 *buf, uint32 *full_size)
 {
   uint32 eeprom_size = 0;
+  uint32 max_eeprom_size = MTLK_MAX_EEPROM_2_4G_SIZE;
   mtlk_ccr_t *ccr;
   mtlk_error_t ret = MTLK_ERR_OK;
   BOOL is_gen7 = FALSE;
@@ -231,6 +255,10 @@ _mtlk_eeprom_irbd_eeprom_read (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileTy
   is_gen7 = mtlk_hw_type_is_gen7((mtlk_vap_get_hwapi(obj->vap))->hw);
   storage_type = mtlk_hw_get_cal_storage_type((mtlk_vap_get_hwapi(obj->vap))->hw);
 
+  if (is_gen7) {
+  	max_eeprom_size = __mtlk_eeprom_gen7_get_size(wlan_index);
+  }
+	
   (void)mtlk_hw_get_prop(mtlk_vap_get_hwapi(obj->vap), MTLK_HW_PROP_CCR, &ccr, sizeof(typeof(ccr)));
   if (NULL == ccr)
   {
@@ -247,9 +275,9 @@ _mtlk_eeprom_irbd_eeprom_read (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileTy
     return ret; /* ERROR */
   }
 
-  /* maximum 2K memory for each cal file on w700 */
+  /* maximum 2K memory for 2.4/5G or 3K memory for 6G cal files on w700 */
   if(is_gen7 && (storage_type == DUT_NV_MEMORY_EEPROM))
-    eeprom_size = MTLK_MAX_EEPROM_SIZE;
+    eeprom_size = max_eeprom_size;
 
   *full_size = eeprom_size;
   /* Signature header is of size 392 bytes and can be accommodate for
@@ -259,7 +287,7 @@ _mtlk_eeprom_irbd_eeprom_read (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileTy
   {
     if ((*size) > MTLK_SIGNED_CAL_HEADER_SIZE)
       *size = MTLK_SIGNED_CAL_HEADER_SIZE;
-    offset = MTLK_MAX_EEPROM_SIZE - MTLK_SIGNED_CAL_HEADER_SIZE;
+    offset = max_eeprom_size - MTLK_SIGNED_CAL_HEADER_SIZE;
     /* TODO : need to update offset on w700 in case of DUT_FILE_TYPE_SIGNATURE */
     ILOG0_D("overwrite offset to %d value for read signed cal header from eeprom", offset);
   }
@@ -314,6 +342,7 @@ static mtlk_error_t
 _mtlk_eeprom_irbd_eeprom_write (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileType_e file_type, uint8 wlan_index, uint32 *size, uint8 const *buf, uint32 *full_size)
 {
   uint32 eeprom_size = 0;
+  uint32 max_eeprom_size = MTLK_MAX_EEPROM_2_4G_SIZE;
   mtlk_ccr_t *ccr = NULL;
   mtlk_error_t ret = MTLK_ERR_OK;
   BOOL is_gen7 = FALSE;
@@ -323,6 +352,10 @@ _mtlk_eeprom_irbd_eeprom_write (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileT
 
   is_gen7 = mtlk_hw_type_is_gen7((mtlk_vap_get_hwapi(obj->vap))->hw);
   storage_type = mtlk_hw_get_cal_storage_type((mtlk_vap_get_hwapi(obj->vap))->hw);
+
+  if (is_gen7) {
+  	max_eeprom_size = __mtlk_eeprom_gen7_get_size(wlan_index);
+  }
 
   (void)mtlk_hw_get_prop(mtlk_vap_get_hwapi(obj->vap), MTLK_HW_PROP_CCR, &ccr, sizeof(typeof(ccr)));
   if (NULL == ccr)
@@ -341,7 +374,7 @@ _mtlk_eeprom_irbd_eeprom_write (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileT
   }
 
   if (is_gen7 && (storage_type == DUT_NV_MEMORY_EEPROM))
-    eeprom_size = MTLK_MAX_EEPROM_SIZE; /* DUT mode driver need to read each cal seperetly based on wlan index
+    eeprom_size = max_eeprom_size; /* DUT mode driver need to read each cal seperetly based on wlan index
                                            provided by DUT dll */
 
   *full_size = eeprom_size;
@@ -350,7 +383,7 @@ _mtlk_eeprom_irbd_eeprom_write (mtlk_eeprom_irbd_t *obj, uint32 offset, dutFileT
   {
     if ((*size) > MTLK_SIGNED_CAL_HEADER_SIZE)
       *size = MTLK_SIGNED_CAL_HEADER_SIZE;
-    offset = MTLK_MAX_EEPROM_SIZE - MTLK_SIGNED_CAL_HEADER_SIZE;
+    offset = max_eeprom_size - MTLK_SIGNED_CAL_HEADER_SIZE;
     /* TODO : need to update offset on w700 in case of DUT_FILE_TYPE_SIGNATURE */
     ILOG0_D("overwrite offset to %d value for  write signed cal header to eeprom", offset);
   }
@@ -537,10 +570,13 @@ _mtlk_eeprom_irbd_flash_open (mtlk_eeprom_irbd_t *obj, dutFileType_e file_type, 
   mtlk_error_t ret;
   _nvm_flash_handle_t *handle = &obj->flash_handle[file_type];
   mtlk_df_fw_file_buf_t fb;
-  uint32 max_size;
+  uint32 max_size = MTLK_MAX_EEPROM_2_4G_SIZE;
   mtlk_hw_prop_e prop_id;
   char fname[0x40];
   unsigned oid;
+  BOOL is_gen7 = FALSE;
+
+  is_gen7 = mtlk_hw_type_is_gen7((mtlk_vap_get_hwapi(obj->vap))->hw);
 
   if (NULL != handle->fsave)
   {
@@ -550,7 +586,9 @@ _mtlk_eeprom_irbd_flash_open (mtlk_eeprom_irbd_t *obj, dutFileType_e file_type, 
 
   if (file_type == DUT_FILE_TYPE_CAL)
   {
-    max_size = MTLK_MAX_EEPROM_SIZE;
+  	if (is_gen7) {
+      max_size = __mtlk_eeprom_gen7_get_size(wlan_index);
+  	}
     prop_id = MTLK_HW_EEPROM_NAME;
   }
   else

@@ -929,6 +929,13 @@ static int _wave_cfg80211_vendor_set_PIEcfg (struct wiphy *wiphy, struct wireles
   ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   return set_int_params(wiphy, wdev, data, data_len, PRM_ID_PIE_CFG);
 }
+
+static int _wave_cfg80211_vendor_set_aqm_sta_en (struct wiphy *wiphy, struct wireless_dev *wdev,
+                                             const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_AQM_STA_EN);
+}
 #endif /* WAVE_ENABLE_PIE */
 
 /*! \brief      Set maximum MPDU length
@@ -2824,6 +2831,13 @@ static int _wave_cfg80211_vendor_get_PIEcfg (struct wiphy *wiphy, struct wireles
   ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   return get_int_params(wiphy, wdev, data, data_len, PRM_ID_PIE_CFG, WAVE_PIE_CFG_PARAM_COUNT);
 }
+
+static int _wave_cfg80211_vendor_get_aqm_sta_en (struct wiphy *wiphy, struct wireless_dev *wdev,
+                                             const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_AQM_STA_EN, GEN7_STATION_BITMAP_SIZE_WORDS);
+}
 #endif /* WAVE_ENABLE_PIE */
 
 /*! \brief      Get maximum MPDU length
@@ -3794,8 +3808,36 @@ static int _wave_ieee80211_vendor_get_stations_statistics (struct wiphy *wiphy, 
 static int _wave_ieee80211_vendor_get_20mhz_tx_power (struct wiphy *wiphy, struct wireless_dev *wdev,
                                                       const void *data, int data_len)
 {
-  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
-  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_20MHZ_TX_POWER, 1);
+  int res = MTLK_ERR_OK;
+  mtlk_df_user_t *df_user;
+  mtlk_clpb_t *clpb = NULL;
+  struct mxl_vendor_tx_power *tx_power;
+  uint32 tx_power_size;
+
+  ILOG0_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+
+  df_user = mtlk_df_user_from_wdev(wdev);
+  MTLK_CHECK_DF_USER(df_user);
+
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user), WAVE_RADIO_REQ_GET_20MHZ_TX_POWER,
+                                  &clpb, NULL, 0);
+  res = _mtlk_df_user_process_core_retval(res, clpb, WAVE_RADIO_REQ_GET_20MHZ_TX_POWER, FALSE);
+
+  if (res != MTLK_ERR_OK)
+    goto end;
+
+  tx_power = mtlk_clpb_enum_get_next(clpb, &tx_power_size);
+  MTLK_CLPB_TRY(tx_power, tx_power_size)
+    mtlk_dump(3, tx_power, tx_power_size, "20MHz tx Power:");
+    res = wv_cfg80211_vendor_cmd_alloc_and_reply(wiphy, tx_power, tx_power_size);
+    mtlk_clpb_delete(clpb);
+    return res;
+  MTLK_CLPB_FINALLY(res)
+    mtlk_clpb_delete(clpb);
+  MTLK_CLPB_END
+
+end:
+  return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
 /*! \brief      Request proprietary phy capabilities from driver
@@ -4812,6 +4854,26 @@ static int _wave_ieee80211_vendor_request_ml_sid(struct wiphy *wiphy, struct wir
   ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   ILOG1_Y("mac_addr1 = %Y", ml_sta_mac->addr1);
   ILOG1_Y("mac_addr2 = %Y", ml_sta_mac->addr2);
+  ILOG1_Y("mac_addr3 = %Y", ml_sta_mac->addr3);
+
+  /* Validate MAC address */
+  if ((ml_sta_mac->assoc_link_bitmap & LINK_BIT_2_4G_IS_SET) && (!mtlk_osal_is_valid_ether_addr(ml_sta_mac->addr1))) {
+    ELOG_SY("%s: The ML STA MAC addr1 %Y is invalid", wdev->netdev->name, ml_sta_mac->addr1);
+    res = MTLK_ERR_PARAMS;
+    goto end;
+  }
+
+  if ((ml_sta_mac->assoc_link_bitmap & LINK_BIT_5G_IS_SET) && (!mtlk_osal_is_valid_ether_addr(ml_sta_mac->addr2))) {
+    ELOG_SY("%s: The ML STA MAC addr2 %Y is invalid", wdev->netdev->name, ml_sta_mac->addr2);
+    res = MTLK_ERR_PARAMS;
+    goto end;
+  }
+
+  if ((ml_sta_mac->assoc_link_bitmap & LINK_BIT_6G_IS_SET) && (!mtlk_osal_is_valid_ether_addr(ml_sta_mac->addr3))) {
+    ELOG_SY("%s: The ML STA MAC addr3 %Y is invalid", wdev->netdev->name, ml_sta_mac->addr3);
+    res = MTLK_ERR_PARAMS;
+    goto end;
+  }
 
   df_user = mtlk_df_user_from_wdev(wdev);
   MTLK_CHECK_DF_USER(df_user);
@@ -4880,29 +4942,6 @@ static int _wave_ieee80211_vendor_mld_remove (struct wiphy *wiphy, struct wirele
     WAVE_CORE_REQ_REMOVE_MLD, &clpb, mld_rem, sizeof(struct mxl_mld_remove));
   res = _mtlk_df_user_process_core_retval(res, clpb,
     WAVE_CORE_REQ_REMOVE_MLD, TRUE);
-
-  return _mtlk_df_mtlk_to_linux_error_code(res);
-}
-
-static int _wave_ieee80211_vendor_remove_sta_mld (struct wiphy *wiphy, struct wireless_dev *wdev,
-                                                     const void *data, int data_len)
-{
-  mtlk_df_user_t *df_user;
-  mtlk_clpb_t *clpb = NULL;
-  int res = MTLK_ERR_OK;
-  struct mxl_sta_mld_remove *sta_mld;
-
-  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
-  WAVE_CHECK_VENDOR_DATA_AND_SIZE(data, data_len, sizeof(struct mxl_sta_mld_remove));
-
-  sta_mld = (struct mxl_sta_mld_remove *)data;
-  df_user = mtlk_df_user_from_wdev(wdev);
-  MTLK_CHECK_DF_USER(df_user);
-
-  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),
-    WAVE_CORE_REQ_REMOVE_STA_MLD, &clpb, sta_mld, sizeof(struct mxl_sta_mld_remove));
-  res = _mtlk_df_user_process_core_retval(res, clpb,
-    WAVE_CORE_REQ_REMOVE_STA_MLD, TRUE);
 
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
@@ -5625,9 +5664,6 @@ static int _wave_cfg80211_vendor_reg_update_6ghz_oper_power_mode (struct wiphy *
   return wv_ieee80211_6ghz_update_wiphy_power_mode_and_wiphy_regd(wiphy, wdev, (uint8 *)data);
 }
 
-/************************* DEBUG SET/GET FUNCTIONS *************************/
-#ifdef CONFIG_WAVE_DEBUG
-
 static int _wave_ieee80211_vendor_set_FixedRateThermal (struct wiphy *wiphy, struct wireless_dev *wdev,
                                                         const void *data, int data_len)
 {
@@ -5642,20 +5678,6 @@ static int _wave_ieee80211_vendor_get_FixedRateThermal (struct wiphy *wiphy, str
   return get_int_params(wiphy, wdev, data, data_len, PRM_ID_FIXED_RATE_THERMAL, 3);
 }
 
-static int _wave_ieee80211_vendor_set_CountersSrc(struct wiphy *wiphy, struct wireless_dev *wdev,
-                const void *data, int data_len)
-{
-  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
-  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_SWITCH_COUNTERS_SRC);
-}
-
-static int _wave_ieee80211_vendor_get_CountersSrc(struct wiphy *wiphy, struct wireless_dev *wdev,
-                const void *data, int data_len)
-{
-  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
-  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_SWITCH_COUNTERS_SRC, 1);
-}
-
 static int _wave_ieee80211_vendor_set_FixedPower(struct wiphy *wiphy, struct wireless_dev *wdev,
                 const void *data, int data_len)
 {
@@ -5668,6 +5690,24 @@ int _wave_ieee80211_vendor_get_FixedPower(struct wiphy *wiphy, struct wireless_d
 {
   ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   return get_int_params(wiphy, wdev, data, data_len, PRM_ID_FIXED_POWER, 4);
+}
+
+
+/************************* DEBUG SET/GET FUNCTIONS *************************/
+#ifdef CONFIG_WAVE_DEBUG
+
+static int _wave_ieee80211_vendor_set_CountersSrc(struct wiphy *wiphy, struct wireless_dev *wdev,
+                const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_SWITCH_COUNTERS_SRC);
+}
+
+static int _wave_ieee80211_vendor_get_CountersSrc(struct wiphy *wiphy, struct wireless_dev *wdev,
+                const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_SWITCH_COUNTERS_SRC, 1);
 }
 
 static int _wave_ieee80211_vendor_set_CpuDmaLatency(struct wiphy *wiphy, struct wireless_dev *wdev,
@@ -6683,6 +6723,14 @@ _wave_ieee80211_vendor_get_pcie_auto_gen_enable (struct wiphy *wiphy, struct wir
 
 }
 
+static int 
+_wave_ieee80211_vendor_set_pbac (struct wiphy *wiphy,  struct wireless_dev *wdev,
+                                                const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_PBAC);
+}
+
 #define WIPHY_VENDOR_CMD_NEED_WDEV_NETDEV_UP (WIPHY_VENDOR_CMD_NEED_WDEV |	\
                                               WIPHY_VENDOR_CMD_NEED_NETDEV |	\
                                               WIPHY_VENDOR_CMD_NEED_RUNNING)
@@ -6967,6 +7015,8 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
 #ifdef WAVE_ENABLE_PIE
   VENDOR_CMD_WDEV(SET_PIE_CFG , _wave_cfg80211_vendor_set_PIEcfg),
   VENDOR_CMD_WDEV(GET_PIE_CFG , _wave_cfg80211_vendor_get_PIEcfg),
+  VENDOR_CMD_WDEV(SET_AQM_STA_EN , _wave_cfg80211_vendor_set_aqm_sta_en),
+  VENDOR_CMD_WDEV(GET_AQM_STA_EN , _wave_cfg80211_vendor_get_aqm_sta_en),
 #endif /* WAVE_ENABLE_PIE */
 
   VENDOR_CMD_WDEV(SET_AP_RETRY_LIMIT, _wave_ieee80211_vendor_set_ap_retry_limit),
@@ -6982,7 +7032,9 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
   VENDOR_CMD_WDEV(SET_FAST_DYNAMIC_MC_RATE, _wave_ieee80211_vendor_set_MulticastRate),
   VENDOR_CMD_WDEV(SET_HE_BEACON,             _wave_cfg80211_vendor_set_he_beacon),
   VENDOR_CMD_WDEV(SET_DUPLICATE_BEACON, _wave_ieee80211_vendor_set_duplicate_beacon),
-  
+
+  VENDOR_CMD_WDEV(SET_PBAC, _wave_ieee80211_vendor_set_pbac),
+
   VENDOR_CMD_WDEV(SET_MU_OFDMA_BF, _wave_ieee80211_vendor_set_MuOfdmaBf),
   VENDOR_CMD_WDEV(GET_MU_OFDMA_BF, _wave_ieee80211_vendor_get_MuOfdmaBf),
   VENDOR_CMD_WDEV(SET_CCA_PREAMBLE_PUNCTURE_CFG, _wave_ieee80211_vendor_set_preamble_puncture_cfg),
@@ -7083,8 +7135,6 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
   VENDOR_CMD_WDEV(ML_STA_ADD, _wave_ieee80211_vendor_ml_sta_add),
   /* MLD_REMOVE */
   VENDOR_CMD_WDEV(MLD_REMOVE, _wave_ieee80211_vendor_mld_remove),
-   /* MLD_STA_REMOVE */
-  VENDOR_CMD_WDEV(REMOVE_STA_MLD, _wave_ieee80211_vendor_remove_sta_mld),
   /* MLD BSS critical update info */
   VENDOR_CMD_WDEV(SET_BSS_CRITICAL_UPDATE_INFO, _wave_cfg80211_vendor_set_bss_critical_update_info),
 #ifdef BEST_EFFORT_TID_SPREADING
@@ -7113,17 +7163,17 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
   VENDOR_CMD_WDEV(GET_ML_STA_LIST, _wave_ieee80211_vendor_get_ML_sta_list),
 #endif
 
-  /******************** DEBUG COMMANDS ********************/
-#ifdef CONFIG_WAVE_DEBUG
-
   VENDOR_CMD_WDEV(SET_FIXED_RATE_THERMAL, _wave_ieee80211_vendor_set_FixedRateThermal),
   VENDOR_CMD_WDEV(GET_FIXED_RATE_THERMAL, _wave_ieee80211_vendor_get_FixedRateThermal),
 
-  VENDOR_CMD_WDEV(SET_COUNTERS_SRC, _wave_ieee80211_vendor_set_CountersSrc),
-  VENDOR_CMD_WDEV(GET_COUNTERS_SRC, _wave_ieee80211_vendor_get_CountersSrc),
-
   VENDOR_CMD_WDEV(SET_FIXED_POWER, _wave_ieee80211_vendor_set_FixedPower),
   VENDOR_CMD_WDEV(GET_FIXED_POWER, _wave_ieee80211_vendor_get_FixedPower),
+
+  /******************** DEBUG COMMANDS ********************/
+#ifdef CONFIG_WAVE_DEBUG
+
+  VENDOR_CMD_WDEV(SET_COUNTERS_SRC, _wave_ieee80211_vendor_set_CountersSrc),
+  VENDOR_CMD_WDEV(GET_COUNTERS_SRC, _wave_ieee80211_vendor_get_CountersSrc),
 
   VENDOR_CMD_WDEV(SET_CPU_DMA_LATENCY, _wave_ieee80211_vendor_set_CpuDmaLatency),
   VENDOR_CMD_WDEV(GET_CPU_DMA_LATENCY, _wave_ieee80211_vendor_get_CpuDmaLatency),
@@ -7239,6 +7289,7 @@ nl80211_vendor_cmd_info _wave_mac80211_vendor_events[] = {
   VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_CSI_STATS),
   VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_DYNAMIC_WMM_UPDATE),
   VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_REGDB_INFO_UPDATE),
+  VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_RX_MEASURE),
 };
 
 void _wave_mac80211_register_vendor_evts(struct wiphy *wiphy)

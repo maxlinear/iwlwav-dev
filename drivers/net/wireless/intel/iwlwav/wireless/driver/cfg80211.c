@@ -614,7 +614,7 @@ void wv_cfg80211_ch_switch_notify(struct net_device *ndev, const struct mtlk_cha
     cfg80211_set_dfs_state(wdev->wiphy, &chandef, NL80211_DFS_AVAILABLE);
   }
 
-  cfg80211_ch_switch_notify(ndev, &chandef);
+  cfg80211_ch_switch_notify(ndev, &chandef, 0, 0);
 }
 
 #ifdef CONFIG_WAVE_DEBUG
@@ -665,6 +665,14 @@ int wv_cfg80211_get_allow_scan_during_cac(struct wireless_dev *wdev)
   MTLK_ASSERT(wdev->wiphy);
 
   return wdev->wiphy->allow_scan_during_cac;
+}
+
+bool wv_cfg80211_get_pbac_capable(struct wireless_dev *wdev)
+{
+  MTLK_ASSERT(wdev);
+  MTLK_ASSERT(wdev->wiphy);
+
+  return wiphy_ext_feature_isset(wdev->wiphy, NL80211_EXT_FEATURE_MFP_PBAC);
 }
 
 void __MTLK_IFUNC

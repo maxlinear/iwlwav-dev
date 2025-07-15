@@ -57,6 +57,8 @@
 #define EHT_MCS_MAP_SIZE_20MHZ_ONLY_STA 4
 #define EHT_MCS_MAP_SIZE_ANY_BW_STA     3
 
+#define HE_PHY_CAP9_NOMINAL_PKT_PADDING_16US 0x80
+
 struct _wv_mac80211_t
 {
   BOOL registered;
@@ -691,7 +693,7 @@ static struct ieee80211_supported_band _supported_band_6ghz = {
 
 #define HE_PHY_CAP9_D2    (IEEE80211_HE_PHY_CAP9_LONGER_THAN_16_SIGB_OFDM_SYM | \
                            IEEE80211_HE_PHY_CAP9_RX_1024_QAM_LESS_THAN_242_TONE_RU | \
-                           IEEE80211_HE_PHY_CAP9_NOMIMAL_PKT_PADDING_16US)
+                           HE_PHY_CAP9_NOMINAL_PKT_PADDING_16US)
 
 #define HE_PHY_CAP8_2GHZ_D2      (IEEE80211_HE_PHY_CAP8_HE_ER_SU_PPDU_4XLTF_AND_08_US_GI | \
                                   IEEE80211_HE_PHY_CAP8_DCM_MAX_RU_484)
@@ -2371,7 +2373,7 @@ _wv_all_vifs_have_completed_csa (wv_mac80211_t *mac80211)
     if (!wv_iface_inf || !wv_iface_inf->is_initialized)
       continue;
 
-    if (!wv_iface_inf->vif->chanctx_conf)
+    if (!wv_iface_inf->vif->bss_conf.chanctx_conf)
       continue;
 
     active_vif_count++;
@@ -2452,10 +2454,10 @@ _wv_all_vifs_csa_finish (wv_mac80211_t *mac80211)
     if (!wv_iface_inf->is_initialized)
       continue;
 
-    if (!wv_iface_inf->vif->chanctx_conf)
+    if (!wv_iface_inf->vif->bss_conf.chanctx_conf)
       continue;
 
-    if (!mac80211->vif_array[i]->csa_active) {
+    if (!mac80211->vif_array[i]->bss_conf.csa_active) {
       WLOG_S("%s: CSA not active!", ieee80211_vif_to_name(mac80211->vif_array[i]));
       wv_iface_inf->csa_status = WV_CSA_NOT_DONE;
       continue;
@@ -2499,7 +2501,7 @@ _wv_all_vifs_color_change_finish (wv_mac80211_t *mac80211)
     if (!wv_iface_inf->is_initialized)
       continue;
 
-    if (!mac80211->vif_array[i]->color_change_active) {
+    if (!mac80211->vif_array[i]->bss_conf.color_change_active) {
       WLOG_S("%s: CCA not active!", ieee80211_vif_to_name(mac80211->vif_array[i]));
       continue;
     }
@@ -3945,7 +3947,7 @@ static int wv_negotiate_sta_he_cap(mtlk_df_user_t *df_user,
   MTLK_ASSERT(NULL != core);
 
   rcu_read_lock();
-  chan = rcu_dereference(vif->chanctx_conf)->def.chan;
+  chan = rcu_dereference(vif->bss_conf.chanctx_conf)->def.chan;
   MTLK_ASSERT(NULL != chan);
   rcu_read_unlock();
 
@@ -4259,7 +4261,7 @@ static int wv_negotiate_sta_eht_cap(mtlk_df_user_t *df_user,
   MTLK_ASSERT(NULL != core);
 
   rcu_read_lock();
-  chan = rcu_dereference(vif->chanctx_conf)->def.chan;
+  chan = rcu_dereference(vif->bss_conf.chanctx_conf)->def.chan;
   MTLK_ASSERT(NULL != chan);
   rcu_read_unlock();
 
@@ -4331,6 +4333,7 @@ static mtlk_error_t _wv_request_sta_connect_ap(mtlk_df_user_t *df_user,
   uint32 mbssid_aid_offset_idx;
   mtlk_vap_handle_t vap_handle = mtlk_df_get_vap_handle(mtlk_df_user_get_df(df_user));
   multi_ap_mode_t multi_ap_mode = wave_pdb_get_int(mtlk_vap_get_param_db(vap_handle), PARAM_DB_CORE_MULTI_AP_MODE);
+  uint32 pbac_enabled = wave_pdb_get_int(mtlk_vap_get_param_db(vap_handle), PARAM_DB_CORE_PBAC);
   mtlk_error_t res = MTLK_ERR_OK;
 
   ILOG2_SY("%s: request to connect sta:%Y", ieee80211_vif_to_name(vif), sta->addr);
@@ -4341,7 +4344,7 @@ static mtlk_error_t _wv_request_sta_connect_ap(mtlk_df_user_t *df_user,
   sta_info_p = &sta_p->info;
 
   for (band = 0; band < NUM_SUPPORTED_BANDS; band++) {
-    unsigned long basic_rates = sta->supp_rates[band];
+    unsigned long basic_rates = sta->deflink.supp_rates[band];
     for_each_set_bit(i, &basic_rates, BITS_PER_LONG) {
       int bitrate = hw->wiphy->bands[band]->bitrates[i].bitrate / 5;
       sta_info_p->rates[sta_info_p->supported_rates_len++] = bitrate;
@@ -4433,6 +4436,12 @@ static mtlk_error_t _wv_request_sta_connect_ap(mtlk_df_user_t *df_user,
       sta_info_p->opmode_notif = *elems.opmode_notif;
       MTLK_BFIELD_SET(sta_info_p->flags, STA_FLAGS_OPMODE_NOTIF, 1);
     }
+    if (pbac_enabled) {
+      if (elems.rsne_capab) {
+        uint16 rsne_capab = *elems.rsne_capab;
+        MTLK_BFIELD_SET(sta_info_p->flags, STA_FLAGS_PBAC, (rsne_capab & RSNE_CAPAB_PBAC) ? 1 : 0);
+      }
+    }
   }
 
   mbssid_aid_offset_idx = wave_pdb_get_int(mtlk_vap_get_param_db(vap_handle), PARAM_DB_CORE_MBSSID_VAP);
@@ -4468,27 +4477,27 @@ static mtlk_error_t _wv_request_sta_connect_ap(mtlk_df_user_t *df_user,
   MTLK_BFIELD_SET(sta_info_p->flags, STA_FLAGS_MFP, sta->mfp ? 1 : 0);
   MTLK_BFIELD_SET(sta_info_p->flags, STA_FLAGS_WMM, sta->wme ? 1 : 0);
 
-  if (sta->ht_cap.ht_supported) {
-    if(memcmp(zero_rx_mask, sta->ht_cap.mcs.rx_mask,
+  if (sta->deflink.ht_cap.ht_supported) {
+    if(memcmp(zero_rx_mask, sta->deflink.ht_cap.mcs.rx_mask,
         sizeof(zero_rx_mask)) != 0) {
       sta_info_p->ampdu_param =
-          sta->ht_cap.ampdu_density << 2 | sta->ht_cap.ampdu_factor;
-      sta_info_p->tx_bf_cap_info = sta->ht_cap.tx_BF_cap_info;
+          sta->deflink.ht_cap.ampdu_density << 2 | sta->deflink.ht_cap.ampdu_factor;
+      sta_info_p->tx_bf_cap_info = sta->deflink.ht_cap.tx_BF_cap_info;
       MTLK_BFIELD_SET(sta_info_p->flags, STA_FLAGS_11n, 1);
       MTLK_BIT_SET(sta_info_p->sta_net_modes, MTLK_WSSA_11N_SUPPORTED, 1);
     }
   }
 
-  if (sta->vht_cap.vht_supported) {
-    if(memcmp(&zero_vht_info, &sta->vht_cap.vht_mcs,
+  if (sta->deflink.vht_cap.vht_supported) {
+    if(memcmp(&zero_vht_info, &sta->deflink.vht_cap.vht_mcs,
         sizeof(zero_vht_info)) != 0) {
       MTLK_BFIELD_SET(sta_info_p->flags, STA_FLAGS_11ac, 1);
       MTLK_BIT_SET(sta_info_p->sta_net_modes, MTLK_WSSA_11AC_SUPPORTED, 1);
     }
   }
 
-  if (sta->he_cap.has_he) {
-    if (wv_negotiate_sta_he_cap(df_user, hw, vif, &sta->he_cap)) {
+  if (sta->deflink.he_cap.has_he) {
+    if (wv_negotiate_sta_he_cap(df_user, hw, vif, &sta->deflink.he_cap)) {
         res = MTLK_ERR_PARAMS;
         goto out;
     }
@@ -4497,13 +4506,12 @@ static mtlk_error_t _wv_request_sta_connect_ap(mtlk_df_user_t *df_user,
     MTLK_BIT_SET(sta_info_p->sta_net_modes, MTLK_WSSA_11AX_SUPPORTED, 1);
    /* Set the flag corresponding to HE 6GHZ Band Capabilities.    *
     * Any negotiation with HW capabilities is done in the Hostapd */
-    if (!sta->vht_cap.vht_supported)
+    if (!sta->deflink.vht_cap.vht_supported)
       MTLK_BFIELD_SET(sta_info_p->flags, STA_FLAGS_11ax_6ghz, 1);
   }
-
 #ifdef MTLK_WAVE_700
-  if (sta->eht_cap.has_eht) {
-    if (wv_negotiate_sta_eht_cap(df_user, hw, vif, &sta->he_cap, &sta->eht_cap)) {
+  if (sta->deflink.eht_cap.has_eht) {
+    if (wv_negotiate_sta_eht_cap(df_user, hw, vif, &sta->deflink.he_cap, &sta->deflink.eht_cap)) {
         res = MTLK_ERR_PARAMS;
         goto out;
     }
@@ -5125,7 +5133,7 @@ static int _wv_ieee80211_op_set_frag_threshold (struct ieee80211_hw *hw, u32 val
 }
 
 static int _wv_ieee80211_op_conf_tx (struct ieee80211_hw *hw,
-    struct ieee80211_vif *vif, u16 ac,
+    struct ieee80211_vif *vif, unsigned int link_id, u16 ac,
     const struct ieee80211_tx_queue_params *params)
 {
   struct wv_vif_priv *wv_iface_inf = (struct wv_vif_priv *)vif->drv_priv;
@@ -5337,7 +5345,7 @@ _wv_ieee80211_unsolicited_config_set (struct ieee80211_hw *hw,
 
 #ifdef MTLK_WAVE_700
 static BOOL
-_wv_get_pdb_skip_set_beacon(mtlk_core_t *core, mtlk_df_user_t *df_user)
+_wv_get_pdb_skip_set_beacon(mtlk_core_t *core, mtlk_df_user_t *df_user, u64 changed)
 {
   uint8 skip_set_beacon = 0;
   mtlk_vap_handle_t vap_handle;
@@ -5348,8 +5356,10 @@ _wv_get_pdb_skip_set_beacon(mtlk_core_t *core, mtlk_df_user_t *df_user)
   }
   skip_set_beacon = MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_SKIP_SET_BEACON);
   if (skip_set_beacon) {
-    skip_set_beacon = 0;
-    MTLK_CORE_PDB_SET_INT(core, PARAM_DB_CORE_SKIP_SET_BEACON, skip_set_beacon);
+    if (changed != BSS_CHANGED_BANDWIDTH) {
+      skip_set_beacon = 0;
+      MTLK_CORE_PDB_SET_INT(core, PARAM_DB_CORE_SKIP_SET_BEACON, skip_set_beacon);
+    }
     return TRUE;
   }
 
@@ -5394,10 +5404,10 @@ static void _wv_ieee80211_op_bss_info_changed (struct ieee80211_hw *hw,
    * channel and CSA IE. mac80211 will update beacon again once CSA
    * is done
    */
-  if ((vif->csa_active || vif->color_change_active) && ((changed & BSS_CHANGED_BEACON) ||
+  if ((vif->bss_conf.csa_active || vif->bss_conf.color_change_active) && ((changed & BSS_CHANGED_BEACON) ||
       (changed & BSS_CHANGED_AP_PROBE_RESP))) {
     RLOG_SS("%s: %s in progress. FW manages in beacon.",
-            ieee80211_vif_to_name(vif), (vif->csa_active) ? "CSA" : "CCA");
+            ieee80211_vif_to_name(vif), (vif->bss_conf.csa_active) ? "CSA" : "CCA");
     changed &= ~BSS_CHANGED_BEACON;
     changed &= ~BSS_CHANGED_AP_PROBE_RESP;
     if (!changed)
@@ -5418,7 +5428,7 @@ static void _wv_ieee80211_op_bss_info_changed (struct ieee80211_hw *hw,
 
 #ifdef MTLK_WAVE_700
   if (wave_radio_is_gen7(radio)) {
-    if (_wv_get_pdb_skip_set_beacon(core, df_user)) {
+    if (_wv_get_pdb_skip_set_beacon(core, df_user, changed)) {
       ILOG0_S("%s: Ignore beacon template changes as SKIP SET BEACON flag is set", ieee80211_vif_to_name(vif));
       return;
     }
@@ -5459,10 +5469,10 @@ static void _wv_ieee80211_op_bss_info_changed (struct ieee80211_hw *hw,
     bss_change_params.info = info;
     bss_change_params.changed = changed;
     bss_change_params.vap_index = wv_iface_inf->vap_index;
-    bss_change_params.color_change_color = vif->color_change_color;
-    bss_change_params.color_switchtime = vif->color_switch_time;
-    bss_change_params.color_change_cntdown = vif->color_change_cntdown;
-    bss_change_params.color_change_active = vif->color_change_active;
+    bss_change_params.color_change_color = vif->bss_conf.color_change_color;
+    bss_change_params.color_switchtime = vif->bss_conf.color_switch_time;
+    bss_change_params.color_change_cntdown = vif->bss_conf.color_change_cntdown;
+    bss_change_params.color_change_active = vif->bss_conf.color_change_active;
     bss_change_params.he_oper_color_offset_beacon = vif->he_oper_color_offset_beacon;
 
     /* Keep trying in case scan is in progress for the current radio */
@@ -5924,9 +5934,9 @@ _wv_mac80211_update_he_eht_capa (mtlk_handle_t hw_handle,
 
 BOOL __MTLK_IFUNC wave_wv_mac80211_sta_is_high_speed_supported (struct ieee80211_sta *mac80211_sta)
 {
-   return ((mac80211_sta->eht_cap.eht_cap_elem.mac_cap_info[0] &  IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) &&
-           ((mac80211_sta->eht_cap.eht_mcs_nss_supp.bw._320.rx_tx_mcs13_max_nss == EHT_NSS_MAX_RX_TX_320_MHZ_MCS_12_13) ||
-            (mac80211_sta->eht_cap.eht_mcs_nss_supp.bw._320.rx_tx_mcs11_max_nss == EHT_NSS_MAX_RX_TX_320_MHZ_MCS_10_11)));
+   return ((mac80211_sta->deflink.eht_cap.eht_cap_elem.mac_cap_info[0] &  IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) &&
+           ((mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.bw._320.rx_tx_mcs13_max_nss == EHT_NSS_MAX_RX_TX_320_MHZ_MCS_12_13) ||
+            (mac80211_sta->deflink.eht_cap.eht_mcs_nss_supp.bw._320.rx_tx_mcs11_max_nss == EHT_NSS_MAX_RX_TX_320_MHZ_MCS_10_11)));
 }
 
 #endif
@@ -6258,6 +6268,9 @@ wv_ieee80211_setup_register (struct device *dev, wave_radio_t *radio, wv_mac8021
   if (wave_radio_get_is_zwdfs_radio(radio)) {
     hw->wiphy->flags |= WIPHY_FLAG_USE_OFFCHANNEL_CAC;
     ILOG0_D("off channel CAC is used on radio %d", wave_radio_id_get(radio));
+  } else {
+    wiphy_ext_feature_set(hw->wiphy, NL80211_EXT_FEATURE_MFP_PBAC);
+    ILOG0_D("PBAC is supported on radio %d", wave_radio_id_get(radio));
   }
 
   if (wave_radio_get_is_zwdfs_background_supp(radio)) {
@@ -6415,7 +6428,9 @@ _wv_ieee80211_hw_rx_status (struct ieee80211_hw *mac80211_hw, struct ieee80211_r
   rx_status->rate_idx = rate_idx;
   rx_status->nss = nss;
   rx_status->snr_db = snr_db;
+/* rx_status is 48 bytes and there is no room to store noise parameter
   rx_status->noise = noise_dbm;
+*/
 
   switch (ccd->width) {
   case CW_20:
@@ -6541,14 +6556,14 @@ static void _wv_ieee80211_op_sta_rc_update (struct ieee80211_hw *hw,
   }
 
   if (changed & IEEE80211_RC_BW_CHANGED)
-    ILOG0_D("IEEE80211_RC_BW_CHANGED, new BW = %d", sta->bandwidth);
+    ILOG0_D("IEEE80211_RC_BW_CHANGED, new BW = %d", sta->deflink.bandwidth);
 
   if (changed & IEEE80211_RC_NSS_CHANGED)
-    ILOG0_D("IEEE80211_RC_NSS_CHANGED, new RX NSS value = %d", sta->rx_nss);
+    ILOG0_D("IEEE80211_RC_NSS_CHANGED, new RX NSS value = %d", sta->deflink.rx_nss);
 
   operating_mode.station_id = wv_iface_inf->vif_sid;
-  operating_mode.channel_width = sta->bandwidth;
-  operating_mode.rx_nss = sta->rx_nss;
+  operating_mode.channel_width = sta->deflink.bandwidth;
+  operating_mode.rx_nss = sta->deflink.rx_nss;
 
   _mtlk_df_user_invoke_core_async(mtlk_df_user_get_df(df_user),
         WAVE_CORE_REQ_SET_OPERATING_MODE, (char*) &operating_mode,
@@ -6657,7 +6672,7 @@ _wv_ieee80211_op_sta_statistics (struct ieee80211_hw *hw, struct ieee80211_vif *
   MTLK_ASSERT(sta != NULL);
   MTLK_ASSERT(sinfo != NULL);
 
-  if ((vif->type == NL80211_IFTYPE_STATION) && !vif->bss_conf.assoc) {
+  if ((vif->type == NL80211_IFTYPE_STATION) && !vif->cfg.assoc) {
     ILOG2_Y("STA Mode: Not connected any AP: %Y", sta->addr);
     return;
   }
@@ -6892,7 +6907,7 @@ _wv_ieee80211_get_beacon_cfg_data (struct ieee80211_hw *hw,
 
   memset(wv_beacon_cfg, 0, sizeof(*wv_beacon_cfg));
 
-  wv_beacon_cfg->beacon_tmpl = ieee80211_beacon_get_template(hw, vif, &offs);
+  wv_beacon_cfg->beacon_tmpl = ieee80211_beacon_get_template(hw, vif, &offs,0);
   if (!wv_beacon_cfg->beacon_tmpl) {
     res = MTLK_ERR_PARAMS;
     goto out;
@@ -6913,7 +6928,8 @@ out:
 }
 
 static int _wv_ieee80211_op_start_ap (struct ieee80211_hw *hw,
-                                      struct ieee80211_vif *vif)
+                                      struct ieee80211_vif *vif,
+                                      struct ieee80211_bss_conf *bss_conf)
 {
   struct wireless_dev *wdev = ieee80211_vif_to_wdev(vif);
   wave_radio_t *radio = wv_ieee80211_hw_radio_get(hw);
@@ -6959,7 +6975,7 @@ static int _wv_ieee80211_op_start_ap (struct ieee80211_hw *hw,
     goto out;
   }
 
-  res = wave_radio_ap_start(hw->wiphy, radio, wdev->netdev, &vif->bss_conf, &wv_beacon_cfg.beacon_data);
+  res = wave_radio_ap_start(hw->wiphy, radio, wdev->netdev, vif, bss_conf, &wv_beacon_cfg.beacon_data);
   if (res != MTLK_ERR_OK) {
     ELOG_SD("%s: failed to start ap. res =%d", ieee80211_vif_to_name(vif), res);
     goto out;
@@ -7021,7 +7037,8 @@ static int wave_core_trigger_whm(wave_radio_t *radio, whm_warning_id warning_id)
 }
 
 static void _wv_ieee80211_op_stop_ap (struct ieee80211_hw *hw,
-    struct ieee80211_vif *vif)
+    struct ieee80211_vif *vif,
+    struct ieee80211_bss_conf *bss_conf)
 {
   struct wireless_dev *wdev = ieee80211_vif_to_wdev(vif);
   wave_radio_t *radio = wv_ieee80211_hw_radio_get(hw);
@@ -7546,6 +7563,10 @@ static int _wv_ieee80211_set_mac_acl (struct ieee80211_hw *hw,
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
+static void _wv_ieee80211_wake_tx_queue(struct ieee80211_hw *hw, struct ieee80211_txq *txq) {
+	ieee80211_handle_wake_tx_queue(hw,txq);
+}
+
 const struct ieee80211_ops wv_ieee80211_ops = {
   .start_ap                 = _wv_ieee80211_op_start_ap,
   .stop_ap                  = _wv_ieee80211_op_stop_ap,
@@ -7599,6 +7620,7 @@ const struct ieee80211_ops wv_ieee80211_ops = {
   .get_sta_by_mld_addr      = _wv_ieee80211_get_sta_by_mld_addr,
   .set_mac_acl              = _wv_ieee80211_set_mac_acl,
   .set_radar_background     = _wv_ieee80211_start_background_radar_detection,
+  .wake_tx_queue            = _wv_ieee80211_wake_tx_queue,
 };
 
 /* Not all VIFs did CSA in time, report which did, this
@@ -7652,8 +7674,7 @@ _wv_cca_timeout (mtlk_osal_timer_t *timer, mtlk_handle_t data)
     wv_iface_inf = (struct wv_vif_priv*)mac80211->vif_array[i]->drv_priv;
     if (!wv_iface_inf->is_initialized)
       continue;
-
-    if (mac80211->vif_array[i]->color_change_active) {
+    if (mac80211->vif_array[i]->bss_conf.color_change_active) {
       ELOG_S("%s: CCA active even after timeout!", ieee80211_vif_to_name(mac80211->vif_array[i]));
       mtlk_hw_set_prop(mtlk_vap_get_hwapi(master_vap_handle), MTLK_HW_RESET, NULL, 0);
       break;

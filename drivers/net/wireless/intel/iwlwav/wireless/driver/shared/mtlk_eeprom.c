@@ -226,6 +226,30 @@ mtlk_get_cal_offset (mtlk_eeprom_type_e ee_type, uint8 fw_num, BOOL is_gen7, uin
   return FALSE;
 }
 
+uint32 __MTLK_IFUNC
+mtlk_get_cal_size (uint8 fw_num)
+{
+  uint32 size = 0;	
+
+  switch (fw_num) {
+    case WAVE_FW_NUM_SECB_CAL_FILE:
+      size = MTLK_MAX_EEPROM_2_4G_SIZE;
+      break;
+    case WAVE_FW_NUM_SECB_CAL_FILE_2:
+	  size = MTLK_MAX_EEPROM_5G_SIZE;
+	  break;
+    case WAVE_FW_NUM_SECB_CAL_FILE_4:
+	  size = MTLK_MAX_EEPROM_6G_SIZE;
+	  break;
+    default:
+      ILOG0_D(" Received invalid fw_num : %d", fw_num);
+      break;
+  }
+
+  return size;
+}
+
+
 static mtlk_txmm_clb_action_e __MTLK_IFUNC
 mtlk_reload_tpc_cfm_clb(mtlk_handle_t clb_usr_data, mtlk_txmm_data_t* data, mtlk_txmm_clb_reason_e reason)
 {
@@ -731,13 +755,12 @@ _eeprom_read_from_gpio(mtlk_hw_api_t *hw_api, void* buffer, uint32 buffer_size, 
   else
   {
     *bytes_read = buffer_size;
+	
     if (is_gen7 && (storage == DUT_NV_MEMORY_EEPROM)) {
-      *bytes_read = MTLK_MAX_EEPROM_SIZE;
       eeprom_sig = *(uint16*)(buffer + MTLK_WAV700_EEPROM_2_4G_OFFSET);
     } else {
       eeprom_sig = *(uint16*)(buffer);
     }
-
     if (eeprom_sig != HOST_TO_MAC16(MTLK_EEPROM_EXEC_SIGNATURE))
     {
       ELOG_V("Invalid data received from EEPROM");
@@ -906,7 +929,7 @@ _eeprom_read_raw_data (mtlk_hw_api_t *hw_api, void **buffer, uint32 *bytes_read,
   int res = 0;
   uint32 eeprom_size = 0;
   BOOL is_gen7 = FALSE;
-  uint32 max_eeprom_size = MTLK_MAX_EEPROM_SIZE;
+  uint32 max_eeprom_size = MTLK_MAX_EEPROM_2_4G_SIZE;
 
   MTLK_ASSERT(NULL != hw_api);
   MTLK_ASSERT(NULL != buffer);
@@ -930,12 +953,12 @@ _eeprom_read_raw_data (mtlk_hw_api_t *hw_api, void **buffer, uint32 *bytes_read,
   /* Read EEPROM */
   switch (ee_type) {
   case EEPROM_TYPE_FILE:
-    res = _eeprom_read_from_file(hw_api, *buffer, MTLK_MAX_EEPROM_SIZE, bytes_read);
+    res = _eeprom_read_from_file(hw_api, *buffer, max_eeprom_size, bytes_read);
     break;
 #if defined(CPTCFG_IWLWAV_EEPROM_SUPPORT)
   case EEPROM_TYPE_GPIO:
-  /* In 2k eeprom, last 392 bytes is to store signature header bin */
-    eeprom_size = max_eeprom_size - MTLK_SIGNED_CAL_HEADER_SIZE;
+  /* In 2k/8k eeprom, last 392 bytes is to store signature header bin */ 
+    eeprom_size = max_eeprom_size - MTLK_SIGNED_CAL_HEADER_SIZE; 
     res = _eeprom_read_from_gpio(hw_api, *buffer, eeprom_size, bytes_read, is_gen7, 1);
     break;
 #endif /* defined(CPTCFG_IWLWAV_EEPROM_SUPPORT) */
@@ -1034,6 +1057,14 @@ mtlk_get_eeprom_raw_data (mtlk_eeprom_data_t *eeprom_data, const uint8 **raw_dat
   *raw_data_size = eeprom_data->raw_data_size;
 }
 
+void __MTLK_IFUNC
+mtlk_set_eeprom_raw_data_size (mtlk_eeprom_data_t *eeprom_data, uint32 raw_data_size)
+{
+  MTLK_ASSERT(NULL != eeprom_data);
+
+  eeprom_data->raw_data_size = raw_data_size;
+}
+
 /**
   Read EEPROM data in to the driver friendly structure
 
@@ -1101,7 +1132,9 @@ mtlk_eeprom_read_and_parse(mtlk_hw_api_t *hw_api, mtlk_eeprom_data_t *ee_data, u
       offset = MTLK_WAV700_EEPROM_2_4G_OFFSET;
     }
 
-    result = _eeprom_parse(raw_eeprom + offset, ee_data, full_eeprom_size, chip_id);
+	/* The parsing is done only on the first calibration file in EEPROM (2.4GHz file).
+	   Need to consider to iterate the parsing to validate also 5GHz and 6GHz cal files */
+    result = _eeprom_parse(raw_eeprom + offset, ee_data, MTLK_MAX_EEPROM_2_4G_SIZE, chip_id);
     ee_data->raw_data = raw_eeprom;
     ee_data->raw_data_size = full_eeprom_size;
 

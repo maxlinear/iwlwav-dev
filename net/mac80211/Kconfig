@@ -3,13 +3,13 @@ config MAC80211
 	tristate "Generic IEEE 802.11 Networking Stack (mac80211)"
 	depends on m
 	depends on CFG80211
-	select CRYPTO
+	depends on CRYPTO
 	select BPAUTO_CRYPTO_LIB_ARC4
-	select CRYPTO_AES
-	select CRYPTO_CCM
-	select CRYPTO_GCM
-	select CRYPTO_CMAC
-	select CRC32
+	depends on CRYPTO_AES
+	depends on CRYPTO_CCM
+	depends on CRYPTO_GCM
+	depends on CRYPTO_CMAC
+	depends on CRC32
 	help
 	  This option enables the hardware independent IEEE 802.11
 	  networking stack.
@@ -71,7 +71,7 @@ config MAC80211_LEDS
 	bool "Enable LED triggers"
 	depends on MAC80211
 	depends on LEDS_CLASS=y || LEDS_CLASS=MAC80211
-	select LEDS_TRIGGERS
+	depends on LEDS_TRIGGERS
 	help
 	  This option enables a few LED triggers for different
 	  packet receive/transmit events.

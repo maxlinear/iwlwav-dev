@@ -1,20 +1,24 @@
-/***********************************************************************************
-File:				HwMemoryMap.h
-Module:				Hw Headers - wave600_B0_memory_map_ver1.10.6 .xlsx
-Purpose:
-Description:		This File was auto generated using Excel Memory Map Parser
-
-COPYRIGHT:
-  Copyright(c) 2020 - 2025, MaxLinear, Inc.
-  Copyright 2016 - 2020 Intel Corporation
-  Copyright 2014 - 2016 Lantiq Beteiligungs - GmbH & Co.KG
-  Copyright 2010 - 2014 Lantiq Deutschland GmbH
-  Copyright 2007 - 2010 Metalink Ltd.
-
-  For licensing information, see the file 'LICENSE' in the root folder of
-  this software module
-
-************************************************************************************/
+/************************************************************************************
+*
+* File: HwMemoryMap.h
+* Module: Hw Headers
+* Description: This file was auto generated using ExcelMemoryMapParserWave600.py
+*
+*  source file 1: wave600_B0_memory_map_ver1.10.6.xlsx
+*  sha256 1: 61c9a1de5db19284752be36183ca12b1bca540cce7a0c41d811cdae35afc21ef
+*
+*  source file 2: wave600_rams_by_modules_ver1.10.0.xlsm
+*  sha256 2: 2429bb93b73f66c39669672cd007c20a494d10d3c3235d00f1cb754620efd83d
+*
+* COPYRIGHT:
+*  Copyright(c) 2020 - 2025, MaxLinear, Inc.
+*  Copyright 2016 - 2020 Intel Corporation
+*  Copyright 2014 - 2016 Lantiq Beteiligungs - GmbH & Co.KG
+*  Copyright 2010 - 2014 Lantiq Deutschland GmbH
+*  Copyright 2007 - 2010 Metalink Ltd.
+*
+*  For licensing information, see the file 'LICENSE' in the root folder of this software module.
+**************************************************************************************/
 #ifndef _MEMORY_MAP_H_ 
 #define _MEMORY_MAP_H_ 
 
@@ -203,7 +207,7 @@ COPYRIGHT:
 #define MEMORY_MAP_UNIT_11103_BASE_ADDRESS                                     (B1_DUMMY_PHY_BASE_ADDR)
 #define MEMORY_MAP_UNIT_9900000_BASE_ADDRESS                                   (0x0)
 
-/* Base Addresses From ARC Persepective*/
+/* Base Addresses From ARC Perspective*/
 #define CPU_IRAM_BASE_ADDR                                                     (0xA0000000)
 #define SYSTEM_IF_LOWER_B0_CPU_BASE_ADDR                                       (0xA0200000)
 #define SYSTEM_IF_LOWER_B1_CPU_BASE_ADDR                                       (0xA0210000)
@@ -387,7 +391,7 @@ COPYRIGHT:
 #define B0_RF_EMULATOR_BASE_ADDR                                               (0xA0274000)
 #define B1_RF_EMULATOR_BASE_ADDR                                               (0xA0674000)
 
- /* Base Addresses From ARM Dma Persepective*/
+ /* Base Addresses From ARM Dma Perspective*/
 #define CPU_IRAM_OFFSET_FROM_BAR0                                              (0x00000000)
 #define SYSTEM_IF_LOWER_B0_CPU_OFFSET_FROM_BAR0                                (0x00200000)
 #define SYSTEM_IF_LOWER_B1_CPU_OFFSET_FROM_BAR0                                (0x00210000)

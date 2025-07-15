@@ -1,7 +1,6 @@
 /* Automatically created during backport process */
 #ifndef CPTCFG_BPAUTO_BUILD_CRYPTO_LIB_ARC4
-/*#include_next <crypto/arc4.h> work-arround fix it*/
-#include <crypto/backport-arc4.h>
+#include_next <crypto/arc4.h>
 #else
 #undef arc4_setkey
 #define arc4_setkey LINUX_BACKPORT(arc4_setkey)

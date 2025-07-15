@@ -49,11 +49,15 @@
  * Implemented on linux by Dave Taht and Eric Dumazet
  */
 
+#include <net/inet_ecn.h>
+
 static void codel_params_init(struct codel_params *params)
 {
 	params->interval = MS2TIME(100);
 	params->target = MS2TIME(5);
 	params->ce_threshold = CODEL_DISABLED_THRESHOLD;
+	params->ce_threshold_mask = 0;
+	params->ce_threshold_selector = 0;
 	params->ecn = false;
 }
 
@@ -138,6 +142,25 @@ static bool codel_should_drop(const struct sk_buff *skb,
 	}
 	return ok_to_drop;
 }
+
+#if LINUX_VERSION_IS_LESS(6,0,0)
+static inline int skb_get_dsfield(struct sk_buff *skb)
+{
+        switch (skb_protocol(skb, true)) {
+        case cpu_to_be16(ETH_P_IP):
+                if (!pskb_network_may_pull(skb, sizeof(struct iphdr)))
+                        break;
+                return ipv4_get_dsfield(ip_hdr(skb));
+
+        case cpu_to_be16(ETH_P_IPV6):
+                if (!pskb_network_may_pull(skb, sizeof(struct ipv6hdr)))
+                        break;
+                return ipv6_get_dsfield(ipv6_hdr(skb));
+        }
+
+        return -1;
+}
+#endif
 
 static struct sk_buff *codel_dequeue(void *ctx,
 				     u32 *backlog,
@@ -246,9 +269,19 @@ static struct sk_buff *codel_dequeue(void *ctx,
 						    vars->rec_inv_sqrt);
 	}
 end:
-	if (skb && codel_time_after(vars->ldelay, params->ce_threshold) &&
-	    INET_ECN_set_ce(skb))
-		stats->ce_mark++;
+	if (skb && codel_time_after(vars->ldelay, params->ce_threshold)) {
+		bool set_ce = true;
+
+		if (params->ce_threshold_mask) {
+			int dsfield = skb_get_dsfield(skb);
+
+			set_ce = (dsfield >= 0 &&
+				  (((u8)dsfield & params->ce_threshold_mask) ==
+				   params->ce_threshold_selector));
+		}
+		if (set_ce && INET_ECN_set_ce(skb))
+			stats->ce_mark++;
+	}
 	return skb;
 }
 

@@ -7,6 +7,10 @@
 #ifndef __NET_SCHED_FQ_H
 #define __NET_SCHED_FQ_H
 
+#include <linux/skbuff.h>
+#include <linux/spinlock.h>
+#include <linux/types.h>
+
 struct fq_tin;
 
 /**
@@ -68,16 +72,6 @@ struct fq {
 	struct list_head tin_backlog;
 	spinlock_t lock;
 	u32 flows_cnt;
-#if LINUX_VERSION_IS_GEQ(5,3,10) || \
-     LINUX_VERSION_IN_RANGE(4,19,83, 4,20,0) || \
-     LINUX_VERSION_IN_RANGE(4,14,153, 4,15,0) || \
-     LINUX_VERSION_IN_RANGE(4,9,200, 4,10,0) || \
-     LINUX_VERSION_IN_RANGE(4,4,200, 4,5,0)
-        siphash_key_t   perturbation;
-#else
-        u32 perturbation;
-#endif
-
 	u32 limit;
 	u32 memory_limit;
 	u32 memory_usage;
@@ -103,10 +97,5 @@ typedef bool fq_skb_filter_t(struct fq *,
 			     struct fq_flow *,
 			     struct sk_buff *,
 			     void *);
-
-typedef struct fq_flow *fq_flow_get_default_t(struct fq *,
-					      struct fq_tin *,
-					      int idx,
-					      struct sk_buff *);
 
 #endif

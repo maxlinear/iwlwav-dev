@@ -136,15 +136,7 @@ begin:
 
 static u32 fq_flow_idx(struct fq *fq, struct sk_buff *skb)
 {
-#if LINUX_VERSION_IS_GEQ(5,3,10) || \
-    LINUX_VERSION_IN_RANGE(4,19,83, 4,20,0) || \
-    LINUX_VERSION_IN_RANGE(4,14,153, 4,15,0) || \
-    LINUX_VERSION_IN_RANGE(4,9,200, 4,10,0) || \
-    LINUX_VERSION_IN_RANGE(4,4,200, 4,5,0)
-	u32 hash = skb_get_hash_perturb(skb, &fq->perturbation);
-#else
-	u32 hash = skb_get_hash_perturb(skb, fq->perturbation);
-#endif
+	u32 hash = skb_get_hash(skb);
 
 	return reciprocal_scale(hash, fq->flows_cnt);
 }
@@ -208,6 +200,7 @@ static void fq_tin_enqueue(struct fq *fq,
 			   fq_skb_free_t free_func)
 {
 	struct fq_flow *flow;
+	struct sk_buff *next;
 	bool oom;
 
 	lockdep_assert_held(&fq->lock);
@@ -222,11 +215,15 @@ static void fq_tin_enqueue(struct fq *fq,
 	}
 
 	flow->tin = tin;
-	flow->backlog += skb->len;
-	tin->backlog_bytes += skb->len;
-	tin->backlog_packets++;
-	fq->memory_usage += skb->truesize;
-	fq->backlog++;
+	skb_list_walk_safe(skb, skb, next) {
+		skb_mark_not_on_list(skb);
+		flow->backlog += skb->len;
+		tin->backlog_bytes += skb->len;
+		tin->backlog_packets++;
+		fq->memory_usage += skb->truesize;
+		fq->backlog++;
+		__skb_queue_tail(&flow->queue, skb);
+	}
 
 	if (list_empty(&flow->flowchain)) {
 		flow->deficit = fq->quantum;
@@ -234,7 +231,6 @@ static void fq_tin_enqueue(struct fq *fq,
 			      &tin->new_flows);
 	}
 
-	__skb_queue_tail(&flow->queue, skb);
 	oom = (fq->memory_usage > fq->memory_limit);
 	while (fq->backlog > fq->limit || oom) {
 		flow = fq_find_fattest_flow(fq);
@@ -366,8 +362,7 @@ static int fq_init(struct fq *fq, int flows_cnt)
 	if (!fq->flows)
 		return -ENOMEM;
 
-	fq->flows_bitmap = kcalloc(BITS_TO_LONGS(fq->flows_cnt), sizeof(long),
-				   GFP_KERNEL);
+	fq->flows_bitmap = bitmap_zalloc(fq->flows_cnt, GFP_KERNEL);
 	if (!fq->flows_bitmap) {
 		kvfree(fq->flows);
 		fq->flows = NULL;
@@ -391,7 +386,7 @@ static void fq_reset(struct fq *fq,
 	kvfree(fq->flows);
 	fq->flows = NULL;
 
-	kfree(fq->flows_bitmap);
+	bitmap_free(fq->flows_bitmap);
 	fq->flows_bitmap = NULL;
 }
 

@@ -600,6 +600,7 @@ struct nic {
   BOOL  is_stopping;
   BOOL  is_iface_stopping;
   BOOL  is_stopped;
+  BOOL  is_stopped_by_sibling;
 
   mtlk_txmm_msg_t           txmm_async_eeprom_msgs[MAX_NUM_TX_ANTENNAS]; /* must be moved to EEPROM module ASAP */
 
