@@ -425,7 +425,7 @@ int wave_radio_vap_measurements_get(struct wiphy *wiphy, struct net_device *ndev
 int wave_radio_set_atf_quotas(struct wiphy *wiphy, struct net_device *ndev, const void *data, int total_len);
 int wave_radio_set_wds_wpa_sta(struct net_device *ndev, struct intel_vendor_mac_addr_list_cfg *addrlist_cfg);
 
-int wave_radio_unconnected_sta_get(struct wireless_dev *wdev, struct intel_vendor_unconnected_sta_req_cfg *sta_req_data);
+int wave_radio_unconnected_sta_get(struct wiphy *wiphy, struct wireless_dev *wdev, struct intel_vendor_unconnected_sta_req_cfg *sta_req_data);
 
 int wave_radio_radio_info_get(struct wiphy *wiphy, struct wireless_dev *wdev);
 

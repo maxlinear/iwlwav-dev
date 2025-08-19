@@ -122,6 +122,7 @@ static const mtlk_ability_id_t _core_general_abilities[] = {
   WAVE_CORE_REQ_SET_ACL,
   WAVE_CORE_REQ_GET_ACL,
   WAVE_CORE_REQ_GET_LA_MIMO_OFDMA_STATS,
+  WAVE_CORE_REQ_GET_MAX_TX_POWER,
 
 #ifdef MTLK_WAVE_700
   WAVE_CORE_REQ_SET_EHT_DEBUG,

@@ -3209,6 +3209,7 @@ static int _wv_ieee80211_op_add_interface (struct ieee80211_hw *hw, struct ieee8
   uint32 clpb_data_size;
   wv_mac80211_t *mac80211;
   mtlk_df_t      *master_df;
+  mtlk_core_t    *master_core;
   struct net_device *netdev_p = NULL;
   wave_radio_t *radio;
   const char *vif_name;
@@ -3246,6 +3247,14 @@ static int _wv_ieee80211_op_add_interface (struct ieee80211_hw *hw, struct ieee8
   if (!vif_name) {
     ELOG_V("Net device name not found");
     return -EINVAL;
+  }
+
+  radio = wave_vap_radio_get(mtlk_df_get_vap_handle(master_df));
+  master_core = wave_radio_master_core_get(radio);
+
+  if (master_core->color_change_active) {
+    ELOG_S("Stop adding interface %s as CCA is in progress", vif_name);
+    return -EBUSY;
   }
 
   /* Basically mac80211 handles net device. wlan driver that works with mac80211 framework
@@ -3294,8 +3303,6 @@ static int _wv_ieee80211_op_add_interface (struct ieee80211_hw *hw, struct ieee8
   mbss_cfg.role = (vif->type ==  NL80211_IFTYPE_STATION) ? MTLK_ROLE_STA : MTLK_ROLE_AP;
   mbss_cfg.is_master = FALSE; /* AP mode VAP is master */
   mbss_cfg.ndev = netdev_p;
-
-  radio = wave_vap_radio_get(mtlk_df_get_vap_handle(master_df));
 
   if (mtlk_df_user_get_ndev(mtlk_df_get_user(master_df)) == netdev_p){
     /*trying to add master vap*/
@@ -3472,7 +3479,7 @@ static void _wv_ieee80211_op_remove_interface (struct ieee80211_hw *hw, struct i
         res = _mtlk_df_user_process_core_retval(res, clpb, WAVE_RADIO_REQ_MBSS_DEL_VAP_NAME, TRUE);
 
         if (MTLK_ERR_RETRY != res) break;
-        mtlk_osal_msleep(50);
+        mtlk_osal_msleep(100);
         retry_counter++;
       } while ((MTLK_ERR_RETRY == res) && (retry_counter < MAX_VAP_WAIT_RETRIES));
 
@@ -6428,9 +6435,6 @@ _wv_ieee80211_hw_rx_status (struct ieee80211_hw *mac80211_hw, struct ieee80211_r
   rx_status->rate_idx = rate_idx;
   rx_status->nss = nss;
   rx_status->snr_db = snr_db;
-/* rx_status is 48 bytes and there is no room to store noise parameter
-  rx_status->noise = noise_dbm;
-*/
 
   switch (ccd->width) {
   case CW_20:

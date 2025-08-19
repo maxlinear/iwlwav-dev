@@ -428,6 +428,9 @@ enum ltq_nl80211_vendor_subcmds {
   LTQ_NL80211_VENDOR_SUBCMD_SET_PBAC,
   LTQ_NL80211_VENDOR_SUBCMD_SET_AQM_STA_EN,
   LTQ_NL80211_VENDOR_SUBCMD_GET_AQM_STA_EN,
+  LTQ_NL80211_VENDOR_SUBCMD_SET_SCS_ENABLE,
+  LTQ_NL80211_VENDOR_SUBCMD_GET_SCS_ENABLE,
+  LTQ_NL80211_VENDOR_SUBCMD_GET_MAX_TX_POWER,
   /* add new iw sub commands here */
 
   /* used to define LTQ_NL80211_VENDOR_SUBCMD_MAX below */
@@ -475,6 +478,9 @@ enum ltq_nl80211_vendor_events {
 #define INTEL_MAX_PROTECTED_DEAUTH_FRAME_LEN  44
 #define INTEL_NON_PROTECTED_DEAUTH_FRAME_LEN  26
 
+#define NASTA_STATS_REQ_ASYNC                 0
+#define NASTA_STATS_REQ_SYNC                  1
+
 enum {
   CSA_DEAUTH_MODE_DISABLED = 0,
   CSA_DEAUTH_MODE_UNICAST,
@@ -509,6 +515,7 @@ struct intel_vendor_unconnected_sta_req_cfg {
   u32 center_freq1;
   u32 center_freq2;
   DEF_IEEE_ADDR(addr);
+  u8  req_type;
 } __attribute__ ((packed));
 
 struct intel_vendor_sta_info { /* corresponds to vendor_sta_info in Driver */
@@ -1002,6 +1009,55 @@ struct mxl_vendor_ml_critical_update {
   u32 max_chan_switch_time;
 } __attribute__ ((packed));
 
+/* Filter values and filter len for the type10 classifier is obtained *
+ * by (tclas_element_ie len field - 4)/2 .since the IE len field is 1byte *
+ * so the max tclas10 filter len will be (255 - 4)/2 = 125 */
+#define MAX_TCLAS10_FILTER_LEN  125
+#define QOS_CTRL_INFO_DIR_MASK  0x3
+#define QOS_CTRL_INFO_UL        0x0
+#define QOS_CTRL_INFO_DL        0x1
+
+struct mxl_scs_tclas_info {
+  u8 tclasElemsUp;
+  u8 tclasLen;
+  u8 tclasElemstype;
+} __attribute__ ((packed));
+
+struct classIpv4Params {
+  u32 srcIp;
+  u32 dstIp;
+  u16 srcPort;
+  u16 dstPort;
+  u8 dscp;
+  u8 proto;
+} __attribute__ ((packed));
+
+struct classIpv6Params {
+  u8 srcIp[16];
+  u8 dstIp[16];
+  u16 srcPort;
+  u16 dstPort;
+  u8 dscp;
+  u8 nextHeader;
+  u8 flowLabel[3];
+} __attribute__ ((packed));
+
+struct mxl_class_type4_params {
+  u8 version;
+  union {
+    struct classIpv4Params v4;
+    struct classIpv6Params v6;
+  } u;
+} __attribute__ ((packed));
+
+struct mxl_class_type10_params {
+  u8 protoInstance;
+  u8 protoNum;
+  u8 filterLen;
+  u8 filterValue[MAX_TCLAS10_FILTER_LEN];
+  u8 filterMask[MAX_TCLAS10_FILTER_LEN];
+} __attribute__ ((packed));
+
 struct mxl_scs_add_req {
   u16 aid;
   u8  status;
@@ -1023,6 +1079,11 @@ struct mxl_scs_add_req {
   u8  msduDeliveryRatio;
   u8  msduCountExponent;
   u16 mediumTime;
+  u8 intraAccessPriority; //b0-b2 UP, b3= alternate queu, b4= drop eligibility, b5-b7 reserved
+  u8 direction;
+  struct mxl_scs_tclas_info tclasInfo;
+  struct mxl_class_type4_params type4Params;
+  struct mxl_class_type10_params type10Params;
 }__attribute__ ((packed));
 
 struct mxl_scs_rem_req {

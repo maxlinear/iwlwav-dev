@@ -33,6 +33,8 @@
 #define PCIE_SPEED_GEN1 1
 #define RETRAIN_TIMEOUT_MS 100
 #define POLL_INTERVAL_MS 1
+#define SCS_INTRA_ACCESS_USER_PRIO_MASK 0x7 //Bit0-Bit2 represent UP for Intra access IE
+#define MAX_SCS_LIST_PER_STA 4 //Max PER STA SCS list
 
 mtlk_hw_band_e __MTLK_IFUNC core_cfg_get_freq_band_cur(mtlk_core_t *core);
 mtlk_hw_band_e __MTLK_IFUNC core_cfg_get_freq_band_cfg(mtlk_core_t *core);
@@ -414,6 +416,8 @@ mtlk_error_t __MTLK_IFUNC wave_core_ap_disconnect_sta_mld(mtlk_core_t *nic, sta_
 mtlk_error_t __MTLK_IFUNC wave_core_vap_remove_mld(mtlk_core_t *nic);
 mtlk_error_t wave_core_get_ml_peer_flow_status (struct wiphy *wiphy, struct net_device *ndev, const uint8 *addr);
 int __MTLK_IFUNC wave_core_get_ml_peer_stats (mtlk_handle_t hcore, const void *data, uint32 data_size);
+int __MTLK_IFUNC wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 data_size);
+int __MTLK_IFUNC wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32 *channel);
 mtlk_error_t wave_core_get_connected_ml_sta_list (struct wiphy *wiphy, struct net_device *ndev);
 int __MTLK_IFUNC wave_core_get_ml_sta_list (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_size);

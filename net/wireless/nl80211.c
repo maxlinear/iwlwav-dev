@@ -19372,7 +19372,7 @@ static int __nl80211_rx_control_port(struct net_device *dev,
 	if (!frame)
 		goto nla_put_failure;
 
-	skb_copy_bits(skb, 0, nla_data(frame), (skb->len - len));
+	skb_copy_bits(skb, len, nla_data(frame), (skb->len - len));
 	genlmsg_end(msg, hdr);
 
 	return genlmsg_unicast(wiphy_net(&rdev->wiphy), msg, nlportid);

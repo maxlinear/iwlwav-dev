@@ -38,11 +38,13 @@
 #define NTS_TID_USE_DEFAULT         (~0u)
 #define DSCP_NUM                    (64)
 #define DSCP_PER_UP                 (8)
+#define FRAME_CLASSIFIER_TYPE4      (4)
+#define FRAME_CLASSIFIER_TYPE10     (10)
 
 typedef int (* mtlk_qos_do_classify_f)(mtlk_nbuf_t *skb);
 
 struct _mtlk_vap_handle_t;
-void __MTLK_IFUNC mtlk_qos_adjust_priority(uint8 *dscp_table, mtlk_nbuf_t *nbuf) __MTLK_INT_HANDLER_SECTION;
+void __MTLK_IFUNC mtlk_qos_adjust_priority(mtlk_core_t *core, mtlk_nbuf_t *nbuf) __MTLK_INT_HANDLER_SECTION;
 void __MTLK_IFUNC mtlk_qos_dscp_table_init (uint8 *dscp_table);
 
 #undef LOG_LOCAL_GID

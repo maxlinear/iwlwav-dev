@@ -5038,6 +5038,9 @@ _mtlk_df_user_iwpriv_get_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
       MTLK_CFG_GET_ITEM_BY_FUNC_VOID(master_core_cfg, fixed_pwr_params, _mtlk_df_user_get_intvec_by_fixed_pwr_params,
                                      ((uint32*)data, max_length, length, &master_core_cfg->fixed_pwr_params));
 
+    _DF_USER_GET_ON_PARAM_MEMBER(PRM_ID_SCS_ENABLE, WAVE_CORE_REQ_GET_CORE_CFG, FALSE, mtlk_gen_core_cfg_t, core_cfg, scs_enable)
+      MTLK_CFG_GET_ITEM(core_cfg, scs_enable, *(uint32*)data);
+
 /************************* DEBUG GET APIs *************************/
 #ifdef CONFIG_WAVE_DEBUG
 
@@ -5237,6 +5240,9 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
 
     _DF_USER_SET_ON_PARAM(PRM_ID_PROBEREQ_OFFLOAD_MODE, WAVE_CORE_REQ_SET_CORE_CFG, FALSE, mtlk_gen_core_cfg_t, pcore_cfg)
       MTLK_CFG_SET_ITEM(pcore_cfg, probereq_offload_mode, *(int *)data);
+
+    _DF_USER_SET_ON_PARAM(PRM_ID_SCS_ENABLE, WAVE_CORE_REQ_SET_CORE_CFG, FALSE, mtlk_gen_core_cfg_t, pcore_cfg)
+      MTLK_CFG_SET_ITEM(pcore_cfg, scs_enable, *(uint32 *)data);
 
     _DF_USER_SET_ON_PARAM(PRM_ID_RSSI_IGNORE_PROBE_REQ, WAVE_CORE_REQ_SET_RSSI_IGNORE_PROBE_REQUEST, FALSE, mtlk_core_rssi_ignore_probe_request_t, rssi_ignore_pr)
      MTLK_CFG_SET_ITEM(rssi_ignore_pr, rssi_ignore_probe_request, *(int32 *)data);

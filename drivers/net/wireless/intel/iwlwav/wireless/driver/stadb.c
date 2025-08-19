@@ -636,6 +636,7 @@ MTLK_INIT_STEPS_LIST_BEGIN(sta_entry)
 #endif
 #if defined(MTLK_WAVE_700)
   MTLK_INIT_STEPS_LIST_ENTRY(sta_entry, ML_STA_INFO)
+  MTLK_INIT_STEPS_LIST_ENTRY(sta_entry, SCS_STA_LIST)
 #endif
 #ifdef BEST_EFFORT_TID_SPREADING
   MTLK_INIT_STEPS_LIST_ENTRY(sta_entry, TID_LINK_SPREADING)
@@ -795,6 +796,23 @@ static void _wave_sta_tid_link_cleanup (sta_entry *sta, BOOL cleanup)
   mtlk_osal_lock_release(&sta->lock);
 }
 #endif /* BEST_EFFORT_TID_SPREADING */
+
+static void
+_mtlk_sta_scs_cleanup (sta_entry *sta)
+{
+  mtlk_dlist_entry_t *entry;
+  wave_scs_list_info_t *scs_clean_list;
+  
+  mtlk_osal_lock_acquire(&sta->scs_db.scs_list_lock);
+  while ((entry = mtlk_dlist_pop_front(&sta->scs_db.scs_list)))
+  {
+     scs_clean_list = MTLK_LIST_GET_CONTAINING_RECORD(entry, wave_scs_list_info_t, lentry);
+     mtlk_osal_mem_free(scs_clean_list);
+  }
+  mtlk_osal_lock_release(&sta->scs_db.scs_list_lock);
+  mtlk_osal_lock_cleanup(&sta->scs_db.scs_list_lock);
+  mtlk_dlist_cleanup(&sta->scs_db.scs_list);
+}
 #endif /* MTLK_WAVE_700 */
 
 static void
@@ -814,6 +832,8 @@ _mtlk_sta_cleanup (sta_entry *sta)
     MTLK_CLEANUP_STEP(sta_entry, TID_LINK_SPREADING, MTLK_OBJ_PTR(sta),
                       _wave_sta_tid_link_cleanup, (sta, TRUE));
 #endif
+    MTLK_CLEANUP_STEP(sta_entry, SCS_STA_LIST, MTLK_OBJ_PTR(sta),
+                      _mtlk_sta_scs_cleanup, (sta));
     MTLK_CLEANUP_STEP(sta_entry, ML_STA_INFO, MTLK_OBJ_PTR(sta),
                       _mtlk_sta_ml_info_cleanup, (sta));
 #endif
@@ -883,6 +903,13 @@ wave_cleanup_ml_sta_info (sta_entry *sta)
     linked_sta->ml_sta_info.sta_tid_spread_info = NULL;
 #endif
   }
+}
+
+static void
+_mtlk_sta_scs_init (sta_entry *sta)
+{
+   mtlk_osal_lock_init(&sta->scs_db.scs_list_lock);
+   mtlk_dlist_init(&sta->scs_db.scs_list);
 }
 #endif
 
@@ -1121,6 +1148,8 @@ _mtlk_sta_init (sta_entry *sta,
 #ifdef MTLK_WAVE_700
     MTLK_INIT_STEP(sta_entry, ML_STA_INFO, MTLK_OBJ_PTR(sta),
                    _mtlk_sta_ml_info_init, (sta));
+    MTLK_INIT_STEP_VOID(sta_entry, SCS_STA_LIST, MTLK_OBJ_PTR(sta),
+                       _mtlk_sta_scs_init, (sta));
 #ifdef BEST_EFFORT_TID_SPREADING
     MTLK_INIT_STEP(sta_entry, TID_LINK_SPREADING, MTLK_OBJ_PTR(sta),
                    _mtlk_sta_tid_hash_map_init, (sta));

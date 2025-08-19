@@ -37,8 +37,6 @@
 #define LOG_LOCAL_FID   1
 
 
-#define MTLK_IP4_ALEN (4) /* TODO move to mtlkinc.h*/
-
 #define   DHCP_DISCOVER   1
 #define   DHCP_OFFER      2
 #define   DHCP_REQUEST    3

@@ -246,6 +246,7 @@ static const mtlk_pdb_initial_value mtlk_core_parameters[] =
 #endif
 
   {PARAM_DB_CORE_FIXED_RATE_THERMAL,      PARAM_DB_TYPE_BINARY, PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(wave_core_initial_fixed_rate_thermal),     &wave_core_initial_fixed_rate_thermal},
+  {PARAM_DB_CORE_SCS_ENABLE,              PARAM_DB_TYPE_INT, PARAM_DB_VALUE_FLAG_NO_FLAG, sizeof(mtlk_core_initial_zero_uint8),     &mtlk_core_initial_zero_uint8},
 
   {PARAM_DB_CORE_LAST_VALUE_ID,       0,                    0,                            0,                               NULL},
 };

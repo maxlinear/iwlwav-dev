@@ -60,6 +60,14 @@
 #define EHT_SUBCH_BITMAP_HIGH  1
 #endif
 
+/* apply regulatory limit to all power limits of current subband */
+/* store tmp_pwl in PSD, apply limit and store result in CFG */
+#define _PW_LIMIT_APPLY_(tmp, psd, cfg, idx, reg_lim, kernel_power_lim) \
+    psd.pw_limits[idx] = tmp.pw_limits[idx]; \
+    cfg.pw_limits[idx] = hw_mmb_get_tx_power_target(tmp.pw_limits[idx], reg_lim); \
+    if (core->power_level != MTLK_POWER_NOT_SET && core->power_level != 0) \
+        cfg.pw_limits[idx] = hw_mmb_get_tx_power_target(cfg.pw_limits[idx], kernel_power_lim);
+
 void __MTLK_IFUNC mtlk_core_get_tx_power_data(mtlk_core_t *core, mtlk_tx_power_data_t *tx_power_data);
 mtlk_error_t __MTLK_IFUNC mtlk_core_set_pcie_speed(mtlk_core_t *core, uint16 pcie_speed);
 mtlk_error_t __MTLK_IFUNC mtlk_core_get_pcie_speed(struct pci_dev *pdev, uint16 *pcie_speed);
@@ -1343,6 +1351,7 @@ int __MTLK_IFUNC core_cfg_set_chan (mtlk_core_t *core, const struct mtlk_chan_de
              cd->chan.band, cd->chan.center_freq, cd->chan.flags, cd->width,
              power_level);
 
+  core->power_level = power_level;
   /* may not do set_chan unless there has been a VAP activated */
   if (core->is_stopped &&
       (res = mtlk_mbss_send_vap_activate(core, wave_radio_band_get(radio))) != MTLK_ERR_OK)
@@ -2274,14 +2283,6 @@ void core_cfg_set_tx_power_limit (mtlk_core_t *core, unsigned center_freq,
     core_get_psdb_hw_limits(core, country_code.country,
                             freq_c, &tmp_pwl);
 
-    /* apply regulatory limit to all power limits of current subband */
-    /* store tmp_pwl in PSD, apply limit and store result in CFG */
-#define _PW_LIMIT_APPLY_(tmp, psd, cfg, idx, reg_lim, kernel_power_lim) \
-           psd.pw_limits[idx] = tmp.pw_limits[idx];      \
-           cfg.pw_limits[idx] = hw_mmb_get_tx_power_target(tmp.pw_limits[idx], reg_lim); \
-           if (power_level != MTLK_POWER_NOT_SET && power_level != 0) \
-               cfg.pw_limits[idx] = hw_mmb_get_tx_power_target(cfg.pw_limits[idx], kernel_power_lim);
-
     /* use CW_20 limit for 11b */
     if (CW_20 == sub_bw) {
       _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_11B), reg_pw_lim, power_level_p_unit);
@@ -2319,8 +2320,6 @@ void core_cfg_set_tx_power_limit (mtlk_core_t *core, unsigned center_freq,
                  sub_bw, psd_pwl.pw_limits[(PSDB_PHY_CW_BF_BE_20 + sub_bw)], cfg_pwl.pw_limits[(PSDB_PHY_CW_BF_BE_20 + sub_bw)]);
     }
 #endif
-
-#undef _PW_LIMIT_APPLY_
 
     ILOG1_DDD("Updated PSD/CFG pw_limits bw%u: %3u %3u",
               sub_bw, psd_pwl.pw_limits[ofdm_idx], cfg_pwl.pw_limits[ofdm_idx]);
@@ -10591,6 +10590,10 @@ static mtlk_error_t _wave_core_internal_scs_add_req(mtlk_core_t *nic, struct mxl
   UMI_SCS_ADD *scs_add_umi;
   uint16 sid = DB_UNKNOWN_SID;
   volatile uint8 *pStatus;
+  uint8 scs_list_limit = 0;
+  sta_entry *sta = NULL;
+  wave_scs_list_info_t *dl_scs_info = NULL;
+
   MTLK_ASSERT(NULL != nic);
   MTLK_ASSERT(NULL != scs_add_req);
   sid = wave_hw_get_sid_from_aid(mtlk_vap_get_hw(nic->vap_handle), scs_add_req->aid,
@@ -10599,56 +10602,121 @@ static mtlk_error_t _wave_core_internal_scs_add_req(mtlk_core_t *nic, struct mxl
      ELOG_D("CID-%04x: unknown SID tx ", mtlk_vap_get_oid(nic->vap_handle));
      goto FINISH;
   }
-  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
-  if (!man_entry) {
-     ELOG_D("CID-%04x: Can't send SCS Add request to MAC due to the lack of MAN_MSG",
-           mtlk_vap_get_oid(nic->vap_handle));
-     res = MTLK_ERR_NO_RESOURCES;
-     goto FINISH;
-  }
-  man_entry->id           = UMI_MAN_SCS_ADD_REQ;
-  man_entry->payload_size = sizeof(UMI_SCS_ADD);
-  memset(man_entry->payload, 0, man_entry->payload_size);
-  scs_add_umi	= ( UMI_SCS_ADD *)man_entry->payload;
-  scs_add_umi->staId = HOST_TO_MAC16(sid);
-  scs_add_umi->scsid = scs_add_req->scsid;
-  scs_add_umi->tid = HOST_TO_MAC32(scs_add_req->tid);
-  scs_add_umi->userPrio = HOST_TO_MAC32(scs_add_req->userPrio);
-  scs_add_umi->linkId = HOST_TO_MAC32(scs_add_req->linkId);
-  scs_add_umi->minServiceInterval = HOST_TO_MAC32(scs_add_req->minServiceInterval);
-  scs_add_umi->maxServiceInterval = HOST_TO_MAC32(scs_add_req->maxServiceInterval);
-  scs_add_umi->bitmapNextParamPresence = HOST_TO_MAC32(scs_add_req->bitmapNextParamPresence);
-  scs_add_umi->minDataRate = HOST_TO_MAC32(scs_add_req->minDataRate);
-  scs_add_umi->delayBound = HOST_TO_MAC32(scs_add_req->delayBound);
-  scs_add_umi->maxMsduSize = HOST_TO_MAC32(scs_add_req->maxMsduSize);
-  scs_add_umi->serviceStartTime = HOST_TO_MAC32(scs_add_req->serviceStartTime);
-  scs_add_umi->meanDataRate = HOST_TO_MAC32(scs_add_req->meanDataRate);
-  scs_add_umi->serviceStartTimeLinkId = HOST_TO_MAC32(scs_add_req->serviceStartTimeLinkId);
-  scs_add_umi->burstSize = HOST_TO_MAC32(scs_add_req->burstSize);
-  scs_add_umi->msduLifeTime = HOST_TO_MAC16(scs_add_req->msduLifeTime);
-  scs_add_umi->msduDeliveryRatio = scs_add_req->msduDeliveryRatio;
-  scs_add_umi->msduCountExponent = scs_add_req->msduCountExponent;
-  scs_add_umi->mediumTime = HOST_TO_MAC16(scs_add_req->mediumTime);
 
-  ILOG1_DDDD("staId=%d,minDataRate=%d, maxMsduSize=%d,meanDataRate=%d",scs_add_umi->staId,scs_add_umi->minDataRate, scs_add_umi->maxMsduSize,scs_add_umi->meanDataRate);
-  pStatus			= &scs_add_umi->status;
-  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
-  if (res != MTLK_ERR_OK) {
-    ELOG_DD("CID-%04x: Can't send UMI_MAN_SCS_ADD_REQ request to MAC (err=%d)",
-            mtlk_vap_get_oid(nic->vap_handle), res);
-    goto FINISH;
+  if ((scs_add_req->direction & QOS_CTRL_INFO_DIR_MASK) == QOS_CTRL_INFO_UL) { //UL = 0 and DL = 1
+    man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
+    if (!man_entry) {
+      ELOG_D("CID-%04x: Can't send SCS Add request to MAC due to the lack of MAN_MSG",
+             mtlk_vap_get_oid(nic->vap_handle));
+      res = MTLK_ERR_NO_RESOURCES;
+      goto FINISH;
+    }
+    man_entry->id           = UMI_MAN_SCS_ADD_REQ;
+    man_entry->payload_size = sizeof(UMI_SCS_ADD);
+    memset(man_entry->payload, 0, man_entry->payload_size);
+    scs_add_umi	= ( UMI_SCS_ADD *)man_entry->payload;
+    scs_add_umi->staId = HOST_TO_MAC16(sid);
+    scs_add_umi->scsid = scs_add_req->scsid;
+    scs_add_umi->tid = HOST_TO_MAC32(scs_add_req->tid);
+    scs_add_umi->userPrio = HOST_TO_MAC32(scs_add_req->userPrio);
+    scs_add_umi->linkId = HOST_TO_MAC32(scs_add_req->linkId);
+    scs_add_umi->minServiceInterval = HOST_TO_MAC32(scs_add_req->minServiceInterval);
+    scs_add_umi->maxServiceInterval = HOST_TO_MAC32(scs_add_req->maxServiceInterval);
+    scs_add_umi->bitmapNextParamPresence = HOST_TO_MAC32(scs_add_req->bitmapNextParamPresence);
+    scs_add_umi->minDataRate = HOST_TO_MAC32(scs_add_req->minDataRate);
+    scs_add_umi->delayBound = HOST_TO_MAC32(scs_add_req->delayBound);
+    scs_add_umi->maxMsduSize = HOST_TO_MAC32(scs_add_req->maxMsduSize);
+    scs_add_umi->serviceStartTime = HOST_TO_MAC32(scs_add_req->serviceStartTime);
+    scs_add_umi->meanDataRate = HOST_TO_MAC32(scs_add_req->meanDataRate);
+    scs_add_umi->serviceStartTimeLinkId = HOST_TO_MAC32(scs_add_req->serviceStartTimeLinkId);
+    scs_add_umi->burstSize = HOST_TO_MAC32(scs_add_req->burstSize);
+    scs_add_umi->msduLifeTime = HOST_TO_MAC16(scs_add_req->msduLifeTime);
+    scs_add_umi->msduDeliveryRatio = scs_add_req->msduDeliveryRatio;
+    scs_add_umi->msduCountExponent = scs_add_req->msduCountExponent;
+    scs_add_umi->mediumTime = HOST_TO_MAC16(scs_add_req->mediumTime);
+
+    ILOG1_DDDD("staId=%d,minDataRate=%d, maxMsduSize=%d,meanDataRate=%d",scs_add_umi->staId,scs_add_umi->minDataRate, scs_add_umi->maxMsduSize,scs_add_umi->meanDataRate);
+    pStatus			= &scs_add_umi->status;
+    res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
+    if (res != MTLK_ERR_OK) {
+      ELOG_DD("CID-%04x: Can't send UMI_MAN_SCS_ADD_REQ request to MAC (err=%d)",
+              mtlk_vap_get_oid(nic->vap_handle), res);
+      goto FINISH;
+    }
+    if (*pStatus != HOST_TO_MAC16(UMI_OK)) {
+      WLOG_DD("CID-%04x: UMI_MAN_SCS_ADD_REQ failed in FW (status=%u)",
+              mtlk_vap_get_oid(nic->vap_handle),
+              MAC_TO_HOST16(scs_add_umi->status));
+      res = MTLK_ERR_MAC;
+      goto FINISH;
+    }
+    ILOG0_V("SCS REQ completed successfully");
+  } else if ((scs_add_req->direction & QOS_CTRL_INFO_DIR_MASK) == QOS_CTRL_INFO_DL) {  //SCS REQ for DL
+    sta = mtlk_stadb_find_sid(&nic->slow_ctx->stadb, sid);
+    if (!sta) {
+      ILOG2_V("scs sta not found\n");
+      res = MTLK_ERR_UNKNOWN;
+      goto FINISH;
+    }
+
+    mtlk_osal_lock_acquire(&sta->scs_db.scs_list_lock);
+
+    scs_list_limit = mtlk_dlist_size(&sta->scs_db.scs_list);
+    if (scs_list_limit > MAX_SCS_LIST_PER_STA) {
+      ELOG_V("SCS rules add req failed, max scs rules reached\n");
+      res = MTLK_ERR_NO_RESOURCES;
+      mtlk_osal_lock_release(&sta->scs_db.scs_list_lock);
+      goto FINISH;
+    }
+
+    dl_scs_info = mtlk_osal_mem_alloc(sizeof(wave_scs_list_info_t), MTLK_MEM_TAG_EXTENSION);
+    if (!dl_scs_info) {
+      ELOG_V("Can't allocate memory for scs add req\n");
+      res = MTLK_ERR_NO_MEM;
+      mtlk_osal_lock_release(&sta->scs_db.scs_list_lock);
+      goto FINISH;
+    }
+
+    dl_scs_info->scsid = scs_add_req->scsid;
+    dl_scs_info->req_up = scs_add_req->intraAccessPriority & SCS_INTRA_ACCESS_USER_PRIO_MASK;
+    dl_scs_info->tclas_info.tclass_type = scs_add_req->tclasInfo.tclasElemstype;
+    dl_scs_info->tclas_info.tclass_up = scs_add_req->tclasInfo.tclasElemsUp;
+    dl_scs_info->tclas_info.tclass_len = scs_add_req->tclasInfo.tclasLen; 
+    dl_scs_info->ip_tuple.ip_version = scs_add_req->type4Params.version;
+    if (scs_add_req->type4Params.version == MTLK_IP4_VER) {
+      dl_scs_info->ip_tuple.u.ipv4.src_ip = scs_add_req->type4Params.u.v4.srcIp;
+      dl_scs_info->ip_tuple.u.ipv4.dst_ip = scs_add_req->type4Params.u.v4.dstIp;
+      dl_scs_info->ip_tuple.u.ipv4.dscp = scs_add_req->type4Params.u.v4.dscp;
+      dl_scs_info->ip_tuple.u.ipv4.protocol = scs_add_req->type4Params.u.v4.proto;
+      dl_scs_info->ip_tuple.u.ipv4.dst_port = scs_add_req->type4Params.u.v4.dstPort;
+      dl_scs_info->ip_tuple.u.ipv4.src_port = scs_add_req->type4Params.u.v4.srcPort;
+    } else { //ipv6
+      wave_memcpy(dl_scs_info->ip_tuple.u.ipv6.src_ip, MTLK_IP6_ALEN, scs_add_req->type4Params.u.v6.srcIp, MTLK_IP6_ALEN);
+      wave_memcpy(dl_scs_info->ip_tuple.u.ipv6.dst_ip, MTLK_IP6_ALEN, scs_add_req->type4Params.u.v6.dstIp, MTLK_IP6_ALEN);
+      dl_scs_info->ip_tuple.u.ipv6.next_header = scs_add_req->type4Params.u.v6.nextHeader;
+      dl_scs_info->ip_tuple.u.ipv6.dscp = scs_add_req->type4Params.u.v6.dscp;
+      dl_scs_info->ip_tuple.u.ipv6.dst_port = scs_add_req->type4Params.u.v6.dstPort;
+      dl_scs_info->ip_tuple.u.ipv6.src_port = scs_add_req->type4Params.u.v6.srcPort;
+      wave_memcpy(dl_scs_info->ip_tuple.u.ipv6.flow_label, MTLK_IP6_FLOW_HDR_SIZE,
+                  scs_add_req->type4Params.u.v6.flowLabel, MTLK_IP6_FLOW_HDR_SIZE);
+    }
+    dl_scs_info->clas_type10.proto_instance = scs_add_req->type10Params.protoInstance;
+    dl_scs_info->clas_type10.proto_num = scs_add_req->type10Params.protoNum;
+    dl_scs_info->clas_type10.filter_len = scs_add_req->type10Params.filterLen;
+    wave_memcpy(dl_scs_info->clas_type10.filter_val, dl_scs_info->clas_type10.filter_len,
+                scs_add_req->type10Params.filterValue, scs_add_req->type10Params.filterLen);
+    wave_memcpy(dl_scs_info->clas_type10.filter_mask, dl_scs_info->clas_type10.filter_len,
+                scs_add_req->type10Params.filterMask, scs_add_req->type10Params.filterLen);
+    mtlk_dlist_push_back(&sta->scs_db.scs_list, &dl_scs_info->lentry);
+
+    mtlk_osal_lock_release(&sta->scs_db.scs_list_lock);
   }
-  if (*pStatus != HOST_TO_MAC16(UMI_OK)) {
-    WLOG_DD("CID-%04x: UMI_MAN_SCS_ADD_REQ failed in FW (status=%u)",
-             mtlk_vap_get_oid(nic->vap_handle),
-             MAC_TO_HOST16(scs_add_umi->status));
-    res = MTLK_ERR_MAC;
-    goto FINISH;
-  }
-  ILOG0_V("SCS REQ completed successfully");
 FINISH:
   if (man_entry) {
-  mtlk_txmm_msg_cleanup(&man_msg);
+    mtlk_txmm_msg_cleanup(&man_msg);
+  }
+  if (sta) {
+    mtlk_sta_decref(sta);
   }
   return res;
 }
@@ -10687,6 +10755,12 @@ static mtlk_error_t _wave_core_internal_scs_rem_req(mtlk_core_t *nic, struct mxl
   UMI_SCS_REM *scs_rem_umi;
   uint16 sid = DB_UNKNOWN_SID;
   volatile uint8 *pStatus;
+  wave_scs_list_info_t *scs_rem_list = NULL;
+  sta_entry * sta = NULL;
+  bool scs_dl_direction = FALSE;
+  mtlk_dlist_entry_t *entry;
+  mtlk_dlist_entry_t *head;
+
   MTLK_ASSERT(NULL != nic);
   MTLK_ASSERT(NULL != scs_rem_req);
   sid = wave_hw_get_sid_from_aid(mtlk_vap_get_hw(nic->vap_handle), scs_rem_req->aid,
@@ -10695,37 +10769,73 @@ static mtlk_error_t _wave_core_internal_scs_rem_req(mtlk_core_t *nic, struct mxl
     ELOG_D("CID-%04x: unknown SID tx ", mtlk_vap_get_oid(nic->vap_handle));
     goto FINISH;
   }
-  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
-  if (!man_entry) {
-    ELOG_D("CID-%04x: Can't send SCS Remove request to MAC due to the lack of MAN_MSG",
-           mtlk_vap_get_oid(nic->vap_handle));
-    res = MTLK_ERR_NO_RESOURCES;
+
+  sta = mtlk_stadb_find_sid(&nic->slow_ctx->stadb, sid);
+  if (sta == NULL) {
+    ELOG_V("STA not found \n");
+    res = MTLK_ERR_NOT_IN_USE;
     goto FINISH;
   }
-  man_entry->id           = UMI_MAN_SCS_REM_REQ;
-  man_entry->payload_size = sizeof(UMI_SCS_REM);
-  memset(man_entry->payload, 0, man_entry->payload_size);
-  scs_rem_umi   = ( UMI_SCS_REM *)man_entry->payload;
-  scs_rem_umi->staId = HOST_TO_MAC16(sid);
-  scs_rem_umi->scsid = scs_rem_req->scsid;
-  pStatus           = &scs_rem_umi->status;
-  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
-  if (res != MTLK_ERR_OK) {
-    ELOG_DD("CID-%04x: Can't send UMI_MAN_SCS_REM_REQ request to MAC (err=%d)",
-            mtlk_vap_get_oid(nic->vap_handle), res);
-    goto FINISH;
+
+  /* To identify the scsid belong to DL or UL - if scsid found in scs_rule
+   * of sta_entry then its DL direction else its UL direction */
+  mtlk_osal_lock_acquire(&sta->scs_db.scs_list_lock);
+  if (!mtlk_dlist_is_empty(&sta->scs_db.scs_list)) {
+    mtlk_dlist_foreach(&sta->scs_db.scs_list, entry, head) {
+      scs_rem_list = MTLK_LIST_GET_CONTAINING_RECORD(entry, wave_scs_list_info_t, lentry);
+      if (scs_rem_list->scsid == scs_rem_req->scsid) {
+        mtlk_dlist_remove(&sta->scs_db.scs_list, entry);
+        mtlk_osal_mem_free(scs_rem_list);
+        ILOG2_D("scsid stream removed %d \n",scs_rules->scsid);
+        res = MTLK_ERR_OK;
+        /* The DCDP learns the priority from the nbuf during the traffic.
+        * DCDP will re learn the priority when the traffic is restarted.
+        * Hence, explicit DCDP session flush not required. */
+        scs_dl_direction = TRUE;
+        break;
+      }
+    }
   }
-  if (*pStatus != HOST_TO_MAC16(UMI_OK)) {
-    WLOG_DD("CID-%04x: UMI_MAN_SCS_REM_REQ failed in FW (status=%u)",
-             mtlk_vap_get_oid(nic->vap_handle),
-             MAC_TO_HOST16(scs_rem_umi->status));
-    res = MTLK_ERR_MAC;
-    goto FINISH;
+  mtlk_osal_lock_release(&sta->scs_db.scs_list_lock);
+
+  if (!scs_dl_direction) { //For UL scsid removal
+    man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
+    if (!man_entry) {
+      ELOG_D("CID-%04x: Can't send SCS Remove request to MAC due to the lack of MAN_MSG",
+             mtlk_vap_get_oid(nic->vap_handle));
+      res = MTLK_ERR_NO_RESOURCES;
+      goto FINISH;
+    }
+
+    man_entry->id           = UMI_MAN_SCS_REM_REQ;
+    man_entry->payload_size = sizeof(UMI_SCS_REM);
+    memset(man_entry->payload, 0, man_entry->payload_size);
+    scs_rem_umi   = ( UMI_SCS_REM *)man_entry->payload;
+    scs_rem_umi->staId = HOST_TO_MAC16(sid);
+    scs_rem_umi->scsid = scs_rem_req->scsid;
+    pStatus           = &scs_rem_umi->status;
+    res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
+    if (res != MTLK_ERR_OK) {
+      ELOG_DD("CID-%04x: Can't send UMI_MAN_SCS_REM_REQ request to MAC (err=%d)",
+              mtlk_vap_get_oid(nic->vap_handle), res);
+      goto FINISH;
+    }
+    if (*pStatus != HOST_TO_MAC16(UMI_OK)) {
+      WLOG_DD("CID-%04x: UMI_MAN_SCS_REM_REQ failed in FW (status=%u)",
+              mtlk_vap_get_oid(nic->vap_handle),
+              MAC_TO_HOST16(scs_rem_umi->status));
+      res = MTLK_ERR_MAC;
+      goto FINISH;
+    }
   }
 FINISH:
   if (man_entry) {
     mtlk_txmm_msg_cleanup(&man_msg);
   }
+  if (sta) {
+    mtlk_sta_decref(sta);
+  }
+
   return res;
 }
 
@@ -10922,6 +11032,426 @@ wave_core_ml_sta_reassoc_notify(mtlk_handle_t hcore, const void* data, uint32 da
   MTLK_CLPB_FINALLY(res)
     return mtlk_clpb_push_res(clpb, res);
   MTLK_CLPB_END
+}
+
+static uint8
+wave_get_phy_mode(mtlk_core_t *core, u8 flags, uint8 band)
+{
+  uint32 mode = core_cfg_get_network_mode_cur(core);
+
+  if (band == MTLK_HW_BAND_5_2_GHZ) {
+  /* MTLK_HW_BAND_5_2_GHZ */
+    if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HE))
+      return PSDB_PHY_CW_AX_20;
+    else if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_VHT))
+      return PSDB_PHY_CW_OFDM_20;
+    else if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HT))
+      return PSDB_PHY_CW_N_20;
+    else
+      return PSDB_PHY_CW_AG_20;
+  }
+  else if (band == MTLK_HW_BAND_2_4_GHZ) {
+    if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HE))
+      return PSDB_PHY_CW_AX_20;
+    else if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HT))
+      return PSDB_PHY_CW_N_20;
+    else {
+      if (MTLK_NETWORK_11B_ONLY == mode) {
+        return PSDB_PHY_CW_11B;
+      } else {
+        return PSDB_PHY_CW_AG_20;
+      }
+    }
+  }
+  else if (band == MTLK_HW_BAND_6_GHZ) {
+#ifdef MTLK_WAVE_700
+    return PSDB_PHY_CW_BE_20;
+#endif
+    return PSDB_PHY_CW_AX_20;
+  }
+  else {
+    return PSDB_PHY_CW_OFDM_20;
+  }
+}
+
+int get_max_supported_bw(int chan, mtlk_hw_band_e band)
+{
+  switch (band) {
+    case MTLK_HW_BAND_2_4_GHZ:
+        return CW_20;
+    case MTLK_HW_BAND_5_2_GHZ:
+        return CW_20;
+    case MTLK_HW_BAND_6_GHZ:
+      /* 6 GHz supports up to 320MHz for most channels with 802.11be */
+      if (chan >= 1 && chan <= 221)
+        return CW_320;
+      else if (chan >= 225 && chan <= 229)
+        return CW_40;
+      else
+        return CW_20;
+      default:
+        return -1;
+    }
+}
+
+bool is_valid_channel(int chan, mtlk_hw_band_e hw_band)
+{
+  int band = hw_band;
+
+  switch (band) {
+    case MTLK_HW_BAND_2_4_GHZ:
+      return chan >= 1 && chan <= 14;
+
+    case MTLK_HW_BAND_5_2_GHZ:
+      return (chan >= 36 && chan <= 64) ||
+              (chan >= 100 && chan <= 144) ||
+              (chan >= 149 && chan <= 165) ||
+              (chan == 169 || chan == 173 || chan == 177);
+
+    case MTLK_HW_BAND_6_GHZ:
+      return chan >= 1 && chan <= 233;
+
+    default:
+      return false;
+  }
+}
+
+#define FREQ_2G_FIRST_CH    2412  /* MHz (channel 1)   */
+#define FREQ_5G_FIRST_CH    5180  /* MHz (channel 36)  */
+#define FREQ_6G_FIRST_CH    5955  /* MHz (channel 1)   */
+
+#define FREQ_2G_LAST_CH     2484  /* MHz (channel 14)  */
+#define FREQ_5G_LAST_CH     5885  /* MHz (channel 177) */
+#define FREQ_6G_LAST_CH     7115  /* MHz (channel 233) */
+#define INVALID_FREQ        0
+
+typedef enum {
+    BAND_2GHZ,
+    BAND_5GHZ,
+    BAND_6GHZ
+} wifi_band;
+
+static int calc_center_freq(int freq, enum chanWidth cw, int sec_chan_offset)
+{
+  wifi_band band;
+  int freq_offset;
+  int base_freq;
+
+  if (freq >= FREQ_2G_FIRST_CH && freq <= FREQ_2G_LAST_CH)
+    band = BAND_2GHZ;
+  else if (freq >= FREQ_5G_FIRST_CH && freq <= FREQ_5G_LAST_CH)
+    band = BAND_5GHZ;
+  else if (freq >= FREQ_6G_FIRST_CH && freq <= FREQ_6G_LAST_CH)
+    band = BAND_6GHZ;
+  else
+    return INVALID_FREQ;
+
+  /* Validate bandwidth for each band */
+  switch (band) {
+    case BAND_2GHZ:
+      if (cw > CW_40) {
+        return INVALID_FREQ;
+      }
+      break;
+    case BAND_5GHZ:
+      if (cw > CW_160) {
+        return INVALID_FREQ;
+      }
+      break;
+    case BAND_6GHZ:
+      if (cw > CW_320) {
+        return INVALID_FREQ;
+      }
+      break;
+  }
+
+  /* Calculate based on bandwidth */
+  switch (cw) {
+    case CW_20:
+      return freq;
+
+    case CW_40:
+      if (sec_chan_offset == 0)
+        return INVALID_FREQ;
+
+      return freq + (sec_chan_offset * 10);
+
+    case CW_80:
+      if (band == BAND_2GHZ)
+        return INVALID_FREQ;
+
+      switch (band) {
+        case BAND_5GHZ:
+          freq_offset = freq - FREQ_5G_FIRST_CH;
+          base_freq = freq - (freq_offset % 80);
+          break;
+        case BAND_6GHZ:
+          freq_offset = freq - FREQ_6G_FIRST_CH;
+          base_freq = freq - (freq_offset % 80);
+          break;
+        default:
+          return INVALID_FREQ;
+      }
+      return base_freq + 30;
+
+    case CW_160:
+      if (band != BAND_5GHZ && band != BAND_6GHZ)
+        return INVALID_FREQ;
+
+      switch (band) {
+        case BAND_5GHZ:
+          freq_offset = freq - FREQ_5G_FIRST_CH;
+          base_freq = freq - (freq_offset % 160);
+          break;
+        case BAND_6GHZ:
+          freq_offset = freq - FREQ_6G_FIRST_CH;
+          base_freq = freq - (freq_offset % 160);
+          break;
+        default:
+          return INVALID_FREQ;
+      }
+      return base_freq + 70;
+
+    case CW_320:
+      if (band != BAND_6GHZ)
+        return INVALID_FREQ;
+      if (freq >= 6915) {  /* Channel 193 and above (6915 MHz = 5940 + 193*5) */
+                           /* For ch 193-221 block, center frequencies are fixed */
+        return 6905;       /* CF2 is fixed at 6905 MHz */
+      } else {
+        /* For channels below 193 */
+        freq_offset = freq - FREQ_6G_FIRST_CH;
+        if (freq > 7075) /* Above channel 225 */
+          return INVALID_FREQ;
+        base_freq = freq - (freq_offset % 320);
+          return base_freq + 150;
+      }
+      default:
+        return INVALID_FREQ;
+    }
+}
+
+#define MAX_POWER_LIMIT 240
+static mtlk_error_t
+wave_core_max_tx_power_params(mtlk_core_t *core,int *max_tx_power, uint32 *channel)
+{
+#ifdef MTLK_WAVE_700
+#define NUM_BANDWIDTHS WAVE_BANDWIDTHS_NUM_G7
+#else
+#define NUM_BANDWIDTHS WAVE_BANDWIDTHS_NUM
+#endif
+  mtlk_df_t *df = mtlk_vap_get_df(core->vap_handle);
+  mtlk_df_user_t *df_user = mtlk_df_get_user(df);
+  struct wireless_dev *wdev = mtlk_df_user_get_wdev(df_user);
+  wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
+  uint16 reg_pw_limits[NUM_BANDWIDTHS] = { 0 };
+  uint16 reg_pw_lim = 0;
+  uint32 regd_code;
+  mtlk_country_code_t country_code;
+  unsigned sub_bw; /* subband's width */
+  mtlk_hw_band_e band = wave_radio_band_get(radio);
+  wave_chan_bonding_t chan_bonding;
+  psdb_pw_limits_t tmp_pwl, psd_pwl, cfg_pwl;
+  int freq;
+  int cf1;
+  int base_index_ax = CW_20;
+  int base_index_be = CW_20;
+  uint16 freq_l, freq_u, freq_c;
+  enum chanWidth cfg_width;
+  mtlk_pdb_t *param_db_core;
+  int power_level_p_unit;
+
+#ifdef MTLK_WAVE_700
+  wave_chan_bonding_320mhz_t chan_bonding_320mhz;
+  uint8 be_idx = 0;
+#endif
+
+  memset(&psd_pwl, 0, sizeof(psd_pwl));
+  memset(&cfg_pwl, 0, sizeof(cfg_pwl));
+
+  core_cfg_country_code_get(core, &country_code);
+  regd_code = core_cfg_get_regd_code(core);
+  param_db_core = mtlk_vap_get_param_db(core->vap_handle);
+
+  if (!(is_valid_channel(*channel, band))) {
+    ELOG_D("Invalid channel : %d", *channel);
+    return MTLK_ERR_PARAMS;
+  }
+
+  freq  = ieee80211_channel_to_frequency(*channel, mtlkband2nlband(band));
+  cfg_width = get_max_supported_bw(*channel, band);
+  cf1 = calc_center_freq(freq, cfg_width, 1);
+
+  if (!cf1) {
+    ELOG_D("Invalid center frequency : %d", cf1);
+    return MTLK_ERR_PARAMS;
+  }
+  wave_scan_support_fill_chan_bonding_by_freq(&chan_bonding, cf1, freq);
+#ifdef MTLK_WAVE_700
+  if (wave_radio_is_320mhz_supported(radio) && (cfg_width == CW_320)) {
+    wave_scan_support_fill_chan_bonding_320mhz(&chan_bonding_320mhz, cf1, freq);
+  }
+#endif
+
+  for (sub_bw = CW_20; sub_bw <= cfg_width; sub_bw++) {
+    unsigned ofdm_idx;
+    /* skip invalid channel */
+    if (chan_bonding.lower_chan[sub_bw] == 0)
+      continue;
+
+    if (sub_bw <= CW_160) {
+      freq_l = channel_to_frequency(chan_bonding.lower_chan[sub_bw], band);
+      freq_u = channel_to_frequency(chan_bonding.upper_chan[sub_bw], band);
+      freq_c = channel_to_frequency(chan_bonding.center_chan[sub_bw], band);
+    }
+#ifdef MTLK_WAVE_700
+    else {
+      freq_l = channel_to_frequency(chan_bonding_320mhz.lower_chan, band);
+      freq_u = channel_to_frequency(chan_bonding_320mhz.upper_chan, band);
+      freq_c = channel_to_frequency(chan_bonding_320mhz.center_chan, band);
+    }
+#endif
+
+    reg_pw_lim = wv_cfg80211_regulatory_limit_get(wdev, freq_l, freq_u);
+    reg_pw_limits[sub_bw] = reg_pw_lim;
+
+    /* get power limits from PSDB for current subband */
+    core_get_psdb_hw_limits(core, country_code.country,
+                            freq_c, &tmp_pwl);
+
+    power_level_p_unit = MAX_POWER_LIMIT;
+    /* use CW_20 limit for 11b */
+    if (CW_20 == sub_bw) {
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_11B), reg_pw_lim, power_level_p_unit);
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_AG_20), reg_pw_lim, power_level_p_unit);
+      ILOG1_DDDD("Updated PSD/CFG pw_limits 11B: %3u %3u 11AG: %3u %3u",
+               psd_pwl.pw_limits[PSDB_PHY_CW_11B], cfg_pwl.pw_limits[PSDB_PHY_CW_11B],
+               psd_pwl.pw_limits[PSDB_PHY_CW_AG_20], cfg_pwl.pw_limits[PSDB_PHY_CW_AG_20]);
+    }
+
+    /* use CW_20 and CW_40 limit for 11N */
+    if (CW_20 == sub_bw || CW_40 == sub_bw) {
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_N_20 + sub_bw), reg_pw_lim, power_level_p_unit);
+      ILOG1_DDD("Updated PSD/CFG pw_limits 11N bw%u: %3u %3u",
+               sub_bw, psd_pwl.pw_limits[PSDB_PHY_CW_N_20 + sub_bw], cfg_pwl.pw_limits[PSDB_PHY_CW_11B]);
+    }
+
+   if (sub_bw <= CW_160) {
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_BF_20 + sub_bw), reg_pw_lim, power_level_p_unit);
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_BF_AX_20 + sub_bw), reg_pw_lim, power_level_p_unit);
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_MU_20 + sub_bw), reg_pw_lim, power_level_p_unit);
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_AX_20 + sub_bw), reg_pw_lim, power_level_p_unit);
+
+      ofdm_idx = PSDB_PHY_CW_OFDM_20 + sub_bw;
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, ofdm_idx, reg_pw_lim, power_level_p_unit);
+    }
+
+#ifdef MTLK_WAVE_700
+    if (wave_radio_is_gen7(radio)) {
+      be_idx = PSDB_PHY_CW_BE_20 + sub_bw;
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, be_idx, reg_pw_lim, power_level_p_unit);
+      _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, (PSDB_PHY_CW_BF_BE_20 + sub_bw), reg_pw_lim, power_level_p_unit);
+      ILOG1_DDD("Updated PSD/CFG pw_limits for 11BE bw%u: %3u %3u",
+                 sub_bw, psd_pwl.pw_limits[be_idx], cfg_pwl.pw_limits[be_idx]);
+      ILOG1_DDD("Updated PSD/CFG pw_limits for 11BE BF bw%u: %3u %3u",
+                 sub_bw, psd_pwl.pw_limits[(PSDB_PHY_CW_BF_BE_20 + sub_bw)], cfg_pwl.pw_limits[(PSDB_PHY_CW_BF_BE_20 + sub_bw)]);
+    }
+#endif
+    ILOG1_DDD("updated PSD/CFG pw_limits bw %u: %3u %3u",
+              sub_bw, psd_pwl.pw_limits[ofdm_idx], cfg_pwl.pw_limits[ofdm_idx]);
+  }
+
+  if (regd_code == REGD_CODE_FCC || regd_code == REGD_CODE_FCC_LPI) {
+    base_index_ax = cfg_width;
+    base_index_be = cfg_width;
+  }
+
+  switch (band) {
+    case MTLK_HW_BAND_5_2_GHZ:
+      *max_tx_power = POWER_TO_DBM(cfg_pwl.pw_limits[PSDB_PHY_CW_AX_20 + base_index_ax]);
+      break;
+    case MTLK_HW_BAND_6_GHZ:
+      *max_tx_power = POWER_TO_DBM(cfg_pwl.pw_limits[PSDB_PHY_CW_BE_20 + base_index_be]);
+      break;
+    case MTLK_HW_BAND_2_4_GHZ:
+      *max_tx_power = POWER_TO_DBM(cfg_pwl.pw_limits[PSDB_PHY_CW_AG_20 + CW_20]); /* Always CW_20 */
+      break;
+    default:
+      ILOG0_V("Not valid band");
+  }
+
+  return MTLK_ERR_OK;
+}
+
+int __MTLK_IFUNC
+wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 data_size)
+{
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;
+  mtlk_error_t res = MTLK_ERR_OK;
+  unsigned size;
+  mtlk_core_t *core = mtlk_core_get_master(((mtlk_core_t*)hcore)->vap_handle);
+  wave_wssa_max_tx_power_stats_t max_tx_power_stats = {0};
+  uint32 *channel;
+  uint32 max_power;
+  wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
+  mtlk_hw_band_e band = wave_radio_band_get(radio);
+  unsigned *antenna_gain;
+
+  MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
+
+  channel = mtlk_clpb_enum_get_next(clpb, &size);
+  MTLK_CLPB_TRY(channel, size)
+    res = wave_core_max_tx_power_params(core, &max_power, channel);
+    max_tx_power_stats.channel = *channel;
+    max_tx_power_stats.max_tx_power = max_power;
+    if (MTLK_ERR_OK == res) {
+      if ((MTLK_ERR_OK != (res = mtlk_psdb_get_ant_gain(core, clpb, max_tx_power_stats.channel, band)))) {
+        mtlk_clpb_purge(clpb);
+        return res;
+      }
+      if (NULL == (antenna_gain = mtlk_clpb_enum_get_next(clpb, NULL))) {
+        ELOG_V("Antenna Gain is not present\n");
+        mtlk_clpb_delete(clpb);
+      }
+      *antenna_gain = POWER_TO_DBM(*antenna_gain);
+      max_tx_power_stats.max_tx_power = max_tx_power_stats.max_tx_power - *antenna_gain;
+    }
+    ILOG1_DD("channel : %d, max tx power : %d", max_tx_power_stats.channel, max_tx_power_stats.max_tx_power);
+  MTLK_CLPB_FINALLY(res)
+    return mtlk_clpb_push_res_data(clpb, res, &max_tx_power_stats, sizeof(max_tx_power_stats));
+  MTLK_CLPB_END
+}
+
+int __MTLK_IFUNC
+wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32 *channel)
+{
+  mtlk_df_user_t *df_user;
+  mtlk_clpb_t *clpb = NULL;
+  mtlk_error_t res = MTLK_ERR_OK;
+  wave_wssa_max_tx_power_stats_t *max_tx_power_stats;
+  uint32 size;
+
+  df_user = mtlk_df_user_from_ndev(ndev);
+
+   res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),
+    WAVE_CORE_REQ_GET_MAX_TX_POWER, &clpb, channel, sizeof(*channel));
+  res = _mtlk_df_user_process_core_retval(res, clpb,
+    WAVE_CORE_REQ_GET_MAX_TX_POWER, FALSE);
+
+  if (res != MTLK_ERR_OK)
+    goto end;
+
+  max_tx_power_stats = mtlk_clpb_enum_get_next(clpb, &size);
+  MTLK_CLPB_TRY(max_tx_power_stats, size)
+    res = wv_cfg80211_vendor_cmd_alloc_and_reply(wiphy, max_tx_power_stats, sizeof(*max_tx_power_stats));
+    mtlk_clpb_delete(clpb);
+    return res;
+  MTLK_CLPB_FINALLY(res)
+    mtlk_clpb_delete(clpb);
+  MTLK_CLPB_END
+
+end:
+  return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
 int __MTLK_IFUNC
@@ -14023,45 +14553,6 @@ wave_core_get_allow_3addr_mcast (mtlk_handle_t hcore, const void* data, uint32 d
 
   /* push result and config to clipboard*/
   return mtlk_clpb_push_res_data(clpb, res, &allow_3addr_mcast_cfg, sizeof(allow_3addr_mcast_cfg));
-}
-
-static uint8
-wave_get_phy_mode(mtlk_core_t *core, u8 flags, uint8 band)
-{
-  uint32 mode = core_cfg_get_network_mode_cur(core);
-  if (band == MTLK_HW_BAND_5_2_GHZ) {
-  /* MTLK_HW_BAND_5_2_GHZ */
-    if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HE))
-      return PSDB_PHY_CW_AX_20;
-    else if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_VHT))
-      return PSDB_PHY_CW_OFDM_20;
-    else if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HT))
-      return PSDB_PHY_CW_N_20;
-    else
-      return PSDB_PHY_CW_AG_20;
-  }
-  else if (band == MTLK_HW_BAND_2_4_GHZ) {
-    if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HE))
-      return PSDB_PHY_CW_AX_20;
-    else if (MTLK_BFIELD_GET(flags, VAP_ADD_FLAGS_HT))
-      return PSDB_PHY_CW_N_20;
-    else {
-      if (MTLK_NETWORK_11B_ONLY == mode) {
-        return PSDB_PHY_CW_11B;
-      } else {
-        return PSDB_PHY_CW_AG_20;
-      }
-    }
-  }
-  else if (band == MTLK_HW_BAND_6_GHZ) {
-#ifdef MTLK_WAVE_700
-    return PSDB_PHY_CW_BE_20;
-#endif
-    return PSDB_PHY_CW_AX_20;
-  }
-  else {
-    return PSDB_PHY_CW_OFDM_20;
-  }
 }
 
 void __MTLK_IFUNC

@@ -417,6 +417,7 @@ typedef enum
   WAVE_RADIO_REQ_GET_MU_GRP_CFG,                 /*!< Get MU Group config parameters */
   WAVE_RADIO_REQ_GET_RADIO_PEER_LIST,            /*!< Get list of connected STAs in radio */
   WAVE_CORE_REQ_GET_LA_MIMO_OFDMA_STATS,         /*!< Get Link Adapt mimo stats */
+  WAVE_CORE_REQ_GET_MAX_TX_POWER,                /*!< Get Max Tx Power */
 
 #ifdef MTLK_WAVE_700
   WAVE_CORE_REQ_SET_EHT_DEBUG,                   /*!< Set EHT Debug */
@@ -743,6 +744,7 @@ MTLK_DECLARE_CFG_START(mtlk_gen_core_cfg_t)
   MTLK_CFG_ITEM(BOOL, intra_vap_mcast)
   MTLK_CFG_ITEM(int, probereq_offload_mode)
   MTLK_CFG_ITEM(BOOL, pcie_auto_cfg)
+  MTLK_CFG_ITEM(uint8, scs_enable);
 MTLK_DECLARE_CFG_END(mtlk_gen_core_cfg_t)
 
 MTLK_DECLARE_CFG_START(mtlk_core_rssi_ignore_probe_request_t)
@@ -1604,6 +1606,7 @@ struct vendor_unconnected_sta_req_data_internal
   u32 cf2; /* in MHz */
   IEEE_ADDR addr;
   struct wireless_dev *wdev; /* wdev that requested the data, filled by driver */
+  u8 req_type; /* unconnected sta req type - async or sync */
 };
 
 struct driver_sta_info {

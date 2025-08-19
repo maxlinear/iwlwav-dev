@@ -626,6 +626,7 @@ struct nic {
   #endif
 
   uint32                    acs_updated_ts;
+  int                       power_level;
 
   /* entries with zero reject status code */
   ieee_addr_list_t          widan_blacklist;
@@ -1129,7 +1130,7 @@ static __INLINE uint16 wave_core_get_all_sta_sid (mtlk_core_t *core)
 static __INLINE void wave_core_qos_adjust_priority (mtlk_core_t *core, mtlk_nbuf_t *nbuf)
 {
   MTLK_ASSERT(NULL != core);
-  mtlk_qos_adjust_priority(core->dscp_table, nbuf);
+  mtlk_qos_adjust_priority(core, nbuf);
 }
 
 void __MTLK_IFUNC wave_core_sta_disconnect(mtlk_vap_handle_t vap_handle, IEEE_ADDR *addr);

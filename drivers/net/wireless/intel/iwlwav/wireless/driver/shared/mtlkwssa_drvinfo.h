@@ -405,6 +405,11 @@ typedef struct wave_wssa_mimo_radio_stats {
   uint8 no_of_mcs;
   wave_wssa_mimo_stats_t mimo_stats;
 } wave_wssa_mimo_radio_stats_t;
+
+typedef struct wave_wssa_max_tx_power_stats {
+  uint32 channel;
+  uint32 max_tx_power;
+} wave_wssa_max_tx_power_stats_t;
 /* HE MIMO sta stats ends */
 
 typedef struct wave_rssi_avg_info

@@ -89,6 +89,12 @@ typedef uintptr_t mtlk_handle_t;
     ((u32)((u8)a3) << 8u)  |   \
     ((u32)((u8)a4)))
 
+#define MTLK_IP4_VER   4
+#define MTLK_IP6_VER   6
+#define MTLK_IP4_ALEN  4
+#define MTLK_IP6_ALEN  16
+#define MTLK_IP6_FLOW_HDR_SIZE 3
+
 /******************************************
  * MAC <=> Driver interface conversion
  *****************************************/

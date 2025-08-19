@@ -2349,8 +2349,6 @@ void ieee80211_remove_interfaces(struct ieee80211_local *local)
 	 */
 	cfg80211_shutdown_all_interfaces(local->hw.wiphy);
 
-	wiphy_lock(local->hw.wiphy);
-
 	WARN(local->open_count, "%s: open count remains %d\n",
 	     wiphy_name(local->hw.wiphy), local->open_count);
 
@@ -2371,6 +2369,7 @@ void ieee80211_remove_interfaces(struct ieee80211_local *local)
 
 	unregister_netdevice_many(&unreg_list);
 
+	wiphy_lock(local->hw.wiphy);
 	list_for_each_entry_safe(sdata, tmp, &wdev_list, list) {
 		bool netdev = sdata->dev;
 

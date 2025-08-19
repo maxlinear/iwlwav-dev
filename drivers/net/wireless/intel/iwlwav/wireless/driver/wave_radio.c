@@ -2866,12 +2866,15 @@ end:
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
-int wave_radio_unconnected_sta_get (struct wireless_dev *wdev,
+int wave_radio_unconnected_sta_get (struct wiphy *wiphy, struct wireless_dev *wdev,
                                     struct intel_vendor_unconnected_sta_req_cfg *sta_req_data)
 {
   int res = MTLK_ERR_OK;
   mtlk_df_user_t *df_user;
+  mtlk_clpb_t *clpb = NULL;
   struct vendor_unconnected_sta_req_data_internal sta_req_data_internal;
+  struct intel_vendor_unconnected_sta *sta_res_data_out;
+  uint32 size;
 
   MTLK_ASSERT(NULL != wdev);
 
@@ -2897,8 +2900,39 @@ int wave_radio_unconnected_sta_get (struct wireless_dev *wdev,
   sta_req_data_internal.cf2 = sta_req_data->center_freq2;
   sta_req_data_internal.chan_width = sta_req_data->bandwidth;
   sta_req_data_internal.wdev = wdev;
-  _mtlk_df_user_invoke_core_async(mtlk_df_user_get_master_df(df_user), WAVE_CORE_REQ_GET_UNCONNECTED_STATION,
-                                  &sta_req_data_internal, sizeof(sta_req_data_internal), NULL, 0);
+  sta_req_data_internal.req_type = sta_req_data->req_type;
+
+  if(sta_req_data_internal.req_type == NASTA_STATS_REQ_ASYNC) {
+    _mtlk_df_user_invoke_core_async(mtlk_df_user_get_master_df(df_user), WAVE_CORE_REQ_GET_UNCONNECTED_STATION,
+                                    &sta_req_data_internal, sizeof(sta_req_data_internal), NULL, 0);
+    ILOG1_S("%s: get unconnected station async request", wdev->netdev->name);
+    goto end;
+  }
+
+  if(sta_req_data_internal.req_type != NASTA_STATS_REQ_SYNC) {
+    ELOG_SD("%s: bad req_type (%u)", wdev->netdev->name, sta_req_data_internal.req_type);
+    res = MTLK_ERR_PARAMS;
+    goto end;
+  }
+
+  ILOG1_S("%s: get unconnected station sync request", wdev->netdev->name);
+
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),
+    WAVE_CORE_REQ_GET_UNCONNECTED_STATION, &clpb, &sta_req_data_internal, sizeof(sta_req_data_internal));
+  res = _mtlk_df_user_process_core_retval(res, clpb,
+    WAVE_CORE_REQ_GET_UNCONNECTED_STATION, FALSE);
+  
+  if (res != MTLK_ERR_OK)
+    goto end;
+
+  sta_res_data_out = mtlk_clpb_enum_get_next(clpb, &size);
+  MTLK_CLPB_TRY(sta_res_data_out, size)
+    res = wv_cfg80211_vendor_cmd_alloc_and_reply(wiphy, sta_res_data_out, sizeof(*sta_res_data_out));
+    mtlk_clpb_delete(clpb);
+    return res;
+  MTLK_CLPB_FINALLY(res)
+    mtlk_clpb_delete(clpb);
+  MTLK_CLPB_END
 
 end:
   return _mtlk_df_mtlk_to_linux_error_code(res);

@@ -1676,6 +1676,25 @@ _wave_cfg80211_vendor_get_peer_rate_info (struct wiphy *wiphy, struct wireless_d
   return wave_radio_get_peer_rate_info(wiphy, wdev->netdev, (uint8 *)data);
 }
 
+/*! \brief      Get Max Tx power
+ *
+ *  \param[in]  wiphy     Pointer to wireless hardware description (wiphy) structure
+ *  \param[in]  wdev      Pointer to wireless device state (wireless_dev) structure
+ *  \param[in]  data      Pointer to data: Channel, must not be NULL
+ *  \param[in]  data_len  Data length: must be sizeof(int)
+ *
+ *  \note       Rate info is returned via cfg80211_vendor_cmd_reply()
+ *
+ *  \return     Linux error code
+ *
+ */
+static int
+_wave_ieee80211_vendor_get_max_tx_power (struct wiphy *wiphy, struct wireless_dev *wdev,
+                                         const void *data, int data_len)
+{
+  return wave_core_get_max_tx_power(wiphy, wdev->netdev, (uint32 *)data);
+}
+
 /*! \brief      Get FW recovery statistics
  *
  *  \param[in]  wiphy     Pointer to wireless hardware description (wiphy) structure
@@ -3282,7 +3301,7 @@ static int _wave_ieee80211_vendor_hapd_get_unconnected_sta (struct wiphy *wiphy,
 {
   WAVE_CHECK_VENDOR_DATA_AND_SIZE(data, data_len, sizeof(struct intel_vendor_unconnected_sta_req_cfg));
 
-  return wave_radio_unconnected_sta_get(wdev, (struct intel_vendor_unconnected_sta_req_cfg *)data);
+  return wave_radio_unconnected_sta_get(wiphy, wdev, (struct intel_vendor_unconnected_sta_req_cfg *)data);
 }
 
 /*! \brief      Request Association ID (AID) from driver/FW for specified MAC address
@@ -3814,7 +3833,7 @@ static int _wave_ieee80211_vendor_get_20mhz_tx_power (struct wiphy *wiphy, struc
   struct mxl_vendor_tx_power *tx_power;
   uint32 tx_power_size;
 
-  ILOG0_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  ILOG2_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
 
   df_user = mtlk_df_user_from_wdev(wdev);
   MTLK_CHECK_DF_USER(df_user);
@@ -5017,6 +5036,23 @@ static int _wave_cfg80211_vendor_set_bss_critical_update_info (struct wiphy *wip
 
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
+
+static int _wave_ieee80211_vendor_set_scs_enable(struct wiphy *wiphy, struct wireless_dev *wdev,
+                                                     const void *data, int data_len)
+{
+
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_SCS_ENABLE);
+}
+
+static int _wave_ieee80211_vendor_get_scs_enable(struct wiphy *wiphy, struct wireless_dev *wdev,
+                                                     const void *data, int data_len)
+{
+
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_SCS_ENABLE, 1);
+}
+
 static int _wave_ieee80211_vendor_scs_add_req(struct wiphy *wiphy, struct wireless_dev *wdev,
                                                      const void *data, int data_len)
 {
@@ -5025,6 +5061,7 @@ static int _wave_ieee80211_vendor_scs_add_req(struct wiphy *wiphy, struct wirele
   int res = MTLK_ERR_OK;
   struct mxl_scs_add_req *scs_add_req;
 
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   WAVE_CHECK_VENDOR_DATA_AND_SIZE(data, data_len, sizeof(struct mxl_scs_add_req));
 
   scs_add_req = (struct mxl_scs_add_req*)data;
@@ -5042,6 +5079,7 @@ static int _wave_ieee80211_vendor_scs_rem_req(struct wiphy *wiphy, struct wirele
   int res = MTLK_ERR_OK;
   struct mxl_scs_rem_req *scs_rem_req;
 
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   WAVE_CHECK_VENDOR_DATA_AND_SIZE(data, data_len, sizeof(struct mxl_scs_rem_req));
 
   scs_rem_req = (struct mxl_scs_rem_req*)data;
@@ -7115,6 +7153,7 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
   VENDOR_CMD_WDEV(GET_RADIO_PEER_LIST, _wave_ieee80211_vendor_get_radio_peer_list),
   VENDOR_CMD_WDEV(GET_LINK_ADAPT_MIMO_OFDMA_STATS, _wave_ieee80211_vendor_get_mimo_ofdma_stats),
   VENDOR_CMD_WDEV(GET_LINK_ADAPT_MU_GROUPS_COUNTERS_STATS, _wave_ieee80211_vendor_get_LaMuGroupsCountersStats),
+  VENDOR_CMD_WDEV(GET_MAX_TX_POWER, _wave_ieee80211_vendor_get_max_tx_power),
   /* Wave 700 inclusions */
 #ifdef MTLK_WAVE_700
   VENDOR_CMD_MXL_WDEV_UP(SET_EHT_DEBUG_DATA,   _wave_cfg80211_vendor_hapd_set_eht_debug_data),
@@ -7143,6 +7182,8 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
   VENDOR_CMD_WDEV(SET_DYNAMIC_WMM, _wave_cfg80211_vendor_enable_dynamic_wmm),
   VENDOR_CMD_WDEV(SCS_ADD_REQ, _wave_ieee80211_vendor_scs_add_req),
   VENDOR_CMD_WDEV(SCS_REM_REQ, _wave_ieee80211_vendor_scs_rem_req),
+  VENDOR_CMD_WDEV(SET_SCS_ENABLE, _wave_ieee80211_vendor_set_scs_enable),
+  VENDOR_CMD_WDEV(GET_SCS_ENABLE, _wave_ieee80211_vendor_get_scs_enable),
   /* Send Tid to link mapping teardown frame to ML sta */
   VENDOR_CMD_WDEV(ML_SEND_T2LM_TEARDOWN_FRAME, _wave_ieee80211_vendor_send_t2lm_teardown_frame),
   /* Get Link statistics for ML STA */

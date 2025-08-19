@@ -30,6 +30,8 @@
 #define IEEE80211_PASSIVE_CHANNEL_TIME (HZ / 9)
 #define OBSS_BSSCOLOR_BITMAP_RESET_TIME 3600LL /* in seconds */
 
+#define MIN_NOISE -128 /* dBm */
+
 void ieee80211_rx_bss_put(struct ieee80211_local *local,
 			  struct ieee80211_bss *bss)
 {
@@ -196,11 +198,9 @@ ieee80211_bss_info_update(struct ieee80211_local *local,
 	else if (ieee80211_hw_check(&local->hw, SIGNAL_UNSPEC))
 		bss_meta.signal = (rx_status->signal * 100) / local->hw.max_signal;
 
-	/* we are not able to accomodate noise parameter in ieee80211_rx_status structure due to
-	 * 48 bytes size restriction
-	bss_meta.noise = rx_status->noise;
-	*/
-	bss_meta.noise = 0;
+	/*we can get noise using SNRdB = SignaldBm − NoisedBm*/
+	bss_meta.noise = (rx_status->snr_db == 0)? MIN_NOISE : rx_status->signal - rx_status->snr_db;
+
 	bss_meta.scan_width = NL80211_BSS_CHAN_WIDTH_20;
 	if (rx_status->bw == RATE_INFO_BW_5)
 		bss_meta.scan_width = NL80211_BSS_CHAN_WIDTH_5;

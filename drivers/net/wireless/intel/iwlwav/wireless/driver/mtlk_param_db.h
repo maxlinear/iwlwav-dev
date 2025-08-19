@@ -163,6 +163,7 @@ typedef enum {
   PARAM_DB_CORE_BSS_CRITICAL_UPDATE,      /*!< save BSS critical update info */
   PARAM_DB_CORE_SKIP_SET_BEACON,          /*!< save Skip set beacon info */
   PARAM_DB_CORE_MLD_INFO,                 /*!< MLD Info parameters received during the setup MLD */
+  PARAM_DB_CORE_SCS_ENABLE,               /*!< Enable/disable SCS */
 #endif
 
   PARAM_DB_CORE_FIXED_RATE_THERMAL,       /*!< Fixed rate thermal power */

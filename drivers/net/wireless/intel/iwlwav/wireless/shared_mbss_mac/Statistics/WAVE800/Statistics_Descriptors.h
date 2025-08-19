@@ -418,6 +418,7 @@ typedef struct
 {
 	uint32 groupsCreatedCounter;
 	uint32 groupsRemovedCounter;
+    uint32 groupsPlanFailCounter;
 	uint16 groupsRemovalReasonCounters[MAX_NUM_OF_MU_GROUPS_REMOVAL_REASONS_GEN7];
 } MuGroupsCounters_t_wave700;
 #ifdef CPU_ARC
@@ -430,6 +431,7 @@ typedef struct
 	MuGroupsCounters_t_wave700 ulOfdmaGroupsCounters;
 	MuGroupsCounters_t_wave700 dlMimoGroupsCounters;
 	MuGroupsCounters_t_wave700 ulMimoGroupsCounters;
+    MuGroupsCounters_t_wave700 ulTwtGroupsCounters;
 } LinkAdaptationMuGroupsStatistics_t_wave700;
 #ifdef CPU_ARC
 typedef LinkAdaptationMuGroupsStatistics_t_wave700 LinkAdaptationMuGroupsStatistics_t;

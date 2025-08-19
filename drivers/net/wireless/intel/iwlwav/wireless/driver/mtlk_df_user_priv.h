@@ -277,6 +277,7 @@ enum {
 #ifdef WAVE_ENABLE_PIE
   PRM_ID_AQM_STA_EN,
 #endif /* WAVE_ENABLE_PIE */
+  PRM_ID_SCS_ENABLE,
 
   PRM_ID_RADIO_LAST
 };

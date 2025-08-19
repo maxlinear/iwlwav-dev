@@ -4572,6 +4572,8 @@ _mtlk_core_get_core_cfg (mtlk_handle_t hcore,
                                         (core, &pcore_cfg->admission_capacity), res);
     MTLK_CFG_CHECK_AND_SET_ITEM_BY_FUNC(pcore_cfg, pcie_auto_cfg, wave_core_get_pcie_auto_gen_transition,
                                         (core, &pcore_cfg->pcie_auto_cfg), res);
+    MTLK_CFG_CHECK_AND_SET_ITEM(pcore_cfg, scs_enable,
+                                MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_SCS_ENABLE));
     if (mtlk_vap_is_slave_ap(core->vap_handle)) {
       _mtlk_slave_core_get_core_cfg(core, pcore_cfg);
     } else {
@@ -4886,6 +4888,13 @@ _mtlk_core_set_offload_mode (mtlk_core_t *core, wave_offload_mode_t offload_mode
 }
 
 static int
+_wave_core_set_scs (mtlk_core_t *core, uint8 scs_enable)
+{
+  MTLK_CORE_PDB_SET_INT(core, PARAM_DB_CORE_SCS_ENABLE, scs_enable);
+  return MTLK_ERR_OK;
+}
+
+static int
 _mtlk_core_set_core_cfg (mtlk_handle_t hcore,
                          const void* data, uint32 data_size)
 {
@@ -4955,6 +4964,9 @@ _mtlk_core_set_core_cfg (mtlk_handle_t hcore,
                                   (core, (wave_offload_mode_t)core_cfg->probereq_offload_mode), res);
       MTLK_CFG_CHECK_ITEM_AND_CALL(core_cfg, pcie_auto_cfg, wave_core_set_pcie_auto_gen_transition,
                                        (core, core_cfg->pcie_auto_cfg), res);
+      MTLK_CFG_CHECK_ITEM_AND_CALL(core_cfg, scs_enable, _wave_core_set_scs,
+                                  (core, core_cfg->scs_enable), res);
+
     MTLK_CFG_END_CHEK_ITEM_AND_CALL()
   }
   MTLK_CLPB_FINALLY(res)
@@ -10081,6 +10093,7 @@ mtlk_core_handle_tx_ctrl (mtlk_vap_handle_t    vap_handle,
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_RADIO_REQ_GET_PROP_PHY_CAP,         wave_core_get_prop_phy_cap);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_RADIO_REQ_GET_RADIO_PEER_LIST,      wave_core_get_radio_sta_list);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_LA_MIMO_OFDMA_STATS,   wave_core_get_link_adapt_mimo_statistics);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_MAX_TX_POWER,          wave_core_get_max_tx_power_info);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_LA_MU_HE_EHT_STATS,    wave_core_get_la_mu_he_eht_stats);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,    wave_core_set_fixed_rate_thermal);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,    wave_core_get_fixed_rate_thermal);

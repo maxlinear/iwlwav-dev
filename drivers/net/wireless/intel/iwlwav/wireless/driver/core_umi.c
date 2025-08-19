@@ -2185,6 +2185,7 @@ FINISH:
 mtlk_error_t __MTLK_IFUNC
 mtlk_core_get_unconnected_station (mtlk_handle_t hcore, const void* data, uint32 data_size)
 {
+#define SYNC_REQ_SCAN_TIME_MS 20
   mtlk_core_t *core = HANDLE_T_PTR(mtlk_core_t, hcore);
   mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;
   uint8 *addr;
@@ -2200,6 +2201,7 @@ mtlk_core_get_unconnected_station (mtlk_handle_t hcore, const void* data, uint32
   struct set_chan_param_data cpd;
   struct ieee80211_channel *c;
   BOOL paused_scan = FALSE;
+  BOOL async_response = TRUE;
   wave_radio_t       *radio = wave_vap_radio_get(core->vap_handle);
   wv_mac80211_t      *mac80211 = wave_radio_mac80211_get(radio);
   mtlk_nbuf_t *nbuf_ndp = NULL;
@@ -2227,6 +2229,7 @@ mtlk_core_get_unconnected_station (mtlk_handle_t hcore, const void* data, uint32
 
     memset(&cd, 0, sizeof(cd));
     memset(&sta_res_data, 0, sizeof(sta_res_data));
+    async_response = (sta_req_data->req_type == NASTA_STATS_REQ_ASYNC) ? TRUE : FALSE;
     sta_res_data.addr = sta_req_data->addr;
     for (i = 0; i < MTLK_ARRAY_SIZE(sta_res_data.rssi); i++)
       sta_res_data.rssi[i] = MIN_RSSI;
@@ -2360,7 +2363,10 @@ mtlk_core_get_unconnected_station (mtlk_handle_t hcore, const void* data, uint32
     if (res != MTLK_ERR_OK)
       goto remove_sta;
 
-    mtlk_osal_msleep(WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_UNCONNECTED_STA_SCAN_TIME));
+    if (async_response)
+      mtlk_osal_msleep(WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_UNCONNECTED_STA_SCAN_TIME));
+    else
+      mtlk_osal_msleep(SYNC_REQ_SCAN_TIME_MS);
 
     memset(&cpd, 0, sizeof(cpd));
     cpd.switch_type = ST_NORMAL_AFTER_RSSI;
@@ -2376,8 +2382,8 @@ mtlk_core_get_unconnected_station (mtlk_handle_t hcore, const void* data, uint32
       cpd.rssi[i] = mtlk_stadb_apply_rssi_offset(cpd.rssi[i], _mtlk_core_get_rrsi_offs(core));
     }
 
-	ELOG_DDDD("get_unconnected_station RSSI -%04x -%04x -%04x -%04x",
-            cpd.rssi[0],cpd.rssi[1],cpd.rssi[2],cpd.rssi[3]);
+    ILOG0_DDDD("get_unconnected_station RSSI -%04x -%04x -%04x -%04x",
+              cpd.rssi[0],cpd.rssi[1],cpd.rssi[2],cpd.rssi[3]);
 
     /* Get MHI Statistics */
     mtlk_core_get_statistics(caller_core, mtlk_vap_get_hw(caller_core->vap_handle));
@@ -2407,10 +2413,13 @@ end:
     }
     if (nbuf_ndp)
       mtlk_df_nbuf_free(nbuf_ndp);
-    res2 = wv_cfg80211_handle_get_unconnected_sta(sta_req_data->wdev,
-      &sta_res_data, sizeof(sta_res_data));
+    
+    if (async_response)
+      res2 = wv_cfg80211_handle_get_unconnected_sta(sta_req_data->wdev,
+        &sta_res_data, sizeof(sta_res_data));
   MTLK_CLPB_FINALLY(res)
-    return res != MTLK_ERR_OK ? res : res2;
+    return async_response ? (res != MTLK_ERR_OK ? res : res2) :
+      mtlk_clpb_push_res_data(clpb, res, &sta_res_data, sizeof(sta_res_data));
   MTLK_CLPB_END
 }
 
