@@ -167,6 +167,7 @@ typedef enum {
 #endif
 
   PARAM_DB_CORE_FIXED_RATE_THERMAL,       /*!< Fixed rate thermal power */
+  PARAM_DB_CORE_MSCS_ENABLE,              /*!< Enable/disable MSCS */
 
   PARAM_DB_CORE_LAST_VALUE_ID,            /*!< Last parameter ID */
 } mtlk_pdb_id_t;/*!< \Enum of the parameters IDs. When adding parameter - extend this enum */

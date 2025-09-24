@@ -452,6 +452,8 @@ typedef enum
 #endif
   WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,         /*!< Set Fixed Rate Thermal */
   WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,         /*!< Get Fixed Rate Thermal */
+  WAVE_CORE_REQ_MSCS_ADD,                       /*!< MSCS ADD Request */
+  WAVE_CORE_REQ_MSCS_REM,                       /*!< MSCS REM Request */
 /* DEBUG COMMANDS */
 #ifdef CONFIG_WAVE_DEBUG
   MTLK_HW_REQ_GET_COUNTERS_SRC,                 /*!< Get WAVE counters source */
@@ -745,6 +747,7 @@ MTLK_DECLARE_CFG_START(mtlk_gen_core_cfg_t)
   MTLK_CFG_ITEM(int, probereq_offload_mode)
   MTLK_CFG_ITEM(BOOL, pcie_auto_cfg)
   MTLK_CFG_ITEM(uint8, scs_enable);
+  MTLK_CFG_ITEM(uint8, mscs_enable);
 MTLK_DECLARE_CFG_END(mtlk_gen_core_cfg_t)
 
 MTLK_DECLARE_CFG_START(mtlk_core_rssi_ignore_probe_request_t)

@@ -1031,7 +1031,7 @@ struct ieee80211_link_data {
 	struct work_struct color_change_finalize_work;
 	struct color_collision_notify color_coll_notify;
 
-	struct delayed_work color_collision_detect_work;
+	struct wiphy_delayed_work color_collision_detect_work;
 	u64 color_bitmap;
 
 	/* context reservation -- protected with chanctx_mtx */
@@ -2055,7 +2055,8 @@ int ieee80211_channel_switch(struct wiphy *wiphy, struct net_device *dev,
 
 /* color change handling */
 void ieee80211_color_change_finalize_work(struct work_struct *work);
-void ieee80211_color_collision_detection_work(struct work_struct *work);
+void ieee80211_color_collision_detection_work(struct wiphy *wiphy,
+                                             struct wiphy_work *work);
 
 /* color collision handling */
 void ieee80211_color_coll_notify_work(struct work_struct *work);

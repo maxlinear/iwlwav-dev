@@ -64,6 +64,12 @@
 
 #define DPD_TOTAL_CALIBRATION_POINTS (15) //This value needs to be aligned with TOTAL_CALIBRATION_POINTS in DpdDefinitions.h
 
+/* BF matrix header masks - Jira WLANRTSYS-53879 */
+#define BF_HEADER_PACKET_FORMAT_MASK		0x00000007		// Bits 2:0 - PHY mode
+#define WAVE600_BF_HEADER_HT_BW_MASK		0x00100000		// Bit 20 for HT mode
+#define WAVE600_BF_HEADER_VHT_HE_BW_MASK	0x00C00000		// Bits 23:22 for VHT/HE modes
+#define WAVE700_BF_HEADER_BW_RU_MASK		0x01E00000		// Bits 24:21 - Bandwidth/RU
+
 typedef enum dutChipModule
 {
 	DUT_CHIP_MODULE_UMAC_MEM	= 1,
@@ -71,8 +77,7 @@ typedef enum dutChipModule
 	DUT_CHIP_MODULE_PHY,
 	DUT_CHIP_MODULE_RF,
 	DUT_CHIP_MODULE_AFE,
-	DUT_CHIP_MODULE_BF_VHT,
-	DUT_CHIP_MODULE_BF_HE,
+	DUT_CHIP_MODULE_REGISTER
 } dutChipModule_e;
 
 typedef enum dutNvMemoryType

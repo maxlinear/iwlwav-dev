@@ -1650,7 +1650,7 @@ typedef struct _UMI_GROUP_PN
 {
     uint16      u16Status;
     uint8       vapIndex;
-    uint8       reserved;
+    uint8       keyType;
     uint8       au8TxSeqNum[MTLK_PAD4(UMI_RSN_SEQ_NUM_LEN)];
 } __MTLK_PACKED UMI_GROUP_PN;
 

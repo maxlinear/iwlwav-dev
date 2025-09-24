@@ -4603,7 +4603,7 @@ ieee80211_conn_flags_t ieee80211_chandef_downgrade(struct cfg80211_chan_def *c)
                         ret = IEEE80211_STA_DISABLE_320MHZ;
                         break;
                 }
-		break;
+		fallthrough;
 	default:
 	case NL80211_CHAN_WIDTH_20_NOHT:
 		WARN_ON_ONCE(1);

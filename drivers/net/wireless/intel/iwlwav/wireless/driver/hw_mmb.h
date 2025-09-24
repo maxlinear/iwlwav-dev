@@ -376,7 +376,6 @@ void __MTLK_IFUNC mtlk_hw_store_logger_fifo_mux_cfg(mtlk_vap_handle_t vap_handle
 int  __MTLK_IFUNC mtlk_mmb_fw_rcvry_rtlog_init(mtlk_hw_t *hw);
 #endif
 #endif
-void __MTLK_IFUNC mtlk_hw_mmb_set_msi_intr_mode(mtlk_hw_t *hw, uint32 mode);
 #ifdef CPTCFG_IWLWAV_SET_PM_QOS
 int  __MTLK_IFUNC mtlk_mmb_update_cpu_dma_latency(mtlk_hw_t *hw, s32 new_cpu_dma_latency);
 #endif
@@ -430,6 +429,8 @@ typedef enum
   WHM_STATE_READY,
   WHM_STATE_BUSY
 } wave_whm_state_mac;
+
+void __MTLK_IFUNC mtlk_hw_mmb_set_msi_intr_mode(mtlk_hw_t *hw, mtlk_irq_mode_e mode);
 
 uint8 __MTLK_IFUNC
 mtlk_hw_eeprom_get_nic_type(mtlk_hw_t *hw);

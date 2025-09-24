@@ -636,6 +636,7 @@ MTLK_INIT_STEPS_LIST_BEGIN(sta_entry)
 #endif
 #if defined(MTLK_WAVE_700)
   MTLK_INIT_STEPS_LIST_ENTRY(sta_entry, ML_STA_INFO)
+  MTLK_INIT_STEPS_LIST_ENTRY(sta_entry, MSCS_STA_LIST)
   MTLK_INIT_STEPS_LIST_ENTRY(sta_entry, SCS_STA_LIST)
 #endif
 #ifdef BEST_EFFORT_TID_SPREADING
@@ -813,6 +814,23 @@ _mtlk_sta_scs_cleanup (sta_entry *sta)
   mtlk_osal_lock_cleanup(&sta->scs_db.scs_list_lock);
   mtlk_dlist_cleanup(&sta->scs_db.scs_list);
 }
+
+static void
+_mtlk_sta_mscs_cleanup (sta_entry *sta)
+{
+  mtlk_dlist_entry_t *entry;
+  wave_mscs_list_info_t *mscs_clean_list;
+  
+  mtlk_osal_lock_acquire(&sta->mscs_db.mscs_list_lock);
+  while ((entry = mtlk_dlist_pop_front(&sta->mscs_db.mscs_list)))
+  {
+     mscs_clean_list = MTLK_LIST_GET_CONTAINING_RECORD(entry, wave_mscs_list_info_t, lentry);
+     mtlk_osal_mem_free(mscs_clean_list);
+  }
+  mtlk_osal_lock_release(&sta->mscs_db.mscs_list_lock);
+  mtlk_osal_lock_cleanup(&sta->mscs_db.mscs_list_lock);
+  mtlk_dlist_cleanup(&sta->mscs_db.mscs_list);
+}
 #endif /* MTLK_WAVE_700 */
 
 static void
@@ -834,6 +852,8 @@ _mtlk_sta_cleanup (sta_entry *sta)
 #endif
     MTLK_CLEANUP_STEP(sta_entry, SCS_STA_LIST, MTLK_OBJ_PTR(sta),
                       _mtlk_sta_scs_cleanup, (sta));
+    MTLK_CLEANUP_STEP(sta_entry, MSCS_STA_LIST, MTLK_OBJ_PTR(sta),
+                      _mtlk_sta_mscs_cleanup, (sta));
     MTLK_CLEANUP_STEP(sta_entry, ML_STA_INFO, MTLK_OBJ_PTR(sta),
                       _mtlk_sta_ml_info_cleanup, (sta));
 #endif
@@ -910,6 +930,13 @@ _mtlk_sta_scs_init (sta_entry *sta)
 {
    mtlk_osal_lock_init(&sta->scs_db.scs_list_lock);
    mtlk_dlist_init(&sta->scs_db.scs_list);
+}
+
+static void
+_mtlk_sta_mscs_init (sta_entry *sta)
+{
+   mtlk_osal_lock_init(&sta->mscs_db.mscs_list_lock);
+   mtlk_dlist_init(&sta->mscs_db.mscs_list);
 }
 #endif
 
@@ -1148,6 +1175,8 @@ _mtlk_sta_init (sta_entry *sta,
 #ifdef MTLK_WAVE_700
     MTLK_INIT_STEP(sta_entry, ML_STA_INFO, MTLK_OBJ_PTR(sta),
                    _mtlk_sta_ml_info_init, (sta));
+    MTLK_INIT_STEP_VOID(sta_entry, MSCS_STA_LIST, MTLK_OBJ_PTR(sta),
+                       _mtlk_sta_mscs_init, (sta));
     MTLK_INIT_STEP_VOID(sta_entry, SCS_STA_LIST, MTLK_OBJ_PTR(sta),
                        _mtlk_sta_scs_init, (sta));
 #ifdef BEST_EFFORT_TID_SPREADING

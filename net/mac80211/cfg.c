@@ -692,7 +692,7 @@ static int ieee80211_get_key(struct wiphy *wiphy, struct net_device *dev,
 	/* Fetch group PN SEQ from FW and update Driver Core context.
 	 * next call "drv_get_key_seq" will update kseq from Driver conext.
 	 */
-	drv_pre_get_key_seq(sdata);
+	drv_pre_get_key_seq(sdata, key_idx);
 
 	rcu_read_lock();
 
@@ -4880,12 +4880,13 @@ unlock:
 	sdata_unlock(sdata);
 }
 
-void ieee80211_color_collision_detection_work(struct work_struct *work)
+void ieee80211_color_collision_detection_work(struct wiphy *wiphy,
+                                             struct wiphy_work *work)
 {
-	struct delayed_work *delayed_work = to_delayed_work(work);
 	struct ieee80211_link_data *link =
-		container_of(delayed_work, struct ieee80211_link_data,
-			     color_collision_detect_work);
+               container_of(work, struct ieee80211_link_data,
+                            color_collision_detect_work.work);
+
 	struct ieee80211_sub_if_data *sdata = link->sdata;
 
 	sdata_lock(sdata);
@@ -4943,16 +4944,20 @@ ieee80211_obss_color_collision_notify(struct ieee80211_vif *vif,
 	if (sdata->vif.bss_conf.color_change_active || sdata->vif.bss_conf.csa_active)
 		return;
 
-	if (delayed_work_pending(&link->color_collision_detect_work))
+	if (wiphy_delayed_work_pending(sdata->local->hw.wiphy,
+											&link->color_collision_detect_work)) {
 		return;
+	}
 
 	link->color_bitmap = color_bitmap;
 	/* queue the color collision detection event every 500 ms in order to
 	 * avoid sending too much netlink messages to userspace.
 	 */
-	ieee80211_queue_delayed_work(&sdata->local->hw,
-				     &link->color_collision_detect_work,
-				     msecs_to_jiffies(500));
+
+	wiphy_delayed_work_queue(sdata->local->hw.wiphy,
+									&link->color_collision_detect_work,
+									msecs_to_jiffies(500));
+
 }
 EXPORT_SYMBOL_GPL(ieee80211_obss_color_collision_notify);
 

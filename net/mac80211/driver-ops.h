@@ -389,12 +389,12 @@ static inline void drv_get_key_seq(struct ieee80211_sub_if_data *sdata,
         trace_drv_get_key_seq(sdata, &key->conf);
 }
 
-static inline void drv_pre_get_key_seq(struct ieee80211_sub_if_data *sdata)
+static inline void drv_pre_get_key_seq(struct ieee80211_sub_if_data *sdata, u8 key_idx)
 {
 	struct ieee80211_local *local = sdata->local;
 	if (local->ops->pre_get_key_seq_by_vif)
-		local->ops->pre_get_key_seq_by_vif(&sdata->vif);
-	trace_drv_pre_get_key_seq(sdata);
+		local->ops->pre_get_key_seq_by_vif(&sdata->vif, key_idx);
+	trace_drv_pre_get_key_seq(sdata, key_idx);
 }
 
 static inline int drv_set_frag_threshold(struct ieee80211_local *local,

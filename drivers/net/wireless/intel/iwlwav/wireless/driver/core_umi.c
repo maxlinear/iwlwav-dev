@@ -2754,6 +2754,9 @@ mtlk_core_get_enc_ext_cfg (mtlk_handle_t hcore, const void* data, uint32 data_si
   mtlk_error_t       res = MTLK_ERR_OK;
   mtlk_txmm_msg_t    man_msg;
   mtlk_txmm_data_t  *man_entry = NULL;
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;
+  unsigned clpb_size;
+  u8* key_idx = NULL;
   mtlk_core_t       *nic = HANDLE_T_PTR(mtlk_core_t, hcore);
   mtlk_txmm_t       *txmm = mtlk_vap_get_txmm(nic->vap_handle);
   UMI_GROUP_PN      *umi_gpn = NULL;
@@ -2794,6 +2797,21 @@ mtlk_core_get_enc_ext_cfg (mtlk_handle_t hcore, const void* data, uint32 data_si
   man_entry->id           = UM_MAN_GET_GROUP_PN_REQ;
   man_entry->payload_size = sizeof(UMI_GROUP_PN);
   umi_gpn = (UMI_GROUP_PN*)man_entry->payload;
+
+  key_idx = mtlk_clpb_enum_get_next(clpb, &clpb_size);
+
+  if (*key_idx == 0 || clpb_size != sizeof(*key_idx)) {
+    ELOG_D("CID-%04x: Invalid key index in CLPB", mtlk_vap_get_oid(nic->vap_handle));
+    res = MTLK_ERR_PARAMS;
+    goto FINISH;
+  }
+
+  if (*key_idx == WAVE_KEY_IDX6_BIGTK){
+    umi_gpn->keyType = UMI_RSN_MGMT_BEACON_GROUP_KEY;
+  }
+  else {
+    umi_gpn->keyType = UMI_RSN_GROUP_KEY;
+  }
 
   res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
   if (MTLK_ERR_OK != res) {
@@ -2839,7 +2857,7 @@ mtlk_core_set_enc_ext_cfg (mtlk_handle_t hcore, const void* data, uint32 data_si
 
   MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
 
-  if ((mtlk_core_get_net_state(core) & (NET_STATE_READY | NET_STATE_ACTIVATING | NET_STATE_CONNECTED)) == 0) {
+  if ((mtlk_core_get_net_state(core) & (NET_STATE_ACTIVATING | NET_STATE_CONNECTED)) == 0) {
     ILOG1_D("CID-%04x: Invalid card state - request rejected", mtlk_vap_get_oid(core->vap_handle));
     res = MTLK_ERR_NOT_READY;
     goto FINISH;

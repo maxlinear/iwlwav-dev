@@ -6595,8 +6595,10 @@ void ieee80211_sta_rx_queued_mgmt(struct ieee80211_sub_if_data *sdata,
 			if (!elems)
 				break;
 
-			if (elems->parse_error)
+			if (elems->parse_error) {
+				kfree(elems);
 				break;
+			}
 
 			/* CCA IE look up and color change */
 			changed |= ieee80211_sta_process_color_switch(sdata, elems);

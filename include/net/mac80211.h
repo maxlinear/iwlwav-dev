@@ -4408,7 +4408,7 @@ struct ieee80211_ops {
 	void (*get_key_seq_by_vif)(struct ieee80211_vif *vif,
                                    struct ieee80211_key_conf *key,
                                    struct ieee80211_key_seq *seq);
-	void (*pre_get_key_seq_by_vif)(struct ieee80211_vif *vif);
+	void (*pre_get_key_seq_by_vif)(struct ieee80211_vif *vif, u8 key_idx);
 	int (*set_frag_threshold)(struct ieee80211_hw *hw, u32 value);
 	int (*set_rts_threshold)(struct ieee80211_hw *hw, u32 value);
 	int (*sta_add)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,

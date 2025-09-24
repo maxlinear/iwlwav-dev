@@ -3264,7 +3264,7 @@ static int _wv_ieee80211_op_add_interface (struct ieee80211_hw *hw, struct ieee8
   MTLK_ASSERT(netdev_p != NULL);
   if (!netdev_p) {
     ELOG_S("Net device for interface %s was not found",
-        mbss_cfg.added_vap_name);
+        vif_name);
     return -EINVAL;
   }
 
@@ -5120,7 +5120,7 @@ static void _wv_ieee80211_op_get_key_seq_by_vif (struct ieee80211_vif *vif,
   }
 }
 
-static void _wv_ieee80211_op_pre_get_key_seq_by_vif (struct ieee80211_vif *vif)
+static void _wv_ieee80211_op_pre_get_key_seq_by_vif (struct ieee80211_vif *vif, u8 key_idx)
 {
   mtlk_df_user_t *df_user;
   mtlk_clpb_t *clpb = NULL;
@@ -5129,7 +5129,7 @@ static void _wv_ieee80211_op_pre_get_key_seq_by_vif (struct ieee80211_vif *vif)
   df_user = wv_ieee80211_vif_to_dfuser(vif);
   MTLK_CHECK_DF_USER_NORES(df_user);
 
-  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),WAVE_CORE_REQ_GET_ENCEXT_CFG, &clpb, NULL, 0);
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),WAVE_CORE_REQ_GET_ENCEXT_CFG, &clpb, &key_idx, sizeof(key_idx));
   _mtlk_df_user_process_core_retval_void(res, clpb, WAVE_CORE_REQ_GET_ENCEXT_CFG, TRUE);
 }
 

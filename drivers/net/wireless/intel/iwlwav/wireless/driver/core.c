@@ -219,7 +219,7 @@ static int _mtlk_core_set_amsdu_num(mtlk_handle_t hcore, const void* data, uint3
 static int _mtlk_core_get_vap_measurements(mtlk_handle_t hcore, const void *data, uint32 data_size);
 static int _mtlk_core_get_radio_info(mtlk_handle_t hcore, const void *data, uint32 data_size);
 static int _wave_core_bss_tx_status_get(mtlk_handle_t hcore, const void* data, uint32 data_size);
-static int _mtlk_core_cfg_store_chan_switch_deauth_params(mtlk_handle_t hcore, const void* data, uint32 data_size);
+static mtlk_error_t _mtlk_core_cfg_store_chan_switch_deauth_params(mtlk_handle_t hcore, const void* data, uint32 data_size);
 
 static void _mtlk_core_get_vap_info_stats(mtlk_core_t* core, struct driver_vap_info *vap_info);
 static void _mtlk_core_get_tr181_hw(mtlk_core_t* core,  mtlk_wssa_drv_tr181_hw_t* tr181_hw);
@@ -1363,6 +1363,135 @@ wave_core_find_sta (mtlk_core_t *core, const unsigned char *mac)
   return __wave_core_find_sta(core, mac);
 }
 
+void mtlk_process_mscs_ul_packet(mtlk_nbuf_t* nbuf, sta_entry *sta, const uint8 *dscp_table)
+{
+  wave_ip_classifier_t ip_tuple;
+  struct ethhdr *ether_header = NULL;
+  uint16 temp_port;
+  uint8 temp[16];
+  bool mscs_entry_match = false;
+  uint8 mscs_list_limit = 0;
+  mtlk_dlist_entry_t *head;
+  mtlk_dlist_entry_t *entry;
+  wave_mscs_list_info_t *mscs_entry = NULL;
+  uint8 priority;
+  uint8 dscp_field;
+
+  ASSERT (nbuf != NULL);
+  ASSERT (sta != NULL);
+
+  mtlk_osal_lock_acquire(&sta->mscs_db.mscs_list_lock);
+  if (!sta->mscs_db.mscs_active) {
+    ILOG3_V("MSCS is not active for STA \n");
+    goto FINISH;
+  }
+
+  ether_header = (struct ethhdr *)nbuf->data;
+  if (mtlk_osal_eth_is_multicast(ether_header->h_dest) ||
+      mtlk_osal_eth_is_broadcast(ether_header->h_dest)) {
+    goto FINISH;
+  }
+
+  if (!(mtlk_extract_ip_tuple(nbuf, sta, &ip_tuple))) {
+    goto FINISH;
+  }
+
+  if (ip_tuple.ip_version == MTLK_IP4_VER) {
+    dscp_field = ip_tuple.u.ipv4.dscp;
+  } else if (ip_tuple.ip_version == MTLK_IP6_VER) {
+    dscp_field = ip_tuple.u.ipv6.dscp;
+  }
+
+  priority = dscp_table[dscp_field];
+
+  /* WLANRTSYS-93718: W/A: At present dscp_table - DSCP to UP mapping broken.
+   * This W/A has to be removed once the DCSP to UP mapping is fixed.
+   * This W/A is for certification QM TC 4.4.1, 4.4.2, 4.4.3 */ 
+  if (dscp_field == 30)
+    priority = 4;
+  else if (dscp_field == 46)
+    priority = 6;
+  else if (dscp_field == 40)
+    priority = 5;
+  else if (dscp_field == 8)
+    priority = 1;
+  else if (dscp_field == 0)
+    priority = 0;
+
+  if (!(sta->mscs_db.user_priority_bitmap & (1<<priority)))
+    goto FINISH;
+
+  /* Mirror the tuple src->dst, dst->src based on the mask */
+  if ((sta->mscs_db.class_mask & BIT(CLASS_TYPE4_SRC_IP)) ||
+      (sta->mscs_db.class_mask & BIT(CLASS_TYPE4_DST_IP))) {
+    if (ip_tuple.ip_version == MTLK_IP4_VER) {
+      wave_memcpy(temp, MTLK_IP4_ALEN, &ip_tuple.u.ipv4.src_ip, MTLK_IP4_ALEN);
+      wave_memcpy(&ip_tuple.u.ipv4.src_ip, MTLK_IP4_ALEN, &ip_tuple.u.ipv4.dst_ip, MTLK_IP4_ALEN);
+      wave_memcpy(&ip_tuple.u.ipv4.dst_ip, MTLK_IP4_ALEN, temp, MTLK_IP4_ALEN);
+    } else if (ip_tuple.ip_version == MTLK_IP6_VER) {
+      wave_memcpy(temp, MTLK_IP6_ALEN, &ip_tuple.u.ipv6.src_ip, MTLK_IP6_ALEN);
+      wave_memcpy(&ip_tuple.u.ipv6.src_ip, MTLK_IP6_ALEN, &ip_tuple.u.ipv6.dst_ip, MTLK_IP6_ALEN);
+      wave_memcpy(&ip_tuple.u.ipv6.dst_ip, MTLK_IP6_ALEN, temp, MTLK_IP6_ALEN);
+    }
+  }
+
+  if ((sta->mscs_db.class_mask & BIT(CLASS_TYPE4_SRC_PORT)) ||
+      (sta->mscs_db.class_mask & BIT(CLASS_TYPE4_DST_PORT))) {
+    if (ip_tuple.ip_version == MTLK_IP4_VER) {
+      temp_port = ip_tuple.u.ipv4.src_port;
+      ip_tuple.u.ipv4.src_port = ip_tuple.u.ipv4.dst_port;
+      ip_tuple.u.ipv4.dst_port = temp_port;
+    } else if (ip_tuple.ip_version == MTLK_IP6_VER) {
+      temp_port = ip_tuple.u.ipv6.src_port;
+      ip_tuple.u.ipv6.src_port = ip_tuple.u.ipv6.dst_port;
+      ip_tuple.u.ipv6.dst_port = temp_port;
+    }
+  }
+
+  if (!mtlk_dlist_is_empty(&sta->mscs_db.mscs_list))
+  {
+    mtlk_dlist_foreach(&sta->mscs_db.mscs_list, entry, head)
+    {
+      mscs_entry = MTLK_LIST_GET_CONTAINING_RECORD(entry, wave_mscs_list_info_t, lentry);
+      if (!(mtlk_compare_ip_tuple(sta->mscs_db.class_mask, ip_tuple, mscs_entry->ip_tuple)))
+        continue;
+      mscs_entry->timestamp = ktime_get_mono_fast_ns() / NSEC_PER_MSEC;
+      mscs_entry->user_priority = priority;
+      mscs_entry_match = true;
+      break;
+    }
+  }
+
+  if (!mscs_entry_match) {
+    mscs_list_limit = mtlk_dlist_size(&sta->mscs_db.mscs_list);
+    if (mscs_list_limit > MAX_MSCS_LIST_PER_STA) {
+      ELOG_V("MSCS list add failed, max mscs list reached\n");
+      goto FINISH;
+    }
+  
+    mscs_entry = mtlk_osal_mem_alloc(sizeof(wave_mscs_list_info_t), MTLK_MEM_TAG_EXTENSION);
+    if (!mscs_entry) {
+      ELOG_V("Can't allocate memory for mscs entry\n");
+      goto FINISH;
+    }
+ 
+    mscs_entry->user_priority = priority;
+    mscs_entry->timestamp = ktime_get_mono_fast_ns() / NSEC_PER_MSEC;
+    mscs_entry->ip_tuple.ip_version = ip_tuple.ip_version;
+    if (ip_tuple.ip_version == MTLK_IP4_VER)
+      wave_memcpy(&mscs_entry->ip_tuple.u.ipv4, sizeof(mscs_entry->ip_tuple.u.ipv4),
+                  &ip_tuple.u.ipv4, sizeof(ip_tuple.u.ipv4));
+    else if (ip_tuple.ip_version == MTLK_IP6_VER)
+      wave_memcpy(&mscs_entry->ip_tuple.u.ipv6, sizeof(mscs_entry->ip_tuple.u.ipv6),
+                  &ip_tuple.u.ipv6, sizeof(ip_tuple.u.ipv6));
+    mtlk_dlist_push_back(&sta->mscs_db.mscs_list, &mscs_entry->lentry);
+  }
+
+FINISH:
+mtlk_osal_lock_release(&sta->mscs_db.mscs_list_lock);
+
+}
+
 /* Send Packet to the OS's protocol stack or forward */
 void __MTLK_IFUNC
 mtlk_core_analyze_and_send_up (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_data, sta_entry *src_sta)
@@ -1372,6 +1501,7 @@ mtlk_core_analyze_and_send_up (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_
   multi_ap_mode_t multi_ap_mode = MTLK_CORE_HOT_PATH_PDB_GET_INT(nic, CORE_DB_CORE_MULTI_AP_MODE);
   struct ethhdr *ether_header = (struct ethhdr *)nbuf->data;
   BOOL is_igmp_or_mld = FALSE;
+  uint8 mscs_enable = 0;
 
   if (__UNLIKELY(__mtlk_core_is_looped_packet(nic, nbuf))) {
     ILOG3_Y("drop rx packet - the source address is the same as own address: %Y", ether_header->h_source);
@@ -1546,6 +1676,11 @@ mtlk_core_analyze_and_send_up (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_
         mtlk_df_nbuf_free(nbuf);
         return;
       }
+    }
+
+    mscs_enable = MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_MSCS_ENABLE);
+    if (mscs_enable) {
+      mtlk_process_mscs_ul_packet(nbuf, src_sta, nic->dscp_table);
     }
 
 #ifdef MTLK_DEBUG_CHARIOT_OOO
@@ -4574,6 +4709,8 @@ _mtlk_core_get_core_cfg (mtlk_handle_t hcore,
                                         (core, &pcore_cfg->pcie_auto_cfg), res);
     MTLK_CFG_CHECK_AND_SET_ITEM(pcore_cfg, scs_enable,
                                 MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_SCS_ENABLE));
+    MTLK_CFG_CHECK_AND_SET_ITEM(pcore_cfg, mscs_enable,
+                                MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_MSCS_ENABLE));
     if (mtlk_vap_is_slave_ap(core->vap_handle)) {
       _mtlk_slave_core_get_core_cfg(core, pcore_cfg);
     } else {
@@ -4895,6 +5032,13 @@ _wave_core_set_scs (mtlk_core_t *core, uint8 scs_enable)
 }
 
 static int
+_wave_core_set_mscs (mtlk_core_t *core, uint8 mscs_enable)
+{
+  MTLK_CORE_PDB_SET_INT(core, PARAM_DB_CORE_MSCS_ENABLE, mscs_enable);
+  return MTLK_ERR_OK;
+}
+
+static int
 _mtlk_core_set_core_cfg (mtlk_handle_t hcore,
                          const void* data, uint32 data_size)
 {
@@ -4966,6 +5110,8 @@ _mtlk_core_set_core_cfg (mtlk_handle_t hcore,
                                        (core, core_cfg->pcie_auto_cfg), res);
       MTLK_CFG_CHECK_ITEM_AND_CALL(core_cfg, scs_enable, _wave_core_set_scs,
                                   (core, core_cfg->scs_enable), res);
+      MTLK_CFG_CHECK_ITEM_AND_CALL(core_cfg, mscs_enable, _wave_core_set_mscs,
+                                  (core, core_cfg->mscs_enable), res);
 
     MTLK_CFG_END_CHEK_ITEM_AND_CALL()
   }
@@ -10097,6 +10243,8 @@ mtlk_core_handle_tx_ctrl (mtlk_vap_handle_t    vap_handle,
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_LA_MU_HE_EHT_STATS,    wave_core_get_la_mu_he_eht_stats);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,    wave_core_set_fixed_rate_thermal);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,    wave_core_get_fixed_rate_thermal);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_MSCS_ADD,                   wave_core_mscs_add_req);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_MSCS_REM,                   wave_core_mscs_rem_req);
 
 /* DEBUG COMMANDS */
 #ifdef CONFIG_WAVE_DEBUG

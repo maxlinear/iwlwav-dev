@@ -749,23 +749,24 @@ typedef struct _wave_scs_stadb
    mtlk_osal_spinlock_t scs_list_lock;
 } __MTLK_IDATA wave_scs_stadb;
 
-typedef struct _wave_scs_class_type10
+typedef struct _wave_class_type10
 {
   uint8 proto_instance;
   uint8 proto_num;
   uint8 filter_len;
-  uint8 *filter_val;
-  uint8 *filter_mask;
-} __MTLK_IDATA wave_scs_class_type10_t;
+  uint8 filter_val[MAX_TCLAS10_FILTER_LEN];
+  uint8 filter_mask[MAX_TCLAS10_FILTER_LEN];
+} __MTLK_IDATA wave_class_type10_t;
 
 typedef struct _wave_scs_tclas_info
 {
   uint8 tclass_up;
   uint8 tclass_len;
   uint8 tclass_type;
+  uint8 tclass_mask;
 } __MTLK_IDATA wave_scs_tclas_info_t;
 
-typedef struct _wave_scs_ipv4_params
+typedef struct _wave_ipv4_params
 {
   uint32  src_ip;
   uint32  dst_ip;
@@ -773,9 +774,9 @@ typedef struct _wave_scs_ipv4_params
   uint16 dst_port;
   uint8  dscp;
   uint8  protocol;
-} __MTLK_IDATA wave_scs_ipv4_params_t;
+} __MTLK_IDATA wave_ipv4_params_t;
 
-typedef struct _wave_scs_ipv6_params
+typedef struct _wave_ipv6_params
 {
   uint8  src_ip[16];
   uint8  dst_ip[16];
@@ -784,16 +785,16 @@ typedef struct _wave_scs_ipv6_params
   uint8  dscp;
   uint8  next_header;
   uint8 flow_label[3];
-} __MTLK_IDATA wave_scs_ipv6_params_t;
+} __MTLK_IDATA wave_ipv6_params_t;
 
-typedef struct _wave_scs_ip_classifier
+typedef struct _wave_ip_classifier
 {
   uint8  ip_version;
   union {
-    wave_scs_ipv4_params_t ipv4;
-    wave_scs_ipv6_params_t ipv6;
+    wave_ipv4_params_t ipv4;
+    wave_ipv6_params_t ipv6;
   } u;
-} __MTLK_IDATA wave_scs_ip_classifier_t;
+} __MTLK_IDATA wave_ip_classifier_t;
 
 typedef struct _wave_scs_list_info
 {
@@ -801,11 +802,31 @@ typedef struct _wave_scs_list_info
   uint8 aid;
   uint8 req_up;
   wave_scs_tclas_info_t tclas_info;
-  wave_scs_ip_classifier_t ip_tuple;
-  wave_scs_class_type10_t clas_type10;
+  wave_ip_classifier_t ip_tuple;
+  wave_class_type10_t clas_type10;
   mtlk_dlist_entry_t lentry;
-  mtlk_osal_spinlock_t scs_list_lock;
+  //mtlk_osal_spinlock_t scs_list_lock;
 } __MTLK_IDATA wave_scs_list_info_t;
+
+typedef struct _wave_mscs_list_info
+{
+ uint8  user_priority;
+ u64 timestamp;
+ wave_ip_classifier_t ip_tuple;
+ mtlk_dlist_entry_t lentry;
+} __MTLK_IDATA wave_mscs_list_info_t;
+
+typedef struct _wave_mscs_stadb
+{
+  BOOL   mscs_active;
+  uint8  user_priority_bitmap;
+  uint8  user_priority_limit;
+  uint8  class_mask;
+  uint16 aid;
+  uint64 stream_timeout_ms;
+  mtlk_dlist_t  mscs_list;
+  mtlk_osal_spinlock_t mscs_list_lock;
+} __MTLK_IDATA wave_mscs_stadb;
 #endif /* MTLK_WAVE_700 */
 
 struct _sta_db; /* TODO: replace it with Param DB/callbacks with opaque pointers */
@@ -904,6 +925,7 @@ struct _sta_entry {
 #ifdef MTLK_WAVE_700
   wave_ml_sta_info_t           ml_sta_info;
   wave_scs_stadb               scs_db;
+  wave_mscs_stadb              mscs_db;
 #endif
   BOOL                         is_traffic_stopped;
   MTLK_DECLARE_INIT_STATUS;
