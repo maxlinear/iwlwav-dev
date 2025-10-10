@@ -431,6 +431,20 @@ CHAN6G(229,7095),
 CHAN6G(233,7115) /* U-NII-8 band end */
 };
 
+#define MAC80211_MTLK_MLD_CAPA_OPS                             \
+        FIELD_PREP_CONST(IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP, \
+                         IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP_SAME) | \
+        FIELD_PREP_CONST(IEEE80211_MLD_CAP_OP_MAX_SIMUL_LINKS, \
+                         1)
+
+static const struct wiphy_iftype_ext_capab mac80211_mtlk_iftypes_ext_capa[] = {
+        {
+                .iftype = NL80211_IFTYPE_AP,
+                .eml_capabilities = IEEE80211_EML_CAP_EMLSR_SUPP,
+                .mld_capa_and_ops = MAC80211_MTLK_MLD_CAPA_OPS,
+        },
+};
+
 void __MTLK_IFUNC
 wave_mac80211_reset_all_chan_stats (mtlk_hw_t *hw, mtlk_hw_band_e band)
 {
@@ -6232,6 +6246,11 @@ wv_ieee80211_setup_register (struct device *dev, wave_radio_t *radio, wv_mac8021
 #ifdef ONEWIFI_IWLWAV_DEV
   hw->wiphy->max_acl_mac_addrs = MAX_ACL_MACS;
 #endif
+  if (mtlk_hw_type_is_gen7(mtlk_hw)) {
+    hw->wiphy->flags |= WIPHY_FLAG_SUPPORTS_MLO;
+    hw->wiphy->iftype_ext_capab = mac80211_mtlk_iftypes_ext_capa;
+    hw->wiphy->num_iftype_ext_capab = ARRAY_SIZE(mac80211_mtlk_iftypes_ext_capa);
+  }
 
   hw->queues = MAC80211_HW_TX_QUEUES; /*number of available hardware transmit queues for data packets.*/
 

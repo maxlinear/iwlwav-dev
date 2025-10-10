@@ -4852,8 +4852,13 @@ struct ieee80211_multi_link_elem {
 #define IEEE80211_MLD_CAP_OP_MAX_SIMUL_LINKS		0x000f
 #define IEEE80211_MLD_CAP_OP_SRS_SUPPORT		0x0010
 #define IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP	0x0060
+#define IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_NO_SUPP        0
+#define IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP_SAME      1
+#define IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_RESERVED       2
+#define IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP_DIFF      3
 #define IEEE80211_MLD_CAP_OP_FREQ_SEP_TYPE_IND		0x0f80
 #define IEEE80211_MLD_CAP_OP_AAR_SUPPORT		0x1000
+
 
 struct ieee80211_mle_basic_common_info {
 	u8 len;
@@ -5238,5 +5243,6 @@ struct ieee80211_ml_sta_info {
         bool is_ml;
         u8 mld_mac[ETH_ALEN];
         u8 linked_sta_mac[ETH_ALEN];
+        int assoc_link_id;
 } __packed;
 #endif /* LINUX_IEEE80211_H */

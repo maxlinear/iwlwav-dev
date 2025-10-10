@@ -7311,7 +7311,7 @@ static int nl80211_set_station(struct sk_buff *skb, struct genl_info *info)
 			nla_data(info->attrs[NL80211_ATTR_HE_6GHZ_CAPABILITY]);
 
 	if (info->attrs[NL80211_ATTR_ML_STA_INFO])
-		params.link_sta_params.ml_sta_info = nla_data(info->attrs[NL80211_ATTR_ML_STA_INFO]);
+		params.ml_sta_info = nla_data(info->attrs[NL80211_ATTR_ML_STA_INFO]);
 
 	if (info->attrs[NL80211_ATTR_AIRTIME_WEIGHT])
 		params.airtime_weight =
@@ -7502,7 +7502,7 @@ static int nl80211_new_station(struct sk_buff *skb, struct genl_info *info)
 			nla_get_u16(info->attrs[NL80211_ATTR_AIRTIME_WEIGHT]);
 
 	if (info->attrs[NL80211_ATTR_ML_STA_INFO])
-                params.link_sta_params.ml_sta_info = nla_data(info->attrs[NL80211_ATTR_ML_STA_INFO]);
+                params.ml_sta_info = nla_data(info->attrs[NL80211_ATTR_ML_STA_INFO]);
 
 	if (params.airtime_weight &&
 	    !wiphy_ext_feature_isset(&rdev->wiphy,

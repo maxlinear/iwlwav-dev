@@ -9,7 +9,7 @@ logger_origin_name	:= mtlkroot
 logger_binary_name	:= mtlkroot.o
 
 ifeq ($(CPTCFG_BACKPORTED_WIRELESS),y)
-CC := abs_top_srcdir=$(abs_top) abs_builddir=$(abs_builddir) \
+override CC := abs_top_srcdir=$(abs_top) abs_builddir=$(abs_builddir) \
   abs_logprep_srcdir=$(abs_logprep_srcdir) logger_origin_name=$(logger_origin_name) \
   logger_binary_name=$(logger_binary_name) logger_origin_id=$(logger_origin_id) \
   $(abs_top)/support/mtlkfront.sh `echo $(CC) |sed -e 's/.*mtlkfront.sh //g'`

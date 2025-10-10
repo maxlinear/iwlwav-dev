@@ -306,6 +306,7 @@ int __MTLK_IFUNC core_cfg_get_station (mtlk_handle_t hcore, const void* data, ui
   unsigned info_data_size;
   int res = MTLK_ERR_OK;
   int status;
+  struct ieee80211_sta *mac80211_sta;
 
   MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
 
@@ -344,6 +345,12 @@ int __MTLK_IFUNC core_cfg_get_station (mtlk_handle_t hcore, const void* data, ui
 
     _wv_update_sta_tr181_stats(sta, info_data->stinfo);
     _wv_update_sta_rates_info(sta, info_data->stinfo);
+    mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
+    if (mac80211_sta->ml_sta_info.is_ml) {
+      info_data->stinfo->mlo_params_valid = true;
+      info_data->stinfo->assoc_link_id = mac80211_sta->ml_sta_info.assoc_link_id;
+      wave_memcpy(info_data->stinfo->mld_addr, IEEE_ADDR_LEN, mac80211_sta->ml_sta_info.mld_mac, IEEE_ADDR_LEN);
+    }
 
   MTLK_CLPB_FINALLY(res)
     if (sta) mtlk_sta_decref(sta);
@@ -11383,7 +11390,7 @@ wave_core_max_tx_power_params(mtlk_core_t *core,int *max_tx_power, uint32 *chann
   return MTLK_ERR_OK;
 }
 
-int __MTLK_IFUNC
+mtlk_error_t __MTLK_IFUNC
 wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 data_size)
 {
   mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;

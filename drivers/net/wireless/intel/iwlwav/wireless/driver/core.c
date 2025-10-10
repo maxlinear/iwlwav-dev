@@ -219,7 +219,7 @@ static int _mtlk_core_set_amsdu_num(mtlk_handle_t hcore, const void* data, uint3
 static int _mtlk_core_get_vap_measurements(mtlk_handle_t hcore, const void *data, uint32 data_size);
 static int _mtlk_core_get_radio_info(mtlk_handle_t hcore, const void *data, uint32 data_size);
 static int _wave_core_bss_tx_status_get(mtlk_handle_t hcore, const void* data, uint32 data_size);
-static int _mtlk_core_cfg_store_chan_switch_deauth_params(mtlk_handle_t hcore, const void* data, uint32 data_size);
+static mtlk_error_t _mtlk_core_cfg_store_chan_switch_deauth_params(mtlk_handle_t hcore, const void* data, uint32 data_size);
 
 static void _mtlk_core_get_vap_info_stats(mtlk_core_t* core, struct driver_vap_info *vap_info);
 static void _mtlk_core_get_tr181_hw(mtlk_core_t* core,  mtlk_wssa_drv_tr181_hw_t* tr181_hw);

@@ -1643,7 +1643,6 @@ struct link_station_parameters {
 	const struct ieee80211_he_6ghz_capa *he_6ghz_capa;
 	const struct ieee80211_eht_cap_elem *eht_capa;
 	u8 eht_capa_len;
-	const struct ieee80211_ml_sta_info *ml_sta_info;
 };
 
 /**
@@ -1722,6 +1721,7 @@ struct station_parameters {
 	size_t resp_len;
 	u32 rssi;
 	const struct ieee80211_eht_operation *eht_oper_iwlwav;
+	const struct ieee80211_ml_sta_info *ml_sta_info;
 };
 
 /**

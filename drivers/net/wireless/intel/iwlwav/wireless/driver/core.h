@@ -566,7 +566,7 @@ typedef struct _ieee_addr_list_t {
   mtlk_hash_t               hash;
 } ieee_addr_list_t;
 
-int __MTLK_IFUNC mtlk_dut_core_register(mtlk_core_t *core);
+mtlk_error_t __MTLK_IFUNC mtlk_dut_core_register(mtlk_core_t *core);
 void __MTLK_IFUNC mtlk_dut_core_unregister(mtlk_core_t *core);
 
 typedef struct wave_core_acl
@@ -1005,7 +1005,7 @@ enum dfsband_e
 int __MTLK_IFUNC mtlk_core_get_dev_spec_info(struct net_device *dev, mtlk_nbuf_t *nbuf, mtlk_core_dev_spec_info_t *dev_spec_info);
 
 uint16 __MTLK_IFUNC mtlk_core_get_sid_by_addr(mtlk_core_t *nic, uint8 *addr);
-int __MTLK_IFUNC mtlk_core_set_bss(mtlk_core_t *core, mtlk_core_t *context_core, UMI_SET_BSS *fw_params);
+mtlk_error_t __MTLK_IFUNC mtlk_core_set_bss(mtlk_core_t *core, mtlk_core_t *context_core, UMI_SET_BSS *fw_params);
 int core_change_bss(mtlk_handle_t hcore, const void* data, uint32 data_size);
 
 mtlk_error_t __MTLK_IFUNC wave_core_ap_stop_traffic (struct nic *nic, uint16 sid, IEEE_ADDR *sta_addr);

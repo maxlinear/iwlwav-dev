@@ -51,7 +51,7 @@ int __MTLK_IFUNC finish_and_prevent_fw_set_chan_clpb (mtlk_handle_t hcore, const
 int __MTLK_IFUNC core_cfg_request_aid (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC core_cfg_internal_request_sid (mtlk_core_t *core, IEEE_ADDR *addr, uint16 *p_sid);
 int __MTLK_IFUNC core_cfg_remove_aid (mtlk_handle_t hcore, const void *data, uint32 data_size);
-int core_cfg_remove_all_sids_if_needed (mtlk_core_t *core);
+mtlk_error_t __MTLK_IFUNC core_cfg_remove_all_sids_if_needed (mtlk_core_t *core);
 mtlk_error_t __MTLK_IFUNC core_cfg_ap_disconnect_all (mtlk_handle_t hcore, const void* data, uint32 data_size);
 BOOL core_cfg_is_current_channel (mtlk_handle_t hcore, uint32 channel);
 int wv_ieee80211_vendor_event_coc(uint8 event_num, struct wireless_dev *wdev, const void * data, int data_len);
@@ -162,7 +162,6 @@ int __MTLK_IFUNC mtlk_core_cfg_get_mcast_range_list_ipv6 (mtlk_handle_t hcore, c
 int __MTLK_IFUNC mtlk_core_cfg_set_forward_unknown_mcast_flag (mtlk_handle_t hcore, const void* data, uint32 data_size);
 int __MTLK_IFUNC mtlk_core_cfg_get_forward_unknown_mcast_flag (mtlk_handle_t hcore, const void* data, uint32 data_size);
 
-int __MTLK_IFUNC mtlk_core_get_unconnected_station (mtlk_handle_t hcore, const void* data, uint32 data_size);
 int __MTLK_IFUNC mtlk_core_cfg_set_max_mpdu_length (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC mtlk_core_cfg_get_max_mpdu_length (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC wave_core_cfg_set_ap_retry_limit (mtlk_handle_t hcore, const void *data, uint32 data_size);
@@ -416,11 +415,11 @@ mtlk_error_t __MTLK_IFUNC wave_core_ap_disconnect_sta_mld(mtlk_core_t *nic, sta_
 mtlk_error_t __MTLK_IFUNC wave_core_vap_remove_mld(mtlk_core_t *nic);
 mtlk_error_t wave_core_get_ml_peer_flow_status (struct wiphy *wiphy, struct net_device *ndev, const uint8 *addr);
 int __MTLK_IFUNC wave_core_get_ml_peer_stats (mtlk_handle_t hcore, const void *data, uint32 data_size);
-int __MTLK_IFUNC wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32 *channel);
 mtlk_error_t wave_core_get_connected_ml_sta_list (struct wiphy *wiphy, struct net_device *ndev);
 int __MTLK_IFUNC wave_core_get_ml_sta_list (mtlk_handle_t hcore, const void *data, uint32 data_size);
-int __MTLK_IFUNC wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_size);
 #ifdef BEST_EFFORT_TID_SPREADING
 int __MTLK_IFUNC wave_core_set_str_tid_link_spreading_cfg (mtlk_handle_t hcore, const void* data, uint32 data_size);
 void __MTLK_IFUNC wave_core_set_assigned_tid_to_link (wave_ml_str_sta_tid_spreading_info_t *ml_sta_info, mtlk_vap_handle_t high_rate_vap);

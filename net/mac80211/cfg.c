@@ -1892,12 +1892,6 @@ static int sta_link_apply_parameters(struct ieee80211_local *local,
 	if (params->he_6ghz_capa)
 		link_sta->pub->he_6ghz_capa.capa = params->he_6ghz_capa->capa;
 
-	/* set Multilnk STA info */
-	if (params->ml_sta_info) {
-		struct ieee80211_ml_sta_info *ml_sta = &sta->sta.ml_sta_info;
-		memcpy(ml_sta, params->ml_sta_info, sizeof(struct ieee80211_ml_sta_info));
-	}
-
 	if (params->opmode_notif_used) {
 		/* returned value is only needed for rc update, but the
 		 * rc isn't initialized here yet, so ignore it
@@ -2059,6 +2053,12 @@ static int sta_apply_parameters(struct ieee80211_local *local,
 	/* Mark the STA as MLO if MLD MAC address is available */
 	if (params->link_sta_params.mld_mac)
 		sta->sta.mlo = true;
+
+	/* set Multilnk STA info */
+	if (params->ml_sta_info) {
+		struct ieee80211_ml_sta_info *ml_sta = &sta->sta.ml_sta_info;
+		memcpy(ml_sta, params->ml_sta_info, sizeof(struct ieee80211_ml_sta_info));
+	}
 
 	return 0;
 }

@@ -1021,7 +1021,8 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 			BIT(NL80211_IFTYPE_NAN) &&
 		    (!local->ops->start_nan || !local->ops->stop_nan)))
 		return -EINVAL;
-
+/* TODO: Need to enable this once the MLO design is alligned to opensource */
+#if 0
 	if (hw->wiphy->flags & WIPHY_FLAG_SUPPORTS_MLO) {
 		/*
 		 * For drivers capable of doing MLO, assume modern driver
@@ -1067,7 +1068,7 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 		if (WARN_ON(ieee80211_hw_check(hw, DEAUTH_NEED_MGD_TX_PREP)))
 			return -EINVAL;
 	}
-
+#endif
 #ifdef CONFIG_PM
 	if (hw->wiphy->wowlan && (!local->ops->suspend || !local->ops->resume))
 		return -EINVAL;

@@ -97,7 +97,7 @@ int                  __MTLK_IFUNC mtlk_vap_manager_get_vap_handle(mtlk_vap_manag
                                                                   uint8               vap_id,
                                                                   mtlk_vap_handle_t  *vap_handle)   __MTLK_INT_HANDLER_SECTION;
 #ifdef MTLK_WAVE_700
-int                  __MTLK_IFUNC wave_vap_manager_get_vap_handle_by_fw_id(mtlk_vap_manager_t *obj,
+mtlk_error_t         __MTLK_IFUNC wave_vap_manager_get_vap_handle_by_fw_id(mtlk_vap_manager_t *obj,
                                                                            uint8              vap_id,
                                                                            mtlk_vap_handle_t  *vap_handle)  __MTLK_INT_HANDLER_SECTION;
 void                 __MTLK_IFUNC wave_vap_manager_update_ml_vap_info(mtlk_vap_handle_t vap_handle,
