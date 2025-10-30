@@ -1375,7 +1375,7 @@ void mtlk_process_mscs_ul_packet(mtlk_nbuf_t* nbuf, sta_entry *sta, const uint8 
   mtlk_dlist_entry_t *entry;
   wave_mscs_list_info_t *mscs_entry = NULL;
   uint8 priority;
-  uint8 dscp_field;
+  uint8 dscp_field = 0;
 
   ASSERT (nbuf != NULL);
   ASSERT (sta != NULL);

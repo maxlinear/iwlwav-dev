@@ -8046,6 +8046,10 @@ wv_ieee80211_6ghz_update_wiphy_power_mode_and_wiphy_regd(struct wiphy *wiphy, st
 
   df_user = mtlk_df_user_from_wdev(wdev);
   MTLK_ASSERT(NULL != df_user);
+  if (df_user == NULL) {
+    res = MTLK_ERR_PARAMS;
+    goto end;
+  }
 
   if (wave_pwr_reg_param->oper_power_mode == IEEE80211_6GHZ_CTRL_REG_SP_AP || 
       wave_pwr_reg_param->oper_power_mode == IEEE80211_6GHZ_CTRL_REG_ISP_AP) {

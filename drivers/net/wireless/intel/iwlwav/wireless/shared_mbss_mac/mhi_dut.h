@@ -629,7 +629,8 @@ typedef struct dutTxParams
 	uint8		isTxEndless;
 	uint8		isDataLong;
     uint8       isBeamforming;
-    uint8       reserved[3];
+    uint8       isLdpc;  // 0=BCC, 1=LDPC
+    uint8       reserved[2];
 } dutTxParams_t;
 
 //--------------------------------------//

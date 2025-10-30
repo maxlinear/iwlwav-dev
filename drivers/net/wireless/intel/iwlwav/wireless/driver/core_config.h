@@ -417,7 +417,7 @@ mtlk_error_t __MTLK_IFUNC wave_core_ap_disconnect_sta_mld(mtlk_core_t *nic, sta_
 mtlk_error_t __MTLK_IFUNC wave_core_vap_remove_mld(mtlk_core_t *nic);
 mtlk_error_t wave_core_get_ml_peer_flow_status (struct wiphy *wiphy, struct net_device *ndev, const uint8 *addr);
 int __MTLK_IFUNC wave_core_get_ml_peer_stats (mtlk_handle_t hcore, const void *data, uint32 data_size);
-int __MTLK_IFUNC wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32 *channel);
 mtlk_error_t wave_core_get_connected_ml_sta_list (struct wiphy *wiphy, struct net_device *ndev);
 int __MTLK_IFUNC wave_core_get_ml_sta_list (mtlk_handle_t hcore, const void *data, uint32 data_size);

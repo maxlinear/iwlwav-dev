@@ -414,6 +414,7 @@ __wave_sta_get_errors_sent_stats_snapshot (const sta_entry* sta) {
 void
 mtlk_sta_get_tr181_peer_stats (const sta_entry* sta, mtlk_wssa_drv_tr181_peer_stats_t *stats)
 {
+  uint32 LastDataUplinkRate;
   MTLK_ASSERT(sta);
 
   stats->StationId          = mtlk_sta_get_sid(sta);
@@ -424,7 +425,9 @@ mtlk_sta_get_tr181_peer_stats (const sta_entry* sta, mtlk_wssa_drv_tr181_peer_st
   stats->ErrorsSent = __wave_sta_get_errors_sent_stats(sta) - __wave_sta_get_errors_sent_stats_snapshot(sta);
 
   stats->LastDataDownlinkRate = __mtlk_sta_get_tx_data_rate_kbps(sta);
-  stats->LastDataUplinkRate   = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
+  /* PHY Limitation - PHY rate mismatch caused by WAV700 metrics format */
+  LastDataUplinkRate = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
+  stats->LastDataUplinkRate   = (LastDataUplinkRate != 865600) ? LastDataUplinkRate : 866700;
 
   stats->SignalStrength = sta->info.stats.max_rssi;
 }
@@ -1478,6 +1481,7 @@ void __MTLK_IFUNC
 wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAssociatedDevDiagnostic2_t *dev_diagnostic_stats)
 {
   uint32 band_width;
+  uint32 LastDataUplinkRate;
   int i;
   static const char *operating_standard[] = {"802.11a","802.11b","802.11g","802.11n","802.11ac","802.11ax","802.11be"};
 
@@ -1487,10 +1491,12 @@ wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAs
   band_width = _mtlk_sta_rate_cbw_to_cbw_in_mhz(mtlk_bitrate_params_get_cbw(sta->info.stats.tx_data_rate_params));
 
   memset(dev_diagnostic_stats, 0, sizeof(wifiAssociatedDevDiagnostic2_t));
+  LastDataUplinkRate                                       = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
   dev_diagnostic_stats->MACAddress                         = *mtlk_sta_get_addr(sta);
   dev_diagnostic_stats->AuthenticationState                = true;
   dev_diagnostic_stats->LastDataDownlinkRate               = __mtlk_sta_get_tx_data_rate_kbps(sta);
-  dev_diagnostic_stats->LastDataUplinkRate                 = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
+  /* PHY Limitation - PHY rate mismatch caused by WAV700 metrics format */
+  dev_diagnostic_stats->LastDataUplinkRate                 = (LastDataUplinkRate != 865600) ? LastDataUplinkRate : 866700;
   dev_diagnostic_stats->SignalStrength                     = sta->info.stats.max_rssi;
   dev_diagnostic_stats->Retransmissions                    = 0; /* Not available from FW */
   dev_diagnostic_stats->Active                             = true;
