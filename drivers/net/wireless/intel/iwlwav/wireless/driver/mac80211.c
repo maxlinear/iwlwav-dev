@@ -431,6 +431,11 @@ CHAN6G(229,7095),
 CHAN6G(233,7115) /* U-NII-8 band end */
 };
 
+static const u8 mtlk_iftypes_ext_capa_ap[] = {
+      [2] = WLAN_EXT_CAPA3_MULTI_BSSID_SUPPORT,
+      [7] = WLAN_EXT_CAPA8_OPMODE_NOTIF,
+};
+
 #define MAC80211_MTLK_MLD_CAPA_OPS                             \
         FIELD_PREP_CONST(IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP, \
                          IEEE80211_MLD_CAP_OP_TID_TO_LINK_MAP_NEG_SUPP_SAME) | \
@@ -440,6 +445,9 @@ CHAN6G(233,7115) /* U-NII-8 band end */
 static const struct wiphy_iftype_ext_capab mac80211_mtlk_iftypes_ext_capa[] = {
         {
                 .iftype = NL80211_IFTYPE_AP,
+                .extended_capabilities = mtlk_iftypes_ext_capa_ap,
+                .extended_capabilities_mask = mtlk_iftypes_ext_capa_ap,
+                .extended_capabilities_len = ARRAY_SIZE(mtlk_iftypes_ext_capa_ap),
                 .eml_capabilities = IEEE80211_EML_CAP_EMLSR_SUPP,
                 .mld_capa_and_ops = MAC80211_MTLK_MLD_CAPA_OPS,
         },
