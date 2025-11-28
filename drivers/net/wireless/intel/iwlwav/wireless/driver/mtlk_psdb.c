@@ -2497,6 +2497,7 @@ mtlk_psdb_data_cleanup (hw_psdb_t *psdb)
     PSDB_FREE(psdb->ant_mask_per_chan);
     PSDB_FREE(psdb->pw_limit_damage_table);
     PSDB_FREE(psdb->ant_gain_per_freq);
+    PSDB_FREE(psdb->ver_info);
 
     if (psdb->tables) {
       for (i = 0; i < psdb->nof_tables; i++) {
@@ -2636,22 +2637,30 @@ mtlk_psdb_file_read_and_parse(mtlk_hw_t* hw, mtlk_hw_api_t *hw_api, hw_psdb_t *p
 
     wbuf = (uint32 *)fb.buffer; /* word ptr */
 
+#ifdef  PSDB_MEM_DEBUG
+    _alloc_count = 0;
+    _alloc_size  = 0;
+#endif
+
     /* Info */
     {
         psdf_ver_info_t *info = (psdf_ver_info_t *)wbuf;
         uint32           ver_num;
+        psdb->ver_info = PSDB_ALLOC(sizeof(psdf_ver_info_t));
+
+        if (!psdb->ver_info) {
+            ELOG_V("PSDB ver info allocation failed");
+            res = MTLK_ERR_NO_MEM;
+            goto unload;
+        }
 
         ver_num = MAC_TO_HOST32(info->ver_num);
+        psdb->ver_info->ver_num = ver_num;
         ILOG0_DDDD("PSDB Info: version %d (0x%08x), revision %x%x",
             ver_num, ver_num,
             MAC_TO_HOST32(info->rev_hash_msb),
             MAC_TO_HOST32(info->rev_hash_lsb));
     }
-
-#ifdef  PSDB_MEM_DEBUG
-    _alloc_count = 0;
-    _alloc_size  = 0;
-#endif
 
     /* Look for Fields data */
     ILOG0_DDDD("Look for chip_id 0x%04X, chip_type 0x%02X, hw_type 0x%02X, hw_rev 0x%02X", chip_id, chip_type, hw_type, hw_rev);
@@ -2742,7 +2751,7 @@ unload:
 
 
 int __MTLK_IFUNC
-mtlk_hw_psdb_send_fields (mtlk_hw_t *hw, mtlk_txmm_t *txmm, uint32 *wbuf, int nof_words);
+mtlk_hw_psdb_send_fields (mtlk_hw_t *hw, mtlk_txmm_t *txmm, uint32 *wbuf, int nof_words, uint32 psd_version);
 
 int __MTLK_IFUNC
 mtlk_hw_psdb_send_table (mtlk_hw_t *hw, mtlk_txmm_t *txmm, uint32 table_id, uint32 *wbuf, int nof_words);
@@ -2753,6 +2762,7 @@ mtlk_psdb_load_data (mtlk_hw_t *hw, mtlk_txmm_t *txmm, hw_psdb_t *psdb)
 {
     psdb_fields_array_t *fields;
     psdb_any_table_t    *table;
+    psdf_ver_info_t     *ver_info;
     int                  res = MTLK_ERR_FW;
     unsigned             i;
 
@@ -2768,7 +2778,16 @@ mtlk_psdb_load_data (mtlk_hw_t *hw, mtlk_txmm_t *txmm, hw_psdb_t *psdb)
       goto FINISH;
     }
 
-    res = mtlk_hw_psdb_send_fields(hw, txmm, (uint32 *)&fields->data, fields->nof_words);
+    ver_info = psdb->ver_info;
+
+    if (NULL == ver_info) {
+      WLOG_V("PSDB version info missed, continue");
+      res = MTLK_ERR_OK;
+      goto FINISH;
+    }
+
+
+    res = mtlk_hw_psdb_send_fields(hw, txmm, (uint32 *)&fields->data, fields->nof_words, ver_info->ver_num);
     if (MTLK_ERR_OK != res) {
         ELOG_D("PSDB Fields data loading failure, res %d", res);
         goto FINISH;

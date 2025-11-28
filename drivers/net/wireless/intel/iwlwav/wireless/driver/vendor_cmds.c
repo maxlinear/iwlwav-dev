@@ -5137,6 +5137,60 @@ static int _wave_ieee80211_vendor_ml_sta_reassoc_notify(struct wiphy *wiphy,
 
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
+
+static int _wave_ieee80211_vendor_set_mscs_enable(struct wiphy *wiphy, struct wireless_dev *wdev,
+                                                     const void *data, int data_len)
+{
+
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_MSCS_ENABLE);
+}
+
+static int _wave_ieee80211_vendor_get_mscs_enable(struct wiphy *wiphy, struct wireless_dev *wdev,
+                                                     const void *data, int data_len)
+{
+
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_MSCS_ENABLE, 1);
+}
+
+static int _wave_ieee80211_vendor_mscs_add_req(struct wiphy *wiphy, struct wireless_dev *wdev,
+                                                     const void *data, int data_len)
+{
+  mtlk_df_user_t *df_user;
+  mtlk_clpb_t *clpb = NULL;
+  int res = MTLK_ERR_OK;
+  struct mxl_mscs_add_req *mscs_add_req;
+
+  ILOG0_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  WAVE_CHECK_VENDOR_DATA_AND_SIZE(data, data_len, sizeof(struct mxl_mscs_add_req));
+
+  mscs_add_req = (struct mxl_mscs_add_req*)data;
+  df_user = mtlk_df_user_from_wdev(wdev);
+  MTLK_CHECK_DF_USER(df_user);
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),WAVE_CORE_REQ_MSCS_ADD, &clpb, mscs_add_req, sizeof(struct mxl_mscs_add_req));
+  res = _mtlk_df_user_process_core_retval(res, clpb, WAVE_CORE_REQ_MSCS_ADD, TRUE);
+  return _mtlk_df_mtlk_to_linux_error_code(res);
+}
+
+static int _wave_ieee80211_vendor_mscs_rem_req(struct wiphy *wiphy, struct wireless_dev *wdev,
+                                                     const void *data, int data_len)
+{
+  mtlk_df_user_t *df_user;
+  mtlk_clpb_t *clpb = NULL;
+  int res = MTLK_ERR_OK;
+  uint16 aid;
+
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  WAVE_CHECK_VENDOR_DATA_AND_SIZE(data, data_len, sizeof(uint16));
+
+  aid = *(uint16*)data;
+  df_user = mtlk_df_user_from_wdev(wdev);
+  MTLK_CHECK_DF_USER(df_user);
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),WAVE_CORE_REQ_MSCS_REM, &clpb, &aid, sizeof(uint16));
+  res = _mtlk_df_user_process_core_retval(res, clpb, WAVE_CORE_REQ_MSCS_REM, TRUE);
+  return _mtlk_df_mtlk_to_linux_error_code(res);
+}
 #endif
 
 static int _wave_ieee80211_vendor_set_FixedRateCfg(struct wiphy *wiphy, struct wireless_dev *wdev,
@@ -7202,6 +7256,14 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
   VENDOR_CMD_WDEV(GET_ML_PEER_FLOW_STATUS, _wave_ieee80211_vendor_get_ml_peer_flow_status),
   /* get connected ML STA List */
   VENDOR_CMD_WDEV(GET_ML_STA_LIST, _wave_ieee80211_vendor_get_ML_sta_list),
+  /* Add MSCS req */
+  VENDOR_CMD_WDEV(MSCS_ADD_REQ, _wave_ieee80211_vendor_mscs_add_req),
+  /* Remove MSCS req */
+  VENDOR_CMD_WDEV(MSCS_REM_REQ, _wave_ieee80211_vendor_mscs_rem_req),
+  /* Set MSCS enable */
+  VENDOR_CMD_WDEV(SET_MSCS_ENABLE, _wave_ieee80211_vendor_set_mscs_enable),
+  /* Get MSCS enable */
+  VENDOR_CMD_WDEV(GET_MSCS_ENABLE, _wave_ieee80211_vendor_get_mscs_enable),
 #endif
 
   VENDOR_CMD_WDEV(SET_FIXED_RATE_THERMAL, _wave_ieee80211_vendor_set_FixedRateThermal),

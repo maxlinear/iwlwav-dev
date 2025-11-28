@@ -812,21 +812,23 @@ TRACE_EVENT(drv_get_key_seq,
 );
 
 TRACE_EVENT(drv_pre_get_key_seq,
-	TP_PROTO(struct ieee80211_sub_if_data *sdata),
+	TP_PROTO(struct ieee80211_sub_if_data *sdata, u8 key_idx),
 
-	TP_ARGS(sdata),
+	TP_ARGS(sdata, key_idx),
 
 	TP_STRUCT__entry(
 		VIF_ENTRY
+		__field(u8, key_idx)
 	),
 
 	TP_fast_assign(
 		VIF_ASSIGN;
+		__entry->key_idx = key_idx;
 	),
 
 	TP_printk(
-		VIF_PR_FMT,
-		VIF_PR_ARG
+		VIF_PR_FMT " key_idx=%u",
+		VIF_PR_ARG, __entry->key_idx
 	)
 );
 

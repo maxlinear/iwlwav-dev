@@ -167,6 +167,7 @@ typedef enum {
 #endif
 
   PARAM_DB_CORE_FIXED_RATE_THERMAL,       /*!< Fixed rate thermal power */
+  PARAM_DB_CORE_MSCS_ENABLE,              /*!< Enable/disable MSCS */
 
   PARAM_DB_CORE_LAST_VALUE_ID,            /*!< Last parameter ID */
 } mtlk_pdb_id_t;/*!< \Enum of the parameters IDs. When adding parameter - extend this enum */
@@ -292,6 +293,7 @@ typedef enum {
   PARAM_DB_RADIO_DYNAMIC_WMM,                               /*!< Dynamic WMM enable/disable flag */
   PARAM_DB_RADIO_DYNAMIC_EDCA,                              /*!< Dynamic EDCA enable/disable flag */
   PARAM_DB_RADIO_FIXED_PWR,                                 /*!< Fixed TX management power */
+
 #ifdef CONFIG_WAVE_DEBUG
   PARAM_DB_RADIO_TEST_BUS_MODE,                             /*!< Test Bus mode */
   PARAM_DB_RADIO_PLAN_MU_GROUP_STATS,                       /*!< HE MU Group manager statistics */

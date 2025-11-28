@@ -1163,6 +1163,9 @@ static __INLINE struct mtlk_chan_def* __wave_core_zwdfs_chandef_get(struct nic *
   return wave_radio_zwdfs_chandef_get(wave_vap_radio_get(nic->vap_handle));
 }
 
+bool __MTLK_IFUNC mtlk_extract_ip_tuple (mtlk_nbuf_t *nbuf, sta_entry *sta, wave_ip_classifier_t *ip_tuple);
+bool __MTLK_IFUNC mtlk_compare_ip_tuple(u8 mask_bitmap, wave_ip_classifier_t tuple1, wave_ip_classifier_t tuple2);
+
 #undef LOG_LOCAL_GID
 #undef LOG_LOCAL_FID
 

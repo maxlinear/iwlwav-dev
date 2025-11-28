@@ -863,6 +863,10 @@ int core_cfg_send_set_chan(mtlk_core_t *core,
     mtlk_txmm_msg_cleanup(&man_msg);
     return MTLK_ERR_UNKNOWN;
   }
+  /* Disable Subchannel Bitmap for 20MHz Width*/
+  if (req->chan_width == CW_20) {
+    req->eht_dis_subch_bitmap = 0;
+  }
 #endif
   primary_chan_num = ieee80211_frequency_to_channel(cd->chan.center_freq);
   req->primary_chan_idx = (primary_chan_num - req->low_chan_num) / CHANNUMS_PER_20MHZ;
@@ -5059,6 +5063,8 @@ wave_core_cfg_get_20mhz_tx_power (mtlk_handle_t hcore, const void *data, uint32 
       if (NULL == (antenna_gain = mtlk_clpb_enum_get_next(clpb, NULL))) {
         ELOG_V("Antenna Gain is not present\n");
         mtlk_clpb_delete(clpb);
+        res = MTLK_ERR_UNKNOWN;
+        return _mtlk_df_mtlk_to_linux_error_code(res);
       }
       *antenna_gain = POWER_TO_DBM(*antenna_gain);
       max_tx_power = max_tx_power - *antenna_gain;
@@ -9155,7 +9161,7 @@ core_on_rcvry_configure_mld (mtlk_core_t *core, uint32 was_connected)
 
 mtlk_error_t wave_core_send_ap_mld_info (mtlk_core_t *core, struct _mxl_vendor_mld_info *ml_info)
 {
-  int res = MTLK_ERR_OK;
+  int res = MTLK_ERR_OK, i = 0;
   mtlk_txmm_msg_t   man_msg;
   mtlk_txmm_data_t *man_entry = NULL;
   UMI_CREATE_MLD *psUmiCreateMld;
@@ -9181,7 +9187,10 @@ mtlk_error_t wave_core_send_ap_mld_info (mtlk_core_t *core, struct _mxl_vendor_m
   psUmiCreateMld->u8MldId  = ml_info->mld_id;
   ieee_addr_set(&psUmiCreateMld->sMldMacAddr, ml_info->ap_mld_mac);
   ieee_addr_set(&psUmiCreateMld->sBSSID, ml_info->link1_bssid);
-  psUmiCreateMld->siblingVapId = ml_info->link2_vapid;
+  psUmiCreateMld->numOfSiblingVaps = ml_info->num_of_sibling_vaps;
+  for (i = 0; i < ml_info->num_of_sibling_vaps; i++) {
+    psUmiCreateMld->siblingVapIds[i] = ml_info->sibling_vap_ids[i];
+  }
   pStatus = &psUmiCreateMld->u8Status;
 
   ILOG0_D("CID-%04x: UMI_CREATE_MLD", mtlk_vap_get_oid(core->vap_handle));
@@ -9329,7 +9338,7 @@ wave_core_setup_ap_mld (mtlk_handle_t hcore, const void *data, uint32 data_size)
 
     res = wave_core_send_ap_mld_info(core, ml_info);
     if (res == MTLK_ERR_OK)
-      _wave_core_update_ml_vap_info(core, ml_info->link2_vapid);
+      _wave_core_update_ml_vap_info(core, ml_info->sibling_vap_ids[0]); /* Need to Handle for 3 Links */
 
   MTLK_CLPB_FINALLY(res)
     return mtlk_clpb_push_res(clpb, res);
@@ -9780,7 +9789,7 @@ static mtlk_error_t wave_core_internal_ml_sta_add(mtlk_core_t *nic,
   wave_ml_sta_info_t ml_sta_info;
   wave_ml_rem_sta_mld_t *remove_sta_mld = NULL;
   mtlk_hw_band_e wave_band_linked;
-  u8 dl_tid_to_link_bitmap[MAX_NUM_OF_LINKS] = {0};
+  u8 dl_tid_to_link_bitmap[MLD_MAX_NUM_OF_LINKS] = {0};
 #ifdef BEST_EFFORT_TID_SPREADING
   wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info;
   wave_ml_str_sta_tid_spreading_info_t *ml_sta_tid_spread_info = NULL;
@@ -10689,6 +10698,7 @@ static mtlk_error_t _wave_core_internal_scs_add_req(mtlk_core_t *nic, struct mxl
     dl_scs_info->tclas_info.tclass_type = scs_add_req->tclasInfo.tclasElemstype;
     dl_scs_info->tclas_info.tclass_up = scs_add_req->tclasInfo.tclasElemsUp;
     dl_scs_info->tclas_info.tclass_len = scs_add_req->tclasInfo.tclasLen; 
+    dl_scs_info->tclas_info.tclass_mask = scs_add_req->tclasInfo.tclasMask;
     dl_scs_info->ip_tuple.ip_version = scs_add_req->type4Params.version;
     if (scs_add_req->type4Params.version == MTLK_IP4_VER) {
       dl_scs_info->ip_tuple.u.ipv4.src_ip = scs_add_req->type4Params.u.v4.srcIp;
@@ -11419,6 +11429,8 @@ wave_core_get_max_tx_power_info (mtlk_handle_t hcore, const void *data, uint32 d
       if (NULL == (antenna_gain = mtlk_clpb_enum_get_next(clpb, NULL))) {
         ELOG_V("Antenna Gain is not present\n");
         mtlk_clpb_delete(clpb);
+        res = MTLK_ERR_UNKNOWN;
+        return _mtlk_df_mtlk_to_linux_error_code(res);
       }
       *antenna_gain = POWER_TO_DBM(*antenna_gain);
       max_tx_power_stats.max_tx_power = max_tx_power_stats.max_tx_power - *antenna_gain;
@@ -11439,6 +11451,7 @@ wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32
   uint32 size;
 
   df_user = mtlk_df_user_from_ndev(ndev);
+  MTLK_CHECK_DF_USER(df_user);
 
    res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),
     WAVE_CORE_REQ_GET_MAX_TX_POWER, &clpb, channel, sizeof(*channel));
@@ -12741,25 +12754,29 @@ _wave_core_warning_detection_ind_handle (mtlk_core_t *mcore, whm_warning_id warn
   switch (whm_state)
   {
     case WHM_STATE_READY:
-      /* Handle warning */
-      wave_hw_set_whm_state_machine(hw, WHM_STATE_BUSY);
-      wave_hw_whm_lock_release(hw);
+      if (!mtlk_hw_type_is_gen7(hw)) {//This feature currently not supporting RTLogger. So temprarily skipping from collecting the logs and needed further debug.
+        /* Handle warning */
+        wave_hw_set_whm_state_machine(hw, WHM_STATE_BUSY);
+        wave_hw_whm_lock_release(hw);
 
-      /* Disable HW logger */
-      hw_logger.whm_hwlogger_cfg.warn_handled = DONT_CARE;
-      hw_logger.whm_hwlogger_cfg.whm_hw_logger_enable = 0;
-      wave_core_cfg_set_whm_hw_logger_cfg (mcore, &hw_logger, sizeof(hw_logger));
-      /* collect fw logs to local buffer */
-      res = wave_hw_copy_fw_trace_buffers(hw);
-      if (res != MTLK_ERR_OK) {
-        ELOG_V("Error in copying WHM FW Logs");
-        wave_hw_set_whm_state_machine(hw, WHM_STATE_READY);
-        return res;
+        /* Disable HW logger */
+        hw_logger.whm_hwlogger_cfg.warn_handled = DONT_CARE;
+        hw_logger.whm_hwlogger_cfg.whm_hw_logger_enable = 0;
+        wave_core_cfg_set_whm_hw_logger_cfg (mcore, &hw_logger, sizeof(hw_logger));
+        /* collect fw logs to local buffer */
+        res = wave_hw_copy_fw_trace_buffers(hw);
+        if (res != MTLK_ERR_OK) {
+          ELOG_V("Error in copying WHM FW Logs");
+          wave_hw_set_whm_state_machine(hw, WHM_STATE_READY);
+          return res;
+        }
+        /* Enable WHM in FW after FW logs are collected */
+        hw_logger.whm_hwlogger_cfg.warn_handled = DONT_CARE;
+        hw_logger.whm_hwlogger_cfg.whm_hw_logger_enable = 1;
+        wave_core_cfg_set_whm_hw_logger_cfg (mcore, &hw_logger, sizeof(hw_logger));
+      } else {
+        wave_hw_whm_lock_release(hw);
       }
-      /* Enable WHM in FW after FW logs are collected */
-      hw_logger.whm_hwlogger_cfg.warn_handled = DONT_CARE;
-      hw_logger.whm_hwlogger_cfg.whm_hw_logger_enable = 1;
-      wave_core_cfg_set_whm_hw_logger_cfg (mcore, &hw_logger, sizeof(hw_logger));
       break;
     case WHM_STATE_BUSY:
       ELOG_DD("WHM is BUSY - Can't handle warning %d from %d", warning_id, warning_layer);
@@ -16016,4 +16033,135 @@ mtlk_error_t __MTLK_IFUNC wave_core_handle_rx_measure_event (mtlk_handle_t hcore
 
   res = wave_nl_send_msg(LTQ_NL80211_VENDOR_EVENT_RX_MEASURE, mtlk_core_get_wdev(vap_handle), &vendor_report, sizeof(vendor_report));
   return res;
+}
+
+static mtlk_error_t _wave_core_internal_mscs_add_req(mtlk_core_t *nic, struct mxl_mscs_add_req *mscs_add_req)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  uint16 sid = DB_UNKNOWN_SID;
+  sta_entry *sta = NULL;
+
+  MTLK_ASSERT(NULL != nic);
+  MTLK_ASSERT(NULL != mscs_add_req);
+
+  sid = wave_hw_get_sid_from_aid(mtlk_vap_get_hw(nic->vap_handle), mscs_add_req->aid,
+                                   mtlk_vap_get_id_fw(nic->vap_handle));
+  if (sid == DB_UNKNOWN_SID) {
+     ELOG_D("CID-%04x: unknown SID tx ", mtlk_vap_get_oid(nic->vap_handle));
+     goto FINISH;
+  }
+
+  sta = mtlk_stadb_find_sid(&nic->slow_ctx->stadb, sid);
+  if (!sta) {
+    ILOG2_V("mscs sta not found\n");
+    res = MTLK_ERR_UNKNOWN;
+    goto FINISH;
+  }
+
+  sta->mscs_db.user_priority_bitmap = mscs_add_req->up_bitmap;
+  sta->mscs_db.user_priority_limit = mscs_add_req->up_limit;
+  sta->mscs_db.stream_timeout_ms = ((u64)mscs_add_req->stream_timeout * 1024ULL) / 1000ULL;
+  sta->mscs_db.class_mask = mscs_add_req->class_mask;
+  sta->mscs_db.mscs_active = true;
+
+FINISH:
+  if (sta) {
+    mtlk_sta_decref(sta);
+  }
+  return res;
+}
+
+int __MTLK_IFUNC
+wave_core_mscs_add_req(mtlk_handle_t hcore, const void* data, uint32 data_size)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  mtlk_vap_handle_t vap_handle;
+  mtlk_core_t *core = HANDLE_T_PTR(mtlk_core_t, hcore);
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;
+  mtlk_hw_t *hw = mtlk_vap_get_hw(core->vap_handle);
+
+  struct mxl_mscs_add_req *mscs_add_req;
+  u32 size;
+  MTLK_ASSERT(core != NULL);
+
+  MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
+  vap_handle = core->vap_handle;
+  if (!mtlk_hw_type_is_gen7(hw)) {
+    return MTLK_ERR_CANCELED;
+  }
+  mscs_add_req = mtlk_clpb_enum_get_next(clpb, &size);
+  MTLK_CLPB_TRY(mscs_add_req, size)
+  res = _wave_core_internal_mscs_add_req(core, mscs_add_req);
+  MTLK_CLPB_FINALLY(res)
+    return mtlk_clpb_push_res(clpb, res);
+  MTLK_CLPB_END
+}
+
+static mtlk_error_t _wave_core_internal_mscs_rem_req(mtlk_core_t *nic, uint16 *aid)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  uint16 sid = DB_UNKNOWN_SID;
+  sta_entry * sta = NULL;
+  wave_mscs_list_info_t *mscs_clean_list;
+  mtlk_dlist_entry_t *entry;
+
+  MTLK_ASSERT(NULL != nic);
+
+  sid = wave_hw_get_sid_from_aid(mtlk_vap_get_hw(nic->vap_handle), *aid,
+                                    mtlk_vap_get_id_fw(nic->vap_handle));
+  if (sid == DB_UNKNOWN_SID) {
+    ELOG_D("CID-%04x: unknown SID tx ", mtlk_vap_get_oid(nic->vap_handle));
+    res = MTLK_ERR_NOT_IN_USE;
+    goto FINISH;
+  }
+
+  sta = mtlk_stadb_find_sid(&nic->slow_ctx->stadb, sid);
+  if (sta == NULL) {
+    ELOG_V("STA not found \n");
+    res = MTLK_ERR_NOT_IN_USE;
+    goto FINISH;
+  }
+
+  mtlk_osal_lock_acquire(&sta->mscs_db.mscs_list_lock);
+  sta->mscs_db.user_priority_bitmap = 0;
+  sta->mscs_db.user_priority_limit = 0;
+  sta->mscs_db.stream_timeout_ms = 0;
+  sta->mscs_db.class_mask = 0;
+  sta->mscs_db.mscs_active = false;
+  while ((entry = mtlk_dlist_pop_front(&sta->mscs_db.mscs_list))) {
+     mscs_clean_list = MTLK_LIST_GET_CONTAINING_RECORD(entry, wave_mscs_list_info_t, lentry);
+     mtlk_osal_mem_free(mscs_clean_list);
+  }
+  mtlk_osal_lock_release(&sta->mscs_db.mscs_list_lock);
+FINISH:
+  if (sta) {
+    mtlk_sta_decref(sta);
+  }
+
+  return res;
+}
+
+int __MTLK_IFUNC
+wave_core_mscs_rem_req(mtlk_handle_t hcore, const void* data, uint32 data_size)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  mtlk_vap_handle_t vap_handle;
+  mtlk_core_t *core = HANDLE_T_PTR(mtlk_core_t, hcore);
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;
+  mtlk_hw_t *hw = mtlk_vap_get_hw(core->vap_handle);
+  uint16 *aid;
+  u32 size;
+  MTLK_ASSERT(core != NULL);
+
+  MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
+  vap_handle = core->vap_handle;
+  if (!mtlk_hw_type_is_gen7(hw)) {
+    return MTLK_ERR_CANCELED;
+  }
+  aid = mtlk_clpb_enum_get_next(clpb, &size);
+  MTLK_CLPB_TRY(aid, size)
+  res = _wave_core_internal_mscs_rem_req(core, aid);
+  MTLK_CLPB_FINALLY(res)
+    return mtlk_clpb_push_res(clpb, res);
+  MTLK_CLPB_END
 }

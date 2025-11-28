@@ -36,6 +36,8 @@
 #define SCS_INTRA_ACCESS_USER_PRIO_MASK 0x7 //Bit0-Bit2 represent UP for Intra access IE
 #define MAX_SCS_LIST_PER_STA 4 //Max PER STA SCS list
 
+#define MAX_MSCS_LIST_PER_STA 4 //Max PER STA MSCS list
+
 mtlk_hw_band_e __MTLK_IFUNC core_cfg_get_freq_band_cur(mtlk_core_t *core);
 mtlk_hw_band_e __MTLK_IFUNC core_cfg_get_freq_band_cfg(mtlk_core_t *core);
 BOOL __MTLK_IFUNC core_cfg_is_connected (mtlk_core_t *core);
@@ -425,6 +427,8 @@ int __MTLK_IFUNC wave_core_set_str_tid_link_spreading_cfg (mtlk_handle_t hcore, 
 void __MTLK_IFUNC wave_core_set_assigned_tid_to_link (wave_ml_str_sta_tid_spreading_info_t *ml_sta_info, mtlk_vap_handle_t high_rate_vap);
 void __MTLK_IFUNC wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf);
 #endif /* BEST_EFFORT_TID_SPREADING */
+int __MTLK_IFUNC wave_core_mscs_add_req (mtlk_handle_t hcore, const void *data, uint32 data_size);
+int __MTLK_IFUNC wave_core_mscs_rem_req (mtlk_handle_t hcore, const void *data, uint32 data_size);
 #endif /* MTLK_WAVE_700 */
 
 mtlk_error_t __MTLK_IFUNC mtlk_core_send_stop_vap_traffic (struct nic *nic);

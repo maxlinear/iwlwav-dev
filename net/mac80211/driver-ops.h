@@ -23,7 +23,7 @@
 static inline struct ieee80211_sub_if_data *
 get_bss_sdata(struct ieee80211_sub_if_data *sdata)
 {
-	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
+	if (sdata && sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
 		sdata = container_of(sdata->bss, struct ieee80211_sub_if_data,
 				     u.ap);
 
@@ -389,12 +389,12 @@ static inline void drv_get_key_seq(struct ieee80211_sub_if_data *sdata,
         trace_drv_get_key_seq(sdata, &key->conf);
 }
 
-static inline void drv_pre_get_key_seq(struct ieee80211_sub_if_data *sdata)
+static inline void drv_pre_get_key_seq(struct ieee80211_sub_if_data *sdata, u8 key_idx)
 {
 	struct ieee80211_local *local = sdata->local;
 	if (local->ops->pre_get_key_seq_by_vif)
-		local->ops->pre_get_key_seq_by_vif(&sdata->vif);
-	trace_drv_pre_get_key_seq(sdata);
+		local->ops->pre_get_key_seq_by_vif(&sdata->vif, key_idx);
+	trace_drv_pre_get_key_seq(sdata, key_idx);
 }
 
 static inline int drv_set_frag_threshold(struct ieee80211_local *local,
@@ -666,9 +666,12 @@ static inline void drv_flush(struct ieee80211_local *local,
 			     struct ieee80211_sub_if_data *sdata,
 			     u32 queues, bool drop)
 {
-	struct ieee80211_vif *vif = sdata ? &sdata->vif : NULL;
+	struct ieee80211_vif *vif;
 
 	might_sleep();
+
+	sdata = get_bss_sdata(sdata);
+	vif = sdata ? &sdata->vif : NULL;
 
 	if (sdata && !check_sdata_in_driver(sdata))
 		return;
@@ -685,7 +688,12 @@ static inline void drv_flush_sta(struct ieee80211_local *local,
 {
 	might_sleep();
 
+	sdata = get_bss_sdata(sdata);
+
 	if (sdata && !check_sdata_in_driver(sdata))
+		return;
+
+	if (!sta->uploaded)
 		return;
 
 	trace_drv_flush_sta(local, sdata, &sta->sta);

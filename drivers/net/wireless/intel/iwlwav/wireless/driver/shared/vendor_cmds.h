@@ -431,6 +431,10 @@ enum ltq_nl80211_vendor_subcmds {
   LTQ_NL80211_VENDOR_SUBCMD_SET_SCS_ENABLE,
   LTQ_NL80211_VENDOR_SUBCMD_GET_SCS_ENABLE,
   LTQ_NL80211_VENDOR_SUBCMD_GET_MAX_TX_POWER,
+  LTQ_NL80211_VENDOR_SUBCMD_SET_MSCS_ENABLE,
+  LTQ_NL80211_VENDOR_SUBCMD_GET_MSCS_ENABLE,
+  LTQ_NL80211_VENDOR_SUBCMD_MSCS_ADD_REQ,
+  LTQ_NL80211_VENDOR_SUBCMD_MSCS_REM_REQ,
   /* add new iw sub commands here */
 
   /* used to define LTQ_NL80211_VENDOR_SUBCMD_MAX below */
@@ -946,12 +950,14 @@ struct _mxl_vendor_bcast_twt_config_t {
 #define LINK_ID_6G                2
 #define LINK_ID_5G                1
 #define LINK_ID_2G                0
+#define NUM_OF_SIBLING_LINKS      2
 
 struct _mxl_vendor_mld_info {
   int mld_id;
   u8 ap_mld_mac[ETH_ALEN];
   u8 link1_bssid[ETH_ALEN];
-  u8 link2_vapid;
+  u8 num_of_sibling_vaps;
+  u8 sibling_vap_ids[NUM_OF_SIBLING_LINKS];
 } __attribute__ ((packed));
 
 struct _mxl_vendor_mld_link_info {
@@ -1017,10 +1023,22 @@ struct mxl_vendor_ml_critical_update {
 #define QOS_CTRL_INFO_UL        0x0
 #define QOS_CTRL_INFO_DL        0x1
 
+enum classifier_type4_mask {
+   CLASS_TYPE4_VERSION = 0,
+   CLASS_TYPE4_SRC_IP = 1,
+   CLASS_TYPE4_DST_IP = 2,
+   CLASS_TYPE4_SRC_PORT = 3,
+   CLASS_TYPE4_DST_PORT = 4,
+   CLASS_TYPE4_DSCP = 5,
+   CLASS_TYPE4_PROTO = 6,
+   CLASS_TYPE4_FLOW_LABEL = 7,
+};
+
 struct mxl_scs_tclas_info {
   u8 tclasElemsUp;
   u8 tclasLen;
   u8 tclasElemstype;
+  u8 tclasMask;
 } __attribute__ ((packed));
 
 struct classIpv4Params {
@@ -1136,4 +1154,13 @@ struct mxl_rx_measure_report {
   u32 captures_rem;
   u8 evm[4];
 } __attribute__ ((packed));
+
+struct mxl_mscs_add_req {
+  u8  up_bitmap;
+  u8  up_limit;
+  u8  class_mask;
+  u16 aid;
+  u32 stream_timeout;
+}__attribute__ ((packed));
+
 #endif /* _VENDOR_CMDS_H_ */

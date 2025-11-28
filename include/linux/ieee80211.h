@@ -3036,6 +3036,7 @@ ieee80211_he_spr_size(const u8 *he_spr_ie)
 
 #define IEEE80211_EHT_PHY_CAP8_RX_1024QAM_WIDER_BW_DL_OFDMA	0x01
 #define IEEE80211_EHT_PHY_CAP8_RX_4096QAM_WIDER_BW_DL_OFDMA	0x02
+#define IEEE80211_EHT_PHY_CAP8_20MHZONLY_LIMITCAPSUPPORT	0x04
 
 /*
  * EHT operation channel width as defined in P802.11be_D2.0 section 9.4.2.311

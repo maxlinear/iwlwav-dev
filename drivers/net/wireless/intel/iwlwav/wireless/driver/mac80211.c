@@ -833,7 +833,8 @@ static struct ieee80211_supported_band _supported_band_6ghz = {
 #define EHT_PHY_CAP7_6_GHZ  (EHT_PHY_CAP7_5_GHZ | IEEE80211_EHT_PHY_CAP7_NON_OFDMA_UL_MU_MIMO_320MHZ | \
                              IEEE80211_EHT_PHY_CAP7_MU_BEAMFORMER_320MHZ)
 #define EHT_PHY_CAP8        (IEEE80211_EHT_PHY_CAP8_RX_1024QAM_WIDER_BW_DL_OFDMA | \
-                             IEEE80211_EHT_PHY_CAP8_RX_4096QAM_WIDER_BW_DL_OFDMA)
+                             IEEE80211_EHT_PHY_CAP8_RX_4096QAM_WIDER_BW_DL_OFDMA | \
+                             IEEE80211_EHT_PHY_CAP8_20MHZONLY_LIMITCAPSUPPORT)
 
 /* 802.11be EHT MCS NSS Set supported */
 #define EHT_NSS_MAX_RX_TX_20_MHZ_MCS_0_7             0x44
@@ -3286,7 +3287,7 @@ static int _wv_ieee80211_op_add_interface (struct ieee80211_hw *hw, struct ieee8
   MTLK_ASSERT(netdev_p != NULL);
   if (!netdev_p) {
     ELOG_S("Net device for interface %s was not found",
-        mbss_cfg.added_vap_name);
+        vif_name);
     return -EINVAL;
   }
 
@@ -5142,7 +5143,7 @@ static void _wv_ieee80211_op_get_key_seq_by_vif (struct ieee80211_vif *vif,
   }
 }
 
-static void _wv_ieee80211_op_pre_get_key_seq_by_vif (struct ieee80211_vif *vif)
+static void _wv_ieee80211_op_pre_get_key_seq_by_vif (struct ieee80211_vif *vif, u8 key_idx)
 {
   mtlk_df_user_t *df_user;
   mtlk_clpb_t *clpb = NULL;
@@ -5151,7 +5152,7 @@ static void _wv_ieee80211_op_pre_get_key_seq_by_vif (struct ieee80211_vif *vif)
   df_user = wv_ieee80211_vif_to_dfuser(vif);
   MTLK_CHECK_DF_USER_NORES(df_user);
 
-  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),WAVE_CORE_REQ_GET_ENCEXT_CFG, &clpb, NULL, 0);
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),WAVE_CORE_REQ_GET_ENCEXT_CFG, &clpb, &key_idx, sizeof(key_idx));
   _mtlk_df_user_process_core_retval_void(res, clpb, WAVE_CORE_REQ_GET_ENCEXT_CFG, TRUE);
 }
 
@@ -6189,6 +6190,7 @@ wv_ieee80211_setup_register (struct device *dev, wave_radio_t *radio, wv_mac8021
   ieee80211_hw_set(hw, DATA_OFFLOAD);
   ieee80211_hw_set(hw, SUPPORTS_VENDOR_VHT);
   ieee80211_hw_set(hw, SUPPORTS_OP_MODE_NOTIF);
+  ieee80211_hw_set(hw, AP_LINK_PS);
 
   /* Driver's private station information */
   hw->sta_data_size = sizeof (sta_entry);
@@ -8073,6 +8075,10 @@ wv_ieee80211_6ghz_update_wiphy_power_mode_and_wiphy_regd(struct wiphy *wiphy, st
 
   df_user = mtlk_df_user_from_wdev(wdev);
   MTLK_ASSERT(NULL != df_user);
+  if (df_user == NULL) {
+    res = MTLK_ERR_PARAMS;
+    goto end;
+  }
 
   if (wave_pwr_reg_param->oper_power_mode == IEEE80211_6GHZ_CTRL_REG_SP_AP || 
       wave_pwr_reg_param->oper_power_mode == IEEE80211_6GHZ_CTRL_REG_ISP_AP) {

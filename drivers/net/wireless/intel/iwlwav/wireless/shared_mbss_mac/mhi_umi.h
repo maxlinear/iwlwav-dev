@@ -116,7 +116,7 @@
 #define ALL_SID_MAX             MAX(GEN5_ALL_STA_SID, GEN6_ALL_STA_SID)
 #define ALL_SID_MAX_G7          GEN7_ALL_STA_SID
 
-#define MAX_NUM_OF_LINKS 3 // Number of supported links for MLO
+#define MLD_MAX_NUM_OF_LINKS 3 // Number of supported links for MLO
 
 /*--------------------------------------------------------------------------
  * Description:     Bitmasks of required calibr
@@ -392,10 +392,14 @@ typedef uint16 UMI_ACCESS_PROTOCOL;
 #define INVALID_VAP				(HIM_DESC_VAP_INVALID)		//TODO:WLANRTSYS-39556
 #endif
 #endif
+
 #define VAP_ID_DO_NOT_CARE		(0xFC)
 
 #define MAX_NUM_SUPPORTED_RATES (32)
 #define MAX_NUM_OF_TRIGGER_FRAME_STATIONS	(36)
+
+/* Triband MLD */
+#define MAX_NUM_OF_SIBLING_VAPS 2	/* In Triband MLD, Driver may provide up to two sibling VAPs noted TX Secondary and Non-TX Secondary */
 
 /***************************************************************************/
 /***                       UASP VAP  definitions 				         ***/
@@ -1328,12 +1332,13 @@ typedef struct _UMI_ADD_VAP
 ****************************************************************************/
 typedef struct _UMI_CREATE_MLD
 {
-  IEEE_ADDR	sBSSID;
-  IEEE_ADDR	sMldMacAddr;
-  uint8 	siblingVapId;
-  uint8    	u8MldId;
-  uint8    	u8Status;
-  uint8 	reserved;
+	IEEE_ADDR	sBSSID;
+	IEEE_ADDR	sMldMacAddr;
+	uint8		numOfSiblingVaps; /* 0 - reserved. 1 - two MLD links. 2 - three MLD links. */
+	uint8		siblingVapIds[MAX_NUM_OF_SIBLING_VAPS];
+	uint8		u8MldId;
+	uint8		u8Status;
+	uint8		reserved[3];
 } __MTLK_PACKED UMI_CREATE_MLD;
 
 /***************************************************************************
@@ -1525,6 +1530,7 @@ typedef struct _UMI_GET_CHANNEL_LOAD_REQ
 
 typedef struct _PLATFORM_DATA_FIELDS
 {
+	uint32 psdVersionNum;
 	uint32 dataFields[NUM_PLATFORM_DATA_FIELDS];
 	uint8 Status;
 	uint8 Reserved[3];
@@ -1650,7 +1656,7 @@ typedef struct _UMI_GROUP_PN
 {
     uint16      u16Status;
     uint8       vapIndex;
-    uint8       reserved;
+    uint8       keyType;
     uint8       au8TxSeqNum[MTLK_PAD4(UMI_RSN_SEQ_NUM_LEN)];
 } __MTLK_PACKED UMI_GROUP_PN;
 
@@ -2812,14 +2818,14 @@ typedef struct _UMI_STA_ADD
 #define LINK_BIT_6G_IS_SET 0x4
 typedef struct _UMI_ADD_STA_MLD
 {
-	IEEE_ADDR	sAddr[MAX_NUM_OF_LINKS];
+	IEEE_ADDR	sAddr[MLD_MAX_NUM_OF_LINKS];
 	IEEE_ADDR	sStaMldMacAddr;
 	uint16 		u16EmlCapabilities;
 	uint16   	u16MlAID;
 	uint8    	u8MldId;
 	uint8    	u8MainVapId;
 	uint8		u8AssocLinkBitmap;
-	uint8		u8DlTid2LinkBitmap[MAX_NUM_OF_LINKS];
+	uint8		u8DlTid2LinkBitmap[MLD_MAX_NUM_OF_LINKS];
 	uint8 		u8NumOfSimLink_R;
 	uint8    	u8Status;
 } __MTLK_PACKED UMI_ADD_STA_MLD;
@@ -2872,8 +2878,8 @@ typedef struct _UMI_REQUEST_SID
 ****************************************************************************/
 typedef struct _UMI_REQUEST_SID_MLD
 {
-	IEEE_ADDR 	sAddr[MAX_NUM_OF_LINKS];
-	uint16    	u16SID[MAX_NUM_OF_LINKS];
+	IEEE_ADDR 	sAddr[MLD_MAX_NUM_OF_LINKS];
+	uint16    	u16SID[MLD_MAX_NUM_OF_LINKS];
 	uint8		u8AssocLinkBitmap;
 	uint8     	u8Status;
 	uint8		u8Reserved[2];

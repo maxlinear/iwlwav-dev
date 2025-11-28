@@ -10697,7 +10697,7 @@ void __MTLK_IFUNC mtlk_hw_pci_disable_aspm(mtlk_hw_t *hw)
  */
 
 int __MTLK_IFUNC
-mtlk_hw_psdb_send_fields (mtlk_hw_t *hw, mtlk_txmm_t *txmm, uint32 *wbuf, int nof_words)
+mtlk_hw_psdb_send_fields (mtlk_hw_t *hw, mtlk_txmm_t *txmm, uint32 *wbuf, int nof_words, uint32 psd_version)
 {
     mtlk_txmm_msg_t       man_msg;
     mtlk_txmm_data_t     *man_entry;
@@ -10712,7 +10712,7 @@ mtlk_hw_psdb_send_fields (mtlk_hw_t *hw, mtlk_txmm_t *txmm, uint32 *wbuf, int no
     }
 
     man_entry->id = UM_MAN_PLATFORM_DATA_FIELDS_REQ;
-    man_entry->payload_size = nof_words * sizeof(uint32);
+    man_entry->payload_size = sizeof(PLATFORM_DATA_FIELDS);
 
     umi_params  = (PLATFORM_DATA_FIELDS *)man_entry->payload;
 
@@ -10720,6 +10720,8 @@ mtlk_hw_psdb_send_fields (mtlk_hw_t *hw, mtlk_txmm_t *txmm, uint32 *wbuf, int no
     for (i = 0; i < nof_words; i++) {
         umi_params->dataFields[i] = wbuf[i];
     }
+
+    umi_params->psdVersionNum = HOST_TO_MAC32(psd_version);
 
     ILOG2_V("Sending PLATFORM_DATA_FIELDS");
     mtlk_dump(2, umi_params, man_entry->payload_size, "dump of PLATFORM_DATA_FIELDS");

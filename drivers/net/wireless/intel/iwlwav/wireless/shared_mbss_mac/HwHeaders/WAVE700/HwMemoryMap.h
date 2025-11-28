@@ -1687,7 +1687,7 @@
 #define VAP_ADDR_REG_SIZE                                                         (0x00000400)
 #define VAP_ADDR_REG_M2_SIZE                                                      (0x00000400)
 #define MAC_GEN_REGFILE_SIZE                                                      (0x00001000)
-#define TIM_GEN_SIZE                                                              (0x00000100)
+#define TIM_GEN_SIZE                                                              (0x00001000)
 #define HOST_IF_ACC_SIZE                                                          (0x00001000)
 #define HOST_IF_REG_FILE_SIZE                                                     (0x00001000)
 #define BSRC_CNT_MEM_M01_SIZE                                                     (0x00002000)
