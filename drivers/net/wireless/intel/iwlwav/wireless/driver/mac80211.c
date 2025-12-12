@@ -6167,6 +6167,7 @@ wv_ieee80211_setup_register (struct device *dev, wave_radio_t *radio, wv_mac8021
   ieee80211_hw_set(hw, DATA_OFFLOAD);
   ieee80211_hw_set(hw, SUPPORTS_VENDOR_VHT);
   ieee80211_hw_set(hw, SUPPORTS_OP_MODE_NOTIF);
+  ieee80211_hw_set(hw, AP_LINK_PS);
 
   /* Driver's private station information */
   hw->sta_data_size = sizeof (sta_entry);
