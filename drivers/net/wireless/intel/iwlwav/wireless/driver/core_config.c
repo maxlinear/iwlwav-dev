@@ -11449,6 +11449,15 @@ wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32
   mtlk_error_t res = MTLK_ERR_OK;
   wave_wssa_max_tx_power_stats_t *max_tx_power_stats;
   uint32 size;
+  mtlk_core_t *master_core;
+  struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
+  wave_radio_t *radio = wv_ieee80211_hw_radio_get(hw);
+
+  master_core = wave_radio_master_core_get(radio);
+  if (mtlk_core_get_net_state(master_core) != NET_STATE_CONNECTED) {
+    ILOG1_S("interface %s: is not in CONNECTED state", ndev->name);
+    return _mtlk_df_mtlk_to_linux_error_code(MTLK_ERR_NOT_READY);
+  }
 
   df_user = mtlk_df_user_from_ndev(ndev);
   MTLK_CHECK_DF_USER(df_user);
