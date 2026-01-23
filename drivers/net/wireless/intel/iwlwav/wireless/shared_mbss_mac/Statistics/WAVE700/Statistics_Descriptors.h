@@ -3,12 +3,13 @@
 *	File:				Statistics_Descriptors.h
 *	Description:	
 *	COPYRIGHT:
-*		Copyright(c) 2020, MaxLinear, Inc.
+*		Copyright(c) 2020 - 2025, MaxLinear, Inc.
 *		Copyright 2016 - 2020 Intel Corporation
+*		Copyright 2014 - 2016 Lantiq Beteiligungs - GmbH & Co.KG
+*		Copyright 2010 - 2014 Lantiq Deutschland GmbH
+*		Copyright 2007 - 2010 Metalink Ltd.
 *
-*		All rights are strictly reserved. Reproduction or divulgence in any
-*		form whatsoever is not permitted without written authority from the
-*		copyright owner. Issued by Intel Israel Ltd
+*		For licensing information, see the file 'LICENSE' in the root folder of this software module.
 *
 **************************************************************************************/
 #ifndef _STATISTICS_DESC_WAVE700_H_
@@ -909,6 +910,7 @@ typedef struct
 	uint32 dropCntReasonDiscard[GEN7_MAX_SID];
 	uint32 dropCntReasonDsabled[GEN7_MAX_SID];
 	uint32 dropCntReasonAggError[GEN7_MAX_SID];
+	uint32 dropCntReasonAqm[GEN7_MAX_SID];
 	/* RX */
 	uint32 mpduRetryCount[GEN7_MAX_SID];	/* Number of rx retries			*/
 	uint32 mpduInAmpdu[GEN7_MAX_SID];		/* Number of MPDUs received		*/

@@ -4,8 +4,17 @@
  Purpose: 	holds the base address by diver
  Description:  This file contains the definions base addresses
  	 	 	   used by driver of the Secure Boot
- Copyright(c) 2021, MaxLinear, Inc.
+COPYRIGHT:
+  Copyright(c) 2020 - 2025, MaxLinear, Inc.
+  Copyright 2016 - 2020 Intel Corporation
+  Copyright 2014 - 2016 Lantiq Beteiligungs - GmbH & Co.KG
+  Copyright 2010 - 2014 Lantiq Deutschland GmbH
+  Copyright 2007 - 2010 Metalink Ltd.
+
+  For licensing information, see the file 'LICENSE' in the root folder of this software module.
+
 ***************************************************************/
+
 #ifndef SECUREBOOT_DEFINITIONS_H_
 #define SECUREBOOT_DEFINITIONS_H_
 

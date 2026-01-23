@@ -545,6 +545,7 @@ typedef struct mtlk_mhi_sta_stats{
     uint32 dropCntReasonDiscard;
     uint32 dropCntReasonDsabled;
     uint32 dropCntReasonAggError;
+    uint32 dropCntReasonAqm;
     twt_params_t twtStaParams;
     ul_mu_stats_t uplinkMuStats;
     dl_mu_stats_t downlinkMuStats;
@@ -607,6 +608,7 @@ typedef struct mtlk_mhi_sta_stats64{
     uint64 dropCntReasonDiscard;
     uint64 dropCntReasonDsabled;
     uint64 dropCntReasonAggError;
+    uint64 dropCntReasonAqm;
     uint64 channelTransmitTime;
     uint64 retryCount;
     uint64 clonedCount;

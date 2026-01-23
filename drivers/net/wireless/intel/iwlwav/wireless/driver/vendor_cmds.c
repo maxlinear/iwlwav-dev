@@ -5738,10 +5738,10 @@ static int _wave_cfg80211_vendor_reg_update_6ghz_oper_power_mode (struct wiphy *
   mtlk_df_t *df;
   mtlk_hw_band_e band;
 
-  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   if (!wdev)
     return _mtlk_df_mtlk_to_linux_error_code(MTLK_ERR_PARAMS);
 
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   df_user = mtlk_df_user_from_wdev(wdev);
   MTLK_CHECK_DF_USER(df_user);
 

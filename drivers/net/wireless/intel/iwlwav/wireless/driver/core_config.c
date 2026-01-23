@@ -9564,6 +9564,35 @@ FINISH:
   return res;
 }
 
+static mtlk_error_t
+_wave_check_and_send_remove_mld(mtlk_core_t *core, struct mxl_mld_remove *mld_rem)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  mtlk_vap_handle_t vap_handle;
+
+  MTLK_ASSERT(core != NULL);
+  vap_handle = core->vap_handle;
+
+  if (!mtlk_vap_ml_configured(vap_handle)) {
+    ILOG0_D("CID-%04x: Reject MLD removal, MLD is not configured on this VAP",
+           mtlk_vap_get_oid(vap_handle));
+    return MTLK_ERR_PROHIB;
+  }
+
+  mtlk_vap_ml_lock_acquire(vap_handle);
+  if (mtlk_vap_ml_teardown_inprogress(vap_handle)) {
+    mtlk_vap_ml_lock_release(vap_handle);
+    goto finish; /* MLD is already being removed by VAP removal flow in sibling core */
+  }
+  mtlk_vap_ml_lock_release(vap_handle);
+
+  if (mtlk_vap_ml_configured(vap_handle))
+    res = wave_core_send_remove_mld(core, mld_rem);
+
+finish:
+  return res;
+}
+
 int __MTLK_IFUNC
 wave_core_remove_mld (mtlk_handle_t hcore, const void *data, uint32 data_size)
 {
@@ -9580,7 +9609,9 @@ wave_core_remove_mld (mtlk_handle_t hcore, const void *data, uint32 data_size)
 
   mld_rem = mtlk_clpb_enum_get_next(clpb, &size);
   MTLK_CLPB_TRY(mld_rem, size)
-    wave_core_send_remove_mld(core, mld_rem);
+    res = _wave_check_and_send_remove_mld(core, mld_rem);
+    if (res != MTLK_ERR_OK)
+      MTLK_CLPB_EXIT(res);
   MTLK_CLPB_FINALLY(res)
     return mtlk_clpb_push_res(clpb, res);
   MTLK_CLPB_END
@@ -11361,6 +11392,8 @@ wave_core_max_tx_power_params(mtlk_core_t *core,int *max_tx_power, uint32 *chann
 
       ofdm_idx = PSDB_PHY_CW_OFDM_20 + sub_bw;
       _PW_LIMIT_APPLY_(tmp_pwl, psd_pwl, cfg_pwl, ofdm_idx, reg_pw_lim, power_level_p_unit);
+      ILOG1_DDD("updated PSD/CFG pw_limits bw %u: %3u %3u",
+               sub_bw, psd_pwl.pw_limits[ofdm_idx], cfg_pwl.pw_limits[ofdm_idx]);
     }
 
 #ifdef MTLK_WAVE_700
@@ -11374,8 +11407,6 @@ wave_core_max_tx_power_params(mtlk_core_t *core,int *max_tx_power, uint32 *chann
                  sub_bw, psd_pwl.pw_limits[(PSDB_PHY_CW_BF_BE_20 + sub_bw)], cfg_pwl.pw_limits[(PSDB_PHY_CW_BF_BE_20 + sub_bw)]);
     }
 #endif
-    ILOG1_DDD("updated PSD/CFG pw_limits bw %u: %3u %3u",
-              sub_bw, psd_pwl.pw_limits[ofdm_idx], cfg_pwl.pw_limits[ofdm_idx]);
   }
 
   if (regd_code == REGD_CODE_FCC || regd_code == REGD_CODE_FCC_LPI) {
@@ -11449,15 +11480,6 @@ wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32
   mtlk_error_t res = MTLK_ERR_OK;
   wave_wssa_max_tx_power_stats_t *max_tx_power_stats;
   uint32 size;
-  mtlk_core_t *master_core;
-  struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
-  wave_radio_t *radio = wv_ieee80211_hw_radio_get(hw);
-
-  master_core = wave_radio_master_core_get(radio);
-  if (mtlk_core_get_net_state(master_core) != NET_STATE_CONNECTED) {
-    ILOG1_S("interface %s: is not in CONNECTED state", ndev->name);
-    return _mtlk_df_mtlk_to_linux_error_code(MTLK_ERR_NOT_READY);
-  }
 
   df_user = mtlk_df_user_from_ndev(ndev);
   MTLK_CHECK_DF_USER(df_user);

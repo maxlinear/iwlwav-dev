@@ -760,13 +760,14 @@ mtlk_mc_transmit (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_data, uint32 
 	else
           tmp_mac = (uint8 *)mtlk_sta_get_addr(sta);
 
+        clone_data.dst_sta = (sta_entry *)sta;
         clone_data.nbuf = mtlk_df_nbuf_clone_no_priv(tx_data->nbuf);
         if (!clone_data.nbuf) {
           mtlk_sta_on_packet_dropped(clone_data.dst_sta, MTLK_TX_DISCARDED_DRV_NO_RESOURCES);
           res = MTLK_ERR_NO_MEM;
           break;
         }
-        clone_data.dst_sta = (sta_entry *)sta;
+
         mtlk_df_nbuf_set_priority(clone_data.nbuf, mtlk_df_nbuf_get_priority(tx_data->nbuf));
         /* convert to unicast */
         ether_header = (struct ethhdr *)clone_data.nbuf->data;

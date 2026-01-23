@@ -529,6 +529,7 @@ typedef struct _PerClientStats_t {
   uint64 dropCntReasonDiscard;
   uint64 dropCntReasonDsabled;
   uint64 dropCntReasonAggError;
+  uint64 dropCntReasonAqm;
   uint64 mpduRetryCount;
   uint64 mpduInAmpdu;
   uint64 ampdu;

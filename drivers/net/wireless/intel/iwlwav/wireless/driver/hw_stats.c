@@ -1788,6 +1788,9 @@ _mtlk_sta_update_statistics (mtlk_hw_t *hw, sta_entry *sta, stationPhyRxStatusDb
                                    (MTLK_GET_STATS_G7(hw_stats->stats_copy, hostIfCounters.staCounts[sta_sid].agerPdNoTransmitCountSta)));
     __stats_accumulate_64bit(&stats64->successByteCount, &values->successByteCount,
                                    (MTLK_GET_STATS_G7(hw_stats->stats_copy, perClientStats.successByteCount[sta_sid])));
+
+    __stats_accumulate_64bit(&stats64->dropCntReasonAqm, &values->dropCntReasonAqm,
+                                   (MTLK_GET_STATS_G7(hw_stats->stats_copy, perClientStats.dropCntReasonAqm[sta_sid])));
   }
 
   _mtlk_sta_update_ofdma_statistics(hw, sta);
@@ -2321,6 +2324,7 @@ _mtlk_hw_check_and_convert_endianess (mtlk_hw_t *hw)
       MTLK_CONVERT_ENDIANESS_ARRAY_16_G7(hw_stats->stats_data, linkAdaptationSuMuStatistics.ppdusDl.stationsPpdus.suStationsPpdus[i].suPpdusCount);
       MTLK_CONVERT_ENDIANESS_ARRAY_32_G7(hw_stats->stats_data, linkAdaptationSuMuStatistics.suRateDl.staStatistics[i].nssPpdus);
       MTLK_CONVERT_ENDIANESS_ARRAY_32_G7(hw_stats->stats_data, linkAdaptationSuMuStatistics.suRateDl.staStatistics[i].mcsPpdus);
+      MTLK_CONVERT_ENDIANESS_ARRAY_32_G7(hw_stats->stats_data, perClientStats.dropCntReasonAqm);
       for (bw = 0; bw < no_of_bw; bw ++) {
         MTLK_CONVERT_ENDIANESS_G7(hw_stats->stats_data, linkAdaptationSuMuStatistics.mpdusDl.suStationsMpdus[i].staMpdu[bw].successMpdus);
         MTLK_CONVERT_ENDIANESS_G7(hw_stats->stats_data, linkAdaptationSuMuStatistics.mpdusDl.suStationsMpdus[i].staMpdu[bw].failedMpdus);

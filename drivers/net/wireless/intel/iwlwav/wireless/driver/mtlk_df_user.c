@@ -6457,7 +6457,7 @@ static int mtlk_df_ui_tx_power(mtlk_seq_entry_t *s, void *data)
                         " PhyMode   MCS NSS  20MHz  40MHz  80MHz 160MHz\n");
   while (NULL != (entry = mtlk_clpb_enum_get_next(clpb, NULL))) {
     unsigned i;
-    int base_pw, delta, delta_max;
+    int base_pw, delta;
     BOOL is_11ag = (PHY_MODE_AG == entry->phy_mode);
     BOOL is_11b = (PHY_MODE_B == entry->phy_mode);
     BOOL is_11n = (PHY_MODE_N == entry->phy_mode);
@@ -6496,19 +6496,11 @@ static int mtlk_df_ui_tx_power(mtlk_seq_entry_t *s, void *data)
      */
     pw_size = _DF_USER_GET_PW_SIZE_(tx_pw_data->cur_cbw);
 
-    // Retrieve the max delta between Ultimate EVM and Max power. It is used as worst case for transmission
-    delta = tx_pw_data->power_hw.pw_max_ant[0] - tx_pw_data->power_hw.pw_min_ant[0];
-    delta_max = delta;
-    for (i = 1; i < pw_size; i++) {
-      delta = tx_pw_data->power_hw.pw_max_ant[i] - tx_pw_data->power_hw.pw_min_ant[i];
-      if (delta > delta_max) {
-         delta_max = delta;
-       }
-    }
-
     for (i = 0; i < pw_size; i++) {
 
-      base_pw = target_pw_based_on_UEVM ? (tx_pw_data->power_hw.pw_max_ant[i] - delta_max)
+      // Retrieve the delta between Ultimate EVM and Max power. It is used as worst case for transmission
+      delta = tx_pw_data->power_hw.pw_max_ant[i] - tx_pw_data->power_hw.pw_min_ant[i];
+      base_pw = target_pw_based_on_UEVM ? (tx_pw_data->power_hw.pw_max_ant[i] - delta)
                                          : tx_pw_data->power_hw.pw_max_ant[i];
 
       /* Set the power_cfg according phy_mode */

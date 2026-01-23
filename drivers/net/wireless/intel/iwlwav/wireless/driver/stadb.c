@@ -3477,6 +3477,8 @@ mtlk_sta_get_per_client_stats (const sta_entry* sta, perClientStats_t *per_clien
   sta->sta_stats64_cntrs_snapshot.dropCntReasonDsabled);
   per_client_stats->dropCntReasonAggError = (sta->sta_stats64_cntrs.dropCntReasonAggError -
   sta->sta_stats64_cntrs_snapshot.dropCntReasonAggError);
+  per_client_stats->dropCntReasonAqm = (sta->sta_stats64_cntrs.dropCntReasonAqm -
+  sta->sta_stats64_cntrs_snapshot.dropCntReasonAqm);
   per_client_stats->mpduRetryCount = (sta->sta_stats64_cntrs.rxRetryCount - sta->sta_stats64_cntrs_snapshot.rxRetryCount);
   per_client_stats->mpduInAmpdu = (sta->sta_stats64_cntrs.perclientmpduInAmpdu -
   sta->sta_stats64_cntrs_snapshot.perclientmpduInAmpdu);

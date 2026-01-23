@@ -1,3 +1,16 @@
+/******************************************************************************
+
+COPYRIGHT:
+  Copyright(c) 2020 - 2025, MaxLinear, Inc.
+  Copyright 2016 - 2020 Intel Corporation
+  Copyright 2014 - 2016 Lantiq Beteiligungs - GmbH & Co.KG
+  Copyright 2010 - 2014 Lantiq Deutschland GmbH
+  Copyright 2007 - 2010 Metalink Ltd.
+
+  For licensing information, see the file 'LICENSE' in the root folder of this software module.
+
+******************************************************************************/
+
 #ifndef __MHI_DESC_INCLUDED_H
 #define __MHI_DESC_INCLUDED_H
 

@@ -11,12 +11,13 @@
 *  sha256 2: 82f160b83c9a67bb5d9689eb29f930403c99ec845148219e5f98a42845e28757
 *
 * COPYRIGHT:
-*  Copyright(c) 2020, MaxLinear, Inc.
+*  Copyright(c) 2020 - 2025, MaxLinear, Inc.
 *  Copyright 2016 - 2020 Intel Corporation
 *  Copyright 2014 - 2016 Lantiq Beteiligungs - GmbH & Co.KG
 *  Copyright 2010 - 2014 Lantiq Deutschland GmbH
 *  Copyright 2007 - 2010 Metalink Ltd.
 *
+*  For licensing information, see the file 'LICENSE' in the root folder of this software module.
 **************************************************************************************/
 #ifndef _MEMORY_MAP_H_ 
 #define _MEMORY_MAP_H_ 
