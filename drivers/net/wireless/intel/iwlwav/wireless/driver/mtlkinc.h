@@ -58,8 +58,10 @@
 #define SIZEOF(a) MTLK_ARRAY_SIZE(a)
 #define INC_WRAP_IDX(i,s) do { (i)++; if ((i) == (s)) (i) = 0; } while (0)
 
+#if LINUX_VERSION_IS_LESS(5,15,195)
 #define MIN(x,y) ((x) < (y) ? (x) : (y))
 #define MAX(x,y) ((x) > (y) ? (x) : (y))
+#endif
 
 #define MTLK_PRAGMA(x)  _Pragma(#x)
 

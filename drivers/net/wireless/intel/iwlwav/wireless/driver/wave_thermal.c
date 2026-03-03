@@ -66,6 +66,15 @@ struct wave_thermal {
 };
 
 #define DEFAULT_TEMPERATURE_VALUE -128
+
+/* Smoothing knobs */
+#define MAX_DELTA_mC 3000            /* Clamp per-call change to ±3°C (in m°C) */
+#define EMA_NUM      1               /* α = 1/4 for EMA smoothing */
+#define EMA_DEN      4
+
+static int  last_temp_mC[WAVE_CARD_RADIO_NUM_MAX] = {25000};    /* Seed ~25°C; will be overwritten after first valid read */
+static bool last_valid[WAVE_CARD_RADIO_NUM_MAX]   = {false};
+
 int __MTLK_IFUNC
 #if LINUX_VERSION_IS_LESS(6,0,0)
 wave_thermal_zone_get_temp (void *data, int *temperature)
@@ -82,6 +91,8 @@ wave_thermal_zone_get_temp (struct thermal_zone_device *dev, int *temperature)
   mtlk_temperature_sensor_t *temperature_cfg;
   uint32 data_size;
   mtlk_hw_band_e wave_band;
+  unsigned radio_idx;
+  int raw_mC, delta;
 
 #if LINUX_VERSION_IS_LESS(6,0,0)
   if (!data || !temperature) {
@@ -97,6 +108,7 @@ wave_thermal_zone_get_temp (struct thermal_zone_device *dev, int *temperature)
   radio = (wave_radio_t*) dev->devdata;
 #endif
   wave_band = wave_radio_band_get(radio);
+  radio_idx = wave_radio_id_get(radio);
 
   master_core = wave_radio_master_core_get(radio);
   if (mtlk_core_get_net_state(master_core) != NET_STATE_CONNECTED) {
@@ -128,8 +140,30 @@ wave_thermal_zone_get_temp (struct thermal_zone_device *dev, int *temperature)
   MTLK_CFG_GET_ITEM(temperature_cfg, temperature, temp);
 
   /* convert to millicelsius */
-  *temperature = temp * MILLIDEGREE_PER_DEGREE;
-  ILOG3_DD("Thermal: Band-%d temperature %d", wave_band, *temperature);
+  raw_mC = temp * MILLIDEGREE_PER_DEGREE;
+
+  /* Apply smoothing if we have a previous value */
+  if (last_valid[radio_idx]) {
+    delta = raw_mC - last_temp_mC[radio_idx];
+
+    /* Clamp unrealistic per-call jumps to ±MAX_DELTA_mC */
+    if (delta >  MAX_DELTA_mC) {
+      raw_mC = last_temp_mC[radio_idx] + MAX_DELTA_mC;
+    }
+    else if (delta < -MAX_DELTA_mC) {
+      raw_mC = last_temp_mC[radio_idx] - MAX_DELTA_mC;
+    }
+
+    /* EMA smoothing: new = prev*(1-α) + raw*α, α = EMA_NUM/EMA_DEN */
+    raw_mC = (last_temp_mC[radio_idx] * (EMA_DEN - EMA_NUM) + raw_mC * EMA_NUM) / EMA_DEN;
+  }
+
+  /* Update cache and return smoothed value */
+  last_temp_mC[radio_idx] = raw_mC;
+  last_valid[radio_idx] = true;
+
+  *temperature = raw_mC;
+  ILOG3_DD("Thermal: Band-%d Smoothed temperature %d", wave_band, *temperature);
 
 end:
   if (MTLK_INVALID_HANDLE != lhandle) {
