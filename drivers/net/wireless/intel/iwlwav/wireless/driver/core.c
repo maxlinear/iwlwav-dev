@@ -68,6 +68,7 @@
 #include "wave_80211ax.h"
 #include "mtlk_rtlog.h"
 #include "ieee80211_crc32.h"  /* for IEEE80211 32-bit CRC computation */
+#include "hw_mmb.h"
 
 #define LOG_LOCAL_GID   GID_CORE
 #define LOG_LOCAL_FID   4
@@ -813,6 +814,140 @@ cleanup_on_disconnect (struct nic *nic)
 #endif
 }
 
+#ifdef MTLK_WAVE_700
+static mtlk_error_t
+_wave_core_ap_remove_multiple_links_mld_sta(mtlk_core_t *nic, sta_entry *sta)
+{
+  int res = MTLK_ERR_OK;
+  struct ieee80211_sta *mac80211_sta, *mac80211_sibling_sta;
+  sta_entry *sibling_sta = NULL;
+  sta_entry *notify_sib_sta[MAX_SIBLING_STAS] = {NULL};
+  mtlk_vap_handle_t sibling_vap_handle;
+  struct mxl_sta_mld_remove remove_sta_mld;
+  int sib_idx;
+  mtlk_df_t *sibling_df;
+  mtlk_core_t *sib_nic;
+  uint8 num_of_siblings = 0;
+  BOOL any_sibling_in_progress = FALSE;
+
+  MTLK_ASSERT(NULL != nic);
+  MTLK_ASSERT(NULL != sta);
+
+  mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
+  MTLK_ASSERT(NULL != mac80211_sta);
+
+  mtlk_sta_remove_mld_lock_acquire(sta);
+  /* Check if the some sibling STA is doing Remove STA MLD */
+  for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+    sibling_sta = mtlk_get_sibling_sta(sta, sib_idx);
+    if (sibling_sta) {
+      if (sibling_sta->ml_sta_info.rem_sta_mld_inprogress) {
+          any_sibling_in_progress = TRUE;
+          break;
+      }
+    }
+  }
+  if (!any_sibling_in_progress)
+    sta->ml_sta_info.rem_sta_mld_inprogress = TRUE;
+  mtlk_sta_remove_mld_lock_release(sta);
+
+  /* If the any other STA is doing Remove STA MLD, wait till its completion */
+  if (!sta->ml_sta_info.rem_sta_mld_inprogress) {
+    mtlk_sta_wait_ml_discnt(sta);
+  }
+  
+  if (FALSE == mtlk_sta_is_ml_disconnected(sta)) {
+    num_of_siblings = sta->ml_sta_info.num_of_siblings;
+    for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+      sibling_sta = mtlk_get_sibling_sta(sta, sib_idx);
+      if (!sibling_sta)
+        continue;
+      notify_sib_sta[sib_idx] = sibling_sta;
+      sibling_vap_handle = sibling_sta->vap_handle;
+      mtlk_sta_set_packets_filter(sibling_sta, MTLK_PCKT_FLTR_DISCARD_ALL);
+      sibling_df = mtlk_vap_get_secondary_df(sibling_vap_handle, sibling_sta->secondary_vap_id);
+      mac80211_sibling_sta = wv_sta_entry_get_mac80211_sta(sibling_sta);
+      MTLK_ASSERT(NULL != mac80211_sibling_sta);
+
+      /* Remove sibling sta MAC addr from switch MAC table */
+      mtlk_df_user_dcdp_remove_mac_addr(sibling_df, mac80211_sibling_sta->addr);
+      sib_nic = mtlk_vap_get_core(sibling_vap_handle);
+      MTLK_ASSERT(NULL != sib_nic);
+
+      remove_sta_mld.aid = mac80211_sibling_sta->aid;
+      remove_sta_mld.sendto_fw = 0;
+
+      /* Send the stop traffic command to the sibling STA */
+      res = wave_core_ap_remove_sta_mld(sib_nic, &remove_sta_mld);
+      if (MTLK_ERR_OK != res) {
+        ELOG_D("CID-%04x: ERROR: Unable to send stop traffic to Sibling MLD Sta",
+                mtlk_vap_get_oid(nic->vap_handle));
+        mtlk_sta_ml_discnt_finish(sibling_sta);
+        goto finish;
+      }
+    }
+
+    /* Send stop traffic to last affiliated sta and remove sta mld */
+    remove_sta_mld.aid = mac80211_sta->aid;
+    remove_sta_mld.sendto_fw = 1;
+    res = wave_core_ap_remove_sta_mld(nic, &remove_sta_mld);
+    if (MTLK_ERR_OK != res) {
+      ELOG_D("CID-%04x: ERROR: Unable to send remove sta mld",
+              mtlk_vap_get_oid(nic->vap_handle));
+      if (sibling_sta)
+        mtlk_sta_ml_discnt_finish(sibling_sta);
+      goto finish;
+    }
+
+    mtlk_sta_remove_mld_lock_acquire(sta);
+    sta->ml_sta_info.rem_sta_mld_inprogress = FALSE;
+    mtlk_sta_remove_mld_lock_release(sta);
+  
+    for (sib_idx = 0; sib_idx < num_of_siblings; sib_idx++) {
+      sibling_sta = notify_sib_sta[sib_idx];
+      if (sibling_sta) {
+        mtlk_sta_ml_discnt_finish(sibling_sta);
+      }
+    }
+  }
+
+finish:
+  return res;
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_ap_disconnect_sta_mld(mtlk_core_t *nic, sta_entry *sta)
+{
+  int res = MTLK_ERR_OK;
+  struct ieee80211_sta *mac80211_sta = NULL;
+  struct mxl_sta_mld_remove remove_sta_mld;
+  int net_state;
+
+  MTLK_ASSERT(NULL != nic);
+  MTLK_ASSERT(NULL != sta);
+
+  net_state = mtlk_core_get_net_state(nic);
+  if (net_state == NET_STATE_HALTED) {
+    /* Do not send anything to halted MAC or if STA hasn't been connected */
+    res = MTLK_ERR_UNKNOWN;
+    goto finish;
+  }
+
+  if (FALSE == mtlk_is_single_link_mld_sta(sta)) {
+    res = _wave_core_ap_remove_multiple_links_mld_sta(nic, sta);
+  } else {
+    mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
+    MTLK_ASSERT(NULL != mac80211_sta);
+    remove_sta_mld.aid = mac80211_sta->aid;
+    remove_sta_mld.sendto_fw = 1;
+    res = wave_core_ap_remove_sta_mld(nic, &remove_sta_mld);
+  }
+
+finish:
+  return res;
+}
+#endif /* MTLK_WAVE_700 */
+
 static mtlk_error_t
 _mtlk_core_ap_disconnect_sta_blocked(struct nic *nic, struct ieee80211_sta * mac80211_sta)
 {
@@ -869,7 +1004,8 @@ _mtlk_core_ap_disconnect_sta_blocked(struct nic *nic, struct ieee80211_sta * mac
   mtlk_df_user_dcdp_remove_mac_addr(df, mac80211_sta->addr);
 
 #ifdef MTLK_WAVE_700
-  if (mac80211_sta->ml_sta_info.is_ml) {
+  /* Remove STA MLD only if ADD STA MLD was previously done */
+  if (mac80211_sta->ml_sta_info.is_ml && sta->ml_sta_info.add_mld_done) {
     wave_core_ap_disconnect_sta_mld(nic, sta);
     skip_stop_traffic = TRUE;
   }
@@ -952,6 +1088,11 @@ driver_sta_cleanup:
   nic->pstats.num_disconnects++;
 
 finish:
+#ifdef MTLK_WAVE_700
+  if ((NULL != mac80211_sta) && mac80211_sta->ml_sta_info.is_ml) {
+    mtlk_vap_ml_notify_sta_teardown(nic->vap_handle);
+  }
+#endif
   if (sta) {
     mtlk_sta_decref(sta); /* De-reference of find */
   }
@@ -3316,7 +3457,7 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
   mtlk_core_t *nic            = mtlk_vap_get_core(vap_handle);
   wave_radio_t *radio         = wave_vap_radio_get(vap_handle);
   sta_entry *sta              = NULL;
-  sta_entry *linked_sta       = NULL;
+  sta_entry *sib_sta          = NULL;
   nl80211_band_e band         = mtlkband2nlband(wave_radio_band_get(radio));
   const IEEE_ADDR               *addr;
   wave_vap_id_t                 vap_id_fw;
@@ -3324,6 +3465,7 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
   struct ieee80211_vif *sibling_vif = NULL;
   bool eapol_on_sibling_vap   = FALSE;
   wave_radio_t                  *sibling_radio;
+  uint8 sib_idx;
 
   CAPWAP1(mtlk_hw_mmb_get_card_idx(mtlk_vap_get_hw(vap_handle)), data, data_len, 0, 0);
 
@@ -3340,12 +3482,19 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
       wave_memcpy(ether_header->h_dest, sizeof(ether_header->h_dest), vif->addr, IEEE_ADDR_LEN);
       vap_id_fw = mtlk_vap_get_id_fw(nic->vap_handle);
       if (sta->ml_sta_info.assoc_vap_id_fw != vap_id_fw) {
-        linked_sta = sta->ml_sta_info.sibling_sta;
-        if (linked_sta) {
-          mtlk_sta_incref(linked_sta);
-          sibling_vap_handle = wave_vap_get_sibling_vap_handle(vap_handle);
+        for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+          /* Find sibling STA which is on the assoc link */
+          sib_sta = mtlk_get_sibling_sta(sta, sib_idx);
+          if (sib_sta == NULL)
+            continue;
+          if (mtlk_vap_get_id_fw(sib_sta->vap_handle) == vap_id_fw)
+            break;
+        }
+        if (sib_sta) {
+          mtlk_sta_incref(sib_sta);
+          sibling_vap_handle = sib_sta->vap_handle;
           sibling_vif = wave_vap_get_vif(sibling_vap_handle);
-          wave_memcpy(ether_header->h_source, sizeof(ether_header->h_source), mtlk_sta_get_addr(linked_sta), IEEE_ADDR_LEN);
+          wave_memcpy(ether_header->h_source, sizeof(ether_header->h_source), mtlk_sta_get_addr(sib_sta), IEEE_ADDR_LEN);
           wave_memcpy(ether_header->h_dest, sizeof(ether_header->h_dest), sibling_vif->addr, IEEE_ADDR_LEN);
           eapol_on_sibling_vap = TRUE;
         }
@@ -3361,8 +3510,8 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
     }
 #ifdef MTLK_WAVE_700
     if (eapol_on_sibling_vap) {
-      mtlk_sta_on_rx_packet_802_1x(linked_sta);  /* Count 802_1x RX packets */
-      mtlk_sta_decref(linked_sta);
+      mtlk_sta_on_rx_packet_802_1x(sib_sta);  /* Count 802_1x RX packets */
+      mtlk_sta_decref(sib_sta);
     }
     else {
 #endif
@@ -7615,7 +7764,7 @@ So we overwrite 6 bytes of LLC/SNAP with SA.
             wave_radio_t *radio = wave_vap_radio_get(nic->vap_handle);
             int radio_probe_req_flag = WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_COLLECT_PROBE_REQ);
             if (radio_probe_req_flag && subtype == MAN_TYPE_PROBE_REQ) {
-              wave_probe_req_list_add(radio, (IEEE_ADDR *)src_addr, phy_info->max_rssi);
+              wave_probe_req_list_add(radio, (IEEE_ADDR *)src_addr, phy_info);
             }
             if (is_broadcast) {
               /* Broad cast frames will be send throught serialzer - we need copy them for all vaps */
@@ -8185,6 +8334,10 @@ _mtlk_core_ap_disconnect_sta (mtlk_handle_t hcore, const void* data, uint32 data
     addr = (IEEE_ADDR *) sta->addr;
     MTLK_ASSERT(addr != NULL);
 
+#ifdef MTLK_WAVE_700
+  if (sta->ml_sta_info.is_ml)
+    mtlk_vap_initiate_ml_sta_teardown(core->vap_handle);
+#endif
     res = _mtlk_core_ap_disconnect_sta_blocked(core, sta);
 
     if (MTLK_ERR_OK != res) {
@@ -8204,6 +8357,23 @@ core_ap_disconnect_all (mtlk_core_t *core)
   const sta_entry      *sta = NULL;
   /* int                   net_state = mtlk_core_get_net_state(nic); */
   mtlk_stadb_iterator_t iter;
+#ifdef MTLK_WAVE_700
+  BOOL wait_needed = FALSE;
+
+  if (mtlk_vap_ml_configured(core->vap_handle)) {
+    mtlk_vap_ml_sta_teardown_lock_acquire(core->vap_handle);
+    wait_needed = mtlk_vap_ml_sta_teardown_inprogress(core->vap_handle);
+    mtlk_vap_ml_sta_teardown_lock_release(core->vap_handle);
+
+    if (wait_needed) {
+      /* ML affiliated STA on this link can be in the process of removal 
+       * Due to _wv_request_sta_disconnect_ap, to avoid race condition
+       * wait for its completion, only then proceed with VAP removal
+       */
+      mtlk_vap_wait_ml_sta_teardown(core->vap_handle);
+    }
+  }
+#endif
 
   sta = mtlk_stadb_iterate_first(&core->slow_ctx->stadb, &iter);
   if (sta) {
@@ -8983,8 +9153,7 @@ _mtlk_slow_ctx_start(struct nic_slow_ctx *slow_ctx, struct nic* nic)
 
     MTLK_START_STEP_IF(is_master, core_slow_ctx, WATCHDOG_TIMER_START, MTLK_OBJ_PTR(slow_ctx),
                        mtlk_osal_timer_set,
-                       (&slow_ctx->mac_watchdog_timer,
-                       WAVE_RADIO_PDB_GET_INT(wave_vap_radio_get(nic->vap_handle), PARAM_DB_RADIO_MAC_WATCHDOG_TIMER_PERIOD_MS)))
+                       (&slow_ctx->mac_watchdog_timer, wave_hw_get_watchdog_period(nic)))
 
     MTLK_START_STEP_VOID(core_slow_ctx, SERIALIZER_ACTIVATE, MTLK_OBJ_PTR(slow_ctx),
                          MTLK_NOACTION, ())
@@ -11288,8 +11457,7 @@ core_on_rcvry_restore (mtlk_core_t *core, uint32 rcvry_type)
     wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
 
     /* Restore WATCHDOG timer */
-    mtlk_osal_timer_set(&core->slow_ctx->mac_watchdog_timer,
-                        WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_MAC_WATCHDOG_TIMER_PERIOD_MS));
+    mtlk_osal_timer_set(&core->slow_ctx->mac_watchdog_timer, wave_hw_get_watchdog_period(core));
 
     wave_radio_progmodel_loaded_set(radio, FALSE);
     wave_radio_last_pm_freq_set(radio, MTLK_HW_BAND_NONE);

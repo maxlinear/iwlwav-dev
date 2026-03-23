@@ -235,11 +235,15 @@ BOOL __MTLK_IFUNC mtlk_mmb_fastpath_available(mtlk_hw_t *hw)    __MTLK_INT_HANDL
 BOOL __MTLK_IFUNC mtlk_mmb_dcdp_path_available(mtlk_hw_t *hw)   __MTLK_INT_HANDLER_SECTION;
 BOOL __MTLK_IFUNC mtlk_mmb_dcdp_frag_wa_enabled(mtlk_hw_t *hw)  __MTLK_INT_HANDLER_SECTION;
 BOOL __MTLK_IFUNC wave_mmb_dcdp_4umt_cntr_mode(mtlk_hw_t *hw)   __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC wave_mmb_dcdp_topaz_available(mtlk_hw_t *hw) __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC wave_mmb_dcdp_topaz_l4s_available(mtlk_hw_t *hw) __MTLK_INT_HANDLER_SECTION;
 #else
-#define mtlk_mmb_fastpath_available(hw) (FALSE)
-#define mtlk_mmb_dcdp_path_available(hw) (FALSE)
-#define mtlk_mmb_dcdp_frag_wa_enabled(hw) (FALSE)
-#define wave_mmb_dcdp_4umt_cntr_mode(hw) (FALSE)
+#define mtlk_mmb_fastpath_available(hw)       (FALSE)
+#define mtlk_mmb_dcdp_path_available(hw)      (FALSE)
+#define mtlk_mmb_dcdp_frag_wa_enabled(hw)     (FALSE)
+#define wave_mmb_dcdp_4umt_cntr_mode(hw)      (FALSE)
+#define wave_mmb_dcdp_topaz_available(hw)     (FALSE)
+#define wave_mmb_dcdp_topaz_l4s_available(hw) (FALSE)
 #endif
 
 const char* __MTLK_IFUNC wave_hw_get_dc_mode_name (mtlk_hw_t *hw);
@@ -874,6 +878,8 @@ wave_hw_get_la_mu_he_eht_stats (mtlk_hw_t *hw,
 
 void __MTLK_IFUNC
 wave_hw_get_la_mu_groups_stats (mtlk_hw_t *core, mtlk_wssa_drv_la_mu_groups_stats_t *stats);
+
+int __MTLK_IFUNC wave_hw_get_watchdog_period(struct nic *nic);
 
 #ifdef CONFIG_WAVE_DEBUG
 void __MTLK_IFUNC

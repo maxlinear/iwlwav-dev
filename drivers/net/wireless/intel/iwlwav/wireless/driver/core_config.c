@@ -1602,7 +1602,7 @@ core_cfg_internal_request_sid (mtlk_core_t *nic, IEEE_ADDR *addr, uint16 *p_sid)
   return res;
 }
 
-static BOOL _core_cfg_check_sid_connected (mtlk_core_t *nic, IEEE_ADDR *mac_addr)
+BOOL __MTLK_IFUNC core_cfg_check_sid_connected (mtlk_core_t *nic, IEEE_ADDR *mac_addr)
 {
   mtlk_core_t *sta_core;
 
@@ -1650,7 +1650,7 @@ int __MTLK_IFUNC core_cfg_request_aid (mtlk_handle_t hcore, const void *data, ui
     }
 
     /* Check that station is not connected */
-    if (_core_cfg_check_sid_connected(nic, addr)) {
+    if (core_cfg_check_sid_connected(nic, addr)) {
       MTLK_CLPB_EXIT(MTLK_ERR_ALREADY_EXISTS);
     }
 
@@ -2792,8 +2792,9 @@ core_cfg_get_four_addr_sta_list (mtlk_handle_t hcore, const void* data, uint32 d
   res = mtlk_clpb_push(clpb, &res, sizeof(res));
   if (MTLK_ERR_OK == res) {
     res = mtlk_clpb_push(clpb, &four_addr_cfg, sizeof(four_addr_cfg));
+  } else if (four_addr_cfg.sta_vect) {
+      mtlk_clpb_delete(four_addr_cfg.sta_vect);
   }
-
   return res;
 }
 
@@ -5172,10 +5173,6 @@ BOOL core_cfg_channels_overlap(struct mtlk_chan_def *chandef1,
 
   MTLK_ASSERT(chandef1 != NULL);
   MTLK_ASSERT(chandef2 != NULL);
-
-  if ((chandef1->chan.band == MTLK_HW_BAND_6_GHZ) ||
-      (chandef2->chan.band == MTLK_HW_BAND_6_GHZ))
-    return FALSE;
 
   half_width1 = mtlkcw2cw(chandef1->width) >> 1;
   half_width2 = mtlkcw2cw(chandef2->width) >> 1;
@@ -9216,80 +9213,107 @@ FINISH:
   return res;
 }
 
-static void
-_wave_core_update_ml_vap_info (mtlk_core_t *core, uint8 link2_vapid)
+#ifdef BEST_EFFORT_TID_SPREADING
+static wave_ml_vap_str_tid_spreading_info_t *
+_wave_core_create_vap_tid_spread_info(mtlk_core_t *core, wave_radio_t *sib_radio, mtlk_vap_handle_t sibling_vap_handle)
 {
-  int radio_id, result;
+  wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info = NULL;
+  struct mtlk_chan_def *current_chandef, *sibling_chandef;
+
+  /* Init is only valid for dual band MLD */
+  ml_vap_tid_spread_info = mtlk_osal_mem_alloc(sizeof(wave_ml_vap_str_tid_spreading_info_t), WAVE_MEM_TAG_TID_LINK_SPREADING);
+  if (ml_vap_tid_spread_info == NULL) {
+    ELOG_D("CID-%04x: Can't allocate memory for ml_vap_tid_spread_info", mtlk_vap_get_oid(core->vap_handle));
+    return NULL;
+  }
+  memset(ml_vap_tid_spread_info, 0, sizeof(wave_ml_vap_str_tid_spreading_info_t));
+  current_chandef = __wave_core_chandef_get(core);
+  sibling_chandef = wave_radio_chandef_get(sib_radio);
+  ml_vap_tid_spread_info->active = TRUE;
+#ifdef OTF_MLO_STR_TID_SPREADING
+  ml_vap_tid_spread_info->tid_spreading_mode = TID_SPREAD_STATIC;
+#else
+  ml_vap_tid_spread_info->tid_spreading_mode = TID_SPREAD_DYNAMIC;
+#endif /* OTF_MLO_STR_TID_SPREADING */
+  if (current_chandef->width > sibling_chandef->width) {
+    ml_vap_tid_spread_info->tid_split_ratio = wave_core_find_tid_flip_ratio(current_chandef->width, sibling_chandef->width);
+    ml_vap_tid_spread_info->high_bw_vap = core->vap_handle;
+  } else {
+    ml_vap_tid_spread_info->tid_split_ratio = wave_core_find_tid_flip_ratio(sibling_chandef->width, current_chandef->width);
+    ml_vap_tid_spread_info->high_bw_vap = sibling_vap_handle;
+  }
+#ifdef OTF_MLO_STR_TID_SPREADING
+  ml_vap_tid_spread_info->tid_split_ratio = STATIC_TID_SPREAD_RATIO;
+#endif /* OTF_MLO_STR_TID_SPREADING */
+
+  return ml_vap_tid_spread_info;
+}
+#endif
+
+static void
+_wave_core_update_ml_vap_info (mtlk_core_t *core,  struct _mxl_vendor_mld_info *ml_info)
+{
+  int radio_id, sib_id, sib_vap_id, result;
   mtlk_hw_t *hw;
   wave_radio_descr_t *radio_descr;
   wave_radio_t *radio;
   mtlk_vap_handle_t sibling_vap_handle = MTLK_INVALID_VAP_HANDLE;
   mtlk_vap_manager_t *sibling_vap_manager;
-  mtlk_ml_vap_info_t ml_vap_info;
-  mtlk_osal_spinlock_t *ml_vap_lock;
+  mtlk_ml_vap_info_t ml_vap_info = {0};
+  mtlk_osal_spinlock_t *ml_vap_lock = NULL;
 #ifdef BEST_EFFORT_TID_SPREADING
-  struct mtlk_chan_def *current_chandef, *sibling_chandef;
-  wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info;
+  wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info = NULL;
 #endif
 
   MTLK_ASSERT(NULL != core);
   hw = mtlk_vap_get_hw(core->vap_handle);
   MTLK_ASSERT(NULL != hw);
 
-  ml_vap_info.sibling = MTLK_INVALID_VAP_HANDLE;
-  ml_vap_info.ml_vap_rem_sync_lock = NULL;
-#ifdef BEST_EFFORT_TID_SPREADING
-  ml_vap_info.tid_spread_info = NULL;
-#endif
-
   radio_descr = (wave_radio_descr_t *)wave_card_radio_descr_get(hw);
-  for (radio_id = 0; radio_id < radio_descr->num_radios; radio_id++) {
-    radio = wave_radio_descr_wave_radio_get(radio_descr, radio_id);
-    MTLK_ASSERT(NULL != radio);
 
-    sibling_vap_manager = wave_radio_vap_manager_get(radio);
-    result = wave_vap_manager_get_vap_handle_by_fw_id(sibling_vap_manager, link2_vapid, &sibling_vap_handle);
-    if (result == MTLK_ERR_OK) {
-      ml_vap_info.sibling = sibling_vap_handle;
-#ifdef BEST_EFFORT_TID_SPREADING
-      ml_vap_tid_spread_info = mtlk_osal_mem_alloc(sizeof(wave_ml_vap_str_tid_spreading_info_t), WAVE_MEM_TAG_TID_LINK_SPREADING);
-      if (ml_vap_tid_spread_info == NULL) {
-        ELOG_D("CID-%04x: Can't allocate memory for ml_vap_tid_spread_info", mtlk_vap_get_oid(core->vap_handle));
+  for (sib_id = 0; sib_id < ml_info->num_of_sibling_vaps; sib_id++) {
+    sib_vap_id = ml_info->sibling_vap_ids[sib_id];
+
+    MTLK_ASSERT(sib_vap_id != MTLK_VAP_INVALID_IDX);
+
+    for (radio_id = 0; radio_id < radio_descr->num_radios; radio_id++) {
+      radio = wave_radio_descr_wave_radio_get(radio_descr, radio_id);
+      MTLK_ASSERT(NULL != radio);
+      ml_vap_info.sibling_handles[sib_id] = MTLK_INVALID_VAP_HANDLE;
+      sibling_vap_manager = wave_radio_vap_manager_get(radio);
+      result = wave_vap_manager_get_vap_handle_by_fw_id(sibling_vap_manager, sib_vap_id, &sibling_vap_handle);
+      if (result == MTLK_ERR_OK) {
+        ml_vap_info.sibling_handles[sib_id] = sibling_vap_handle;
+        ml_vap_info.num_of_sibling_vaps++;
+  #ifdef BEST_EFFORT_TID_SPREADING
+        /* Allocate vap tid spread info only once */
+        if (ml_vap_info.tid_spread_info == NULL) {
+          /* TODO: align to Triband MLD */
+          ml_vap_tid_spread_info = _wave_core_create_vap_tid_spread_info(core, radio, sibling_vap_handle);
+          if (ml_vap_tid_spread_info == NULL)
+            ELOG_D("CID-%04x: Can't create ml_vap_tid_spread_info", mtlk_vap_get_oid(core->vap_handle));
+          else
+            ml_vap_info.tid_spread_info = ml_vap_tid_spread_info;
+        }
+  #endif /* BEST_EFFORT_TID_SPREADING */
+
+        /* Allocate vap rem lock only once */
+        if (ml_vap_info.ml_vap_rem_sync_lock == NULL) {
+          ml_vap_lock = mtlk_osal_mem_alloc(sizeof(mtlk_osal_spinlock_t), WAVE_MEM_TAG_MLD_VAP_LOCK);
+          if (ml_vap_lock == NULL) {
+            ELOG_D("CID-%04x: Can't allocate memory for ml_vap_lock", mtlk_vap_get_oid(core->vap_handle));
+          } else {
+            mtlk_osal_lock_init(ml_vap_lock);
+            ml_vap_info.ml_vap_rem_sync_lock = ml_vap_lock;
+          }
+        }
         break;
       }
-      memset(ml_vap_tid_spread_info, 0, sizeof(wave_ml_vap_str_tid_spreading_info_t));
-      current_chandef = __wave_core_chandef_get(core);
-      sibling_chandef = wave_radio_chandef_get(radio);
-      ml_vap_tid_spread_info->active = TRUE;
-#ifdef OTF_MLO_STR_TID_SPREADING
-      ml_vap_tid_spread_info->tid_spreading_mode = TID_SPREAD_STATIC;
-#else
-      ml_vap_tid_spread_info->tid_spreading_mode = TID_SPREAD_DYNAMIC;
-#endif /* OTF_MLO_STR_TID_SPREADING */
-      if (current_chandef->width > sibling_chandef->width) {
-        ml_vap_tid_spread_info->tid_split_ratio = wave_core_find_tid_flip_ratio(current_chandef->width, sibling_chandef->width);
-        ml_vap_tid_spread_info->high_bw_vap = core->vap_handle;
-      } else {
-        ml_vap_tid_spread_info->tid_split_ratio = wave_core_find_tid_flip_ratio(sibling_chandef->width, current_chandef->width);
-        ml_vap_tid_spread_info->high_bw_vap = sibling_vap_handle;
-      }
-#ifdef OTF_MLO_STR_TID_SPREADING
-      ml_vap_tid_spread_info->tid_split_ratio = STATIC_TID_SPREAD_RATIO;
-#endif /* OTF_MLO_STR_TID_SPREADING */
-      ml_vap_info.tid_spread_info = ml_vap_tid_spread_info;
-#endif /* BEST_EFFORT_TID_SPREADING */
-      ml_vap_lock = mtlk_osal_mem_alloc(sizeof(mtlk_osal_spinlock_t), WAVE_MEM_TAG_MLD_VAP_LOCK);
-      if (ml_vap_lock == NULL) {
-        ELOG_D("CID-%04x: Can't allocate memory for ml_vap_lock", mtlk_vap_get_oid(core->vap_handle));
-      } else {
-        mtlk_osal_lock_init(ml_vap_lock);
-        ml_vap_info.ml_vap_rem_sync_lock = ml_vap_lock;
-      }
-      break;
     }
-  }
-  if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE) {
-    ELOG_DD("CID-%04x: No vap handle for sibling id:%d", mtlk_vap_get_oid(core->vap_handle), link2_vapid);
+
+    if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE) {
+      ELOG_DD("CID-%04x: No vap handle for sibling id:%d", mtlk_vap_get_oid(core->vap_handle), sib_vap_id);
+    }
   }
   wave_vap_manager_update_ml_vap_info(core->vap_handle, ml_vap_info);
 }
@@ -9338,7 +9362,7 @@ wave_core_setup_ap_mld (mtlk_handle_t hcore, const void *data, uint32 data_size)
 
     res = wave_core_send_ap_mld_info(core, ml_info);
     if (res == MTLK_ERR_OK)
-      _wave_core_update_ml_vap_info(core, ml_info->sibling_vap_ids[0]); /* Need to Handle for 3 Links */
+      _wave_core_update_ml_vap_info(core, ml_info);
 
   MTLK_CLPB_FINALLY(res)
     return mtlk_clpb_push_res(clpb, res);
@@ -9410,100 +9434,15 @@ wave_core_set_ml_sid (mtlk_handle_t hcore, const void *data, uint32 data_size)
 }
 
 mtlk_error_t __MTLK_IFUNC
-wave_core_send_remove_sta_mld (mtlk_core_t *nic, struct mxl_sta_mld_remove *sta_mld)
-{
-  mtlk_error_t      res = MTLK_ERR_OK;
-  mtlk_txmm_msg_t   man_msg;
-  mtlk_txmm_data_t *man_entry = NULL;
-  UMI_REMOVE_STA_MLD      *psUmiRemoveStaMld;
-  volatile uint8   *pStatus;
-  uint16 sid = DB_UNKNOWN_SID;
-  sta_entry *sta = NULL;
-  IEEE_ADDR sta_addr;
-
-  MTLK_ASSERT(NULL != nic);
-  MTLK_ASSERT(NULL != sta_mld);
-
-  if (mtlk_hw_type_is_gen7(mtlk_vap_get_hw(nic->vap_handle))) {
-    sid = wave_hw_get_sid_from_aid(mtlk_vap_get_hw(nic->vap_handle), sta_mld->aid,
-                                   mtlk_vap_get_id_fw(nic->vap_handle));
-    if (sid == DB_UNKNOWN_SID) {
-      ELOG_D("CID-%04x: unknown SID in remove sta mld", mtlk_vap_get_oid(nic->vap_handle));
-      goto FINISH;
-    }
-  }
-  sta = mtlk_stadb_find_sid(&nic->slow_ctx->stadb, sid);
-  if (sta == NULL) {
-    ILOG2_V("STA not found!");
-    goto FINISH;
-  }
-  sta_addr = *mtlk_sta_get_addr(sta);
-  ILOG2_YD("STA %Y found by SID %d", &sta_addr, sid);
-
-  if (!sta->is_traffic_stopped) {
-    res = wave_core_ap_stop_traffic(nic, sid, &sta_addr);
-    if (MTLK_ERR_OK != res) {
-      ELOG_DY("CID-%04x: Failed to stop traffic for STA %Y. Proceed Driver STA entry cleanup", mtlk_vap_get_oid(nic->vap_handle), &sta_addr);
-      goto FINISH;
-    }
-    sta->is_traffic_stopped = TRUE;
-    ILOG1_DYD("CID-%04x: Stopped traffic for STA %Y, SID %d", mtlk_vap_get_oid(nic->vap_handle), &sta_addr, sid);
-  }
-  ILOG0_DDD("CID-%04x: UMI_REMOVE_STA_MLD %d aid %d", mtlk_vap_get_oid(nic->vap_handle), sta_mld->sendto_fw,
-             sta_mld->aid);
-  if (sta_mld->sendto_fw == 0)
-    goto FINISH;
-
-  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
-  if (!man_entry) {
-    ELOG_D("CID-%04x: Can't send REMOVE_STA_MLD request to MAC due to the lack of MAN_MSG",
-           mtlk_vap_get_oid(nic->vap_handle));
-    res = MTLK_ERR_NO_RESOURCES;
-    goto FINISH;
-  }
-  man_entry->id           = UM_MAN_REMOVE_STA_MLD_REQ;
-  man_entry->payload_size = sizeof(UMI_REMOVE_STA_MLD);
-
-  memset(man_entry->payload, 0, man_entry->payload_size);
-  psUmiRemoveStaMld = (UMI_REMOVE_STA_MLD *)man_entry->payload;
-  psUmiRemoveStaMld->u8Status         = UMI_OK;
-  psUmiRemoveStaMld->u16MlAID = sta_mld->aid;
-  pStatus = &psUmiRemoveStaMld->u8Status;
-
-  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
-  if (res != MTLK_ERR_OK) {
-    ELOG_DD("CID-%04x: Can't send UM_MAN_REMOVE_STA_MLD_REQ request to MAC (err=%d)",
-            mtlk_vap_get_oid(nic->vap_handle), res);
-    goto FINISH;
-  }
-  if (*pStatus != UMI_OK) {
-    WLOG_DD("CID-%04x: REMOVE_STA_MLD failed in FW (status=%u)",
-             mtlk_vap_get_oid(nic->vap_handle),
-             psUmiRemoveStaMld->u8Status);
-    res = MTLK_ERR_MAC;
-    goto FINISH;
-  }
-  /* cleanup mld sta info in sta_entry */
-  wave_cleanup_ml_sta_info(sta);
-
-FINISH:
-  if (sta) mtlk_sta_decref(sta);
-  if (man_entry) {
-    mtlk_txmm_msg_cleanup(&man_msg);
-  }
-
-  return res;
-}
-
-mtlk_error_t __MTLK_IFUNC
 wave_core_send_remove_mld (mtlk_core_t *nic, struct mxl_mld_remove *mld_rem)
 {
   mtlk_error_t      res = MTLK_ERR_OK;
   mtlk_txmm_msg_t   man_msg;
   mtlk_txmm_data_t *man_entry = NULL;
-  UMI_DESTROY_MLD      *psUmiDestroyMld;
+  UMI_DESTROY_MLD  *psUmiDestroyMld;
   volatile uint16  *pStatus;
   struct _mxl_vendor_mld_info ml_info;
+  u8 sib_idx;
 
   MTLK_ASSERT(NULL != nic);
   MTLK_ASSERT(NULL != mld_rem);
@@ -9517,6 +9456,8 @@ wave_core_send_remove_mld (mtlk_core_t *nic, struct mxl_mld_remove *mld_rem)
   }
 
   ml_info.mld_id = MTLK_PARAM_DB_INVALID_UINT8;
+  for (sib_idx = 0; sib_idx < NUM_OF_SIBLING_LINKS; sib_idx++)
+    ml_info.sibling_vap_ids[sib_idx] = MTLK_VAP_INVALID_IDX;
   MTLK_CORE_PDB_SET_BINARY(nic, PARAM_DB_CORE_MLD_INFO, &ml_info, sizeof(ml_info));
 
   ILOG0_DD("CID-%04x: UMI_DESTROY_MLD sendto_fw %u", mtlk_vap_get_oid(nic->vap_handle), mld_rem->sendto_fw);
@@ -9622,133 +9563,83 @@ wave_core_vap_remove_mld (mtlk_core_t *nic)
 {
   mtlk_error_t res = MTLK_ERR_OK;
   struct mxl_mld_remove mld_remove;
-  mtlk_vap_handle_t sibling_vap_handle;
+  mtlk_vap_handle_t vap_handle = MTLK_INVALID_VAP_HANDLE;
+  mtlk_vap_handle_t sibling_vap_handle = MTLK_INVALID_VAP_HANDLE;
+  mtlk_vap_handle_t notify_vap_handle[NUM_OF_SIBLING_LINKS] = {MTLK_INVALID_VAP_HANDLE};
+  mtlk_vap_info_internal_t *_info;
   mtlk_core_t *sibling_nic = NULL;
+  u8 sib_idx = 0;
+  BOOL ml_teardown_in_progress = FALSE;
 
   MTLK_ASSERT(NULL != nic);
 
-  if (mtlk_vap_ml_configured(nic->vap_handle)) {
-    mtlk_vap_ml_lock_acquire(nic->vap_handle);
-    if (mtlk_vap_ml_teardown_inprogress(nic->vap_handle)) {
-      mtlk_vap_ml_lock_release(nic->vap_handle);
-      /* VAP cleanup already started, wait for it's ACK */
-      mtlk_vap_wait_ml_teardown(nic->vap_handle);
-    } else {
-      sibling_vap_handle = wave_vap_get_sibling_vap_handle(nic->vap_handle);
-      if (sibling_vap_handle != MTLK_INVALID_VAP_HANDLE) {
-        /* Send the stop traffic for Sibling VAP */
-        mtlk_vap_initiate_ml_teardown(sibling_vap_handle);
-        mtlk_vap_ml_lock_release(nic->vap_handle);
-        mld_remove.mld_id = MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_MLD_ID);
-        mld_remove.sendto_fw = 0;
-        sibling_nic = mtlk_vap_get_core(sibling_vap_handle);
-        res = wave_core_send_remove_mld(sibling_nic, &mld_remove);
-        sibling_nic->is_stopped_by_sibling = TRUE;
-        if (MTLK_ERR_OK != res) {
-          ELOG_DD("CID-%04x: Cannot remove MLD VAP (err=%d)",
-                  mtlk_vap_get_oid(sibling_vap_handle), res);
-          goto finish;
-        }
-        /* Send the stop traffic the current VAP and destory MLD command */
-        mld_remove.mld_id = MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_MLD_ID);
-        mld_remove.sendto_fw = 1;
-        res = wave_core_send_remove_mld(nic, &mld_remove);
-        if (MTLK_ERR_OK != res) {
-           ELOG_DD("CID-%04x: Cannot remove MLD VAP (err=%d)",
-                   mtlk_vap_get_oid(nic->vap_handle), res);
-        }
-        /* Send ACK to sibling VAP to continue further */
-        mtlk_vap_finish_ml_teardown(sibling_vap_handle);
-      } else {
-        mtlk_vap_ml_lock_release(nic->vap_handle);
-      }
+  vap_handle = nic->vap_handle;
+  _info = (mtlk_vap_info_internal_t *)vap_handle;
 
-    }
-  }
-finish:
-  return res;
-}
-
-mtlk_error_t __MTLK_IFUNC
-wave_core_ap_disconnect_sta_mld(mtlk_core_t *nic, sta_entry *sta)
-{
-  int res = MTLK_ERR_OK;
-  struct ieee80211_sta *mac80211_sta, *mac80211_sibling_sta;
-  sta_entry *sibling_sta = NULL;
-  mtlk_vap_handle_t sibling_vap_handle;
-  struct mxl_sta_mld_remove remove_sta_mld;
-  int net_state;
-  mtlk_df_t *sibling_df;
-  mtlk_core_t *sib_nic;
-
-  MTLK_ASSERT(NULL != nic);
-  MTLK_ASSERT(NULL != sta);
-
-  net_state = mtlk_core_get_net_state(nic);
-  if (net_state == NET_STATE_HALTED) {
-    /* Do not send anything to halted MAC or if STA hasn't been connected */
-    res = MTLK_ERR_UNKNOWN;
+  if (!mtlk_vap_ml_configured(vap_handle)) {
+    ILOG1_D("CID-%04x: MLD is not configured on this VAP, nothing to remove",
+           mtlk_vap_get_oid(vap_handle));
     goto finish;
   }
 
-  mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
-  sibling_sta = mtlk_get_sibling_sta(sta);
-
-  if (sibling_sta) {
-    mtlk_osal_lock_acquire(&sta->ml_sta_info.remove_sta_mld->lock);
-    /* Check if the other STA is doing Remove STA MLD */
-    if (!sibling_sta->ml_sta_info.rem_sta_mld_inprogress)
-      sta->ml_sta_info.rem_sta_mld_inprogress = TRUE;
-    mtlk_osal_lock_release(&sta->ml_sta_info.remove_sta_mld->lock);
-
-    /* If the other STA is doing Remove STA MLD, wait till its completion */
-    if (!sta->ml_sta_info.rem_sta_mld_inprogress)
-      mtlk_sta_wait_ml_discnt(sta);
+  mtlk_vap_ml_lock_acquire(vap_handle);
+  ml_teardown_in_progress = !!(mtlk_vap_ml_teardown_inprogress(vap_handle));
+  if (ml_teardown_in_progress) {
+    mtlk_vap_ml_lock_release(vap_handle);
+    /* VAP cleanup already started, wait for ACK */
+    mtlk_vap_wait_ml_teardown(vap_handle);
+  } else {
+    for (sib_idx = 0; sib_idx < _info->ml_vap_info.num_of_sibling_vaps; sib_idx++) {
+      sibling_vap_handle = wave_vap_get_sibling_vap_handle(vap_handle, sib_idx);
+      if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE)
+        continue;
+      /* Mark that ml teardown in progress in all sibling links */
+      mtlk_vap_initiate_ml_teardown(sibling_vap_handle);
+    }
   }
+  mtlk_vap_ml_lock_release(vap_handle);
 
-  if (mtlk_sta_is_ml_disconnected(sta) != TRUE) {
-    sibling_vap_handle = wave_vap_get_sibling_vap_handle(nic->vap_handle);
-
-    if (sibling_sta != NULL) {
-      mtlk_sta_set_packets_filter(sibling_sta, MTLK_PCKT_FLTR_DISCARD_ALL);
-      sibling_df = mtlk_vap_get_secondary_df(sibling_vap_handle, sibling_sta->secondary_vap_id);
-      mac80211_sibling_sta = wv_sta_entry_get_mac80211_sta(sibling_sta);
-      MTLK_ASSERT(NULL != mac80211_sibling_sta);
-
-      /* Remove sibling sta MAC addr from switch MAC table */
-      mtlk_df_user_dcdp_remove_mac_addr(sibling_df, mac80211_sibling_sta->addr);
-
-      if (sta->info.MainVapId != mtlk_vap_get_id_fw(sta->vap_handle)) {
-        sib_nic = nic;
-        nic = mtlk_vap_get_core(sibling_vap_handle);
-      } else {
-        sib_nic = mtlk_vap_get_core(sibling_vap_handle);
-      }
-
-      remove_sta_mld.aid = mac80211_sta->aid;
-      remove_sta_mld.sendto_fw = 0;
-
-     /* Send the stop traffic command to the sibling STA */
-      res = wave_core_send_remove_sta_mld(sib_nic, &remove_sta_mld);
+  if (mtlk_vap_ml_configured(vap_handle)) {
+    for (sib_idx = 0; sib_idx < _info->ml_vap_info.num_of_sibling_vaps; sib_idx++) {
+      sibling_vap_handle = wave_vap_get_sibling_vap_handle(vap_handle, sib_idx);
+      if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE)
+        continue;
+      notify_vap_handle[sib_idx] = sibling_vap_handle;
+      sibling_nic = mtlk_vap_get_core(sibling_vap_handle);
+      MTLK_ASSERT(NULL != sibling_nic);
+      mld_remove.mld_id = MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_MLD_ID);
+      mld_remove.sendto_fw = 0;
+      res = wave_core_send_remove_mld(sibling_nic, &mld_remove);
+      sibling_nic->is_stopped_by_sibling = TRUE;
       if (MTLK_ERR_OK != res) {
-        ELOG_D("CID-%04x: ERROR: Unable to send stop traffic to Sibling MLD Sta", mtlk_vap_get_oid(nic->vap_handle));
-        mtlk_sta_ml_discnt_finish(sibling_sta);
+        ELOG_DD("CID-%04x: Cannot remove MLD VAP (err=%d)",
+                mtlk_vap_get_oid(sibling_vap_handle), res);
+        mtlk_vap_finish_ml_teardown(sibling_vap_handle);
         goto finish;
       }
     }
-    /* Send the stop traffic to the main STA and remove sta mld command */
-    remove_sta_mld.aid = mac80211_sta->aid;
-    remove_sta_mld.sendto_fw = 1;
-    res = wave_core_send_remove_sta_mld(nic, &remove_sta_mld);
-    if (sibling_sta != NULL) {
-      mtlk_osal_lock_acquire(&sta->ml_sta_info.remove_sta_mld->lock);
-      sta->ml_sta_info.rem_sta_mld_inprogress = FALSE;
-      mtlk_osal_lock_release(&sta->ml_sta_info.remove_sta_mld->lock);
 
-      /* Send ACK to the sibling STA to proceed */
-      mtlk_sta_ml_discnt_finish(sibling_sta);
+    /* Send the stop traffic last VAP and destory MLD command */
+    mld_remove.mld_id = MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_MLD_ID);
+    mld_remove.sendto_fw = 1;
+    res = wave_core_send_remove_mld(nic, &mld_remove);
+    if (MTLK_ERR_OK != res) {
+      ELOG_DD("CID-%04x: Cannot remove MLD VAP (err=%d)",
+             mtlk_vap_get_oid(vap_handle), res);
+      if (sibling_vap_handle != MTLK_INVALID_VAP_HANDLE)
+        mtlk_vap_finish_ml_teardown(sibling_vap_handle);
+      goto finish;
+    }
+
+    for (sib_idx = 0; sib_idx < NUM_OF_SIBLING_LINKS; sib_idx++) {
+      sibling_vap_handle = notify_vap_handle[sib_idx];
+      if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE)
+        continue;
+      /* Send ACK to sibling VAPs to continue further */
+      mtlk_vap_finish_ml_teardown(sibling_vap_handle);
     }
   }
+
 finish:
   return res;
 }
@@ -9781,201 +9672,6 @@ wave_core_set_assigned_tid_to_link (wave_ml_str_sta_tid_spreading_info_t *ml_sta
 }
 #endif
 
-static uint8
-_wave_core_find_ml_supp_mode (struct mxl_ml_sta_add_param *ml_sta_add_params)
-{
-  return (ml_sta_add_params->num_of_sim_links ? STR_MODE : ((ml_sta_add_params->eml_capab & BIT(0)) ? EMLSR_MODE : MLSR_MODE));
-}
-
-static uint8
-_wave_core_get_link_id (mtlk_vap_handle_t vap_handle)
-{
-  wave_radio_t *radio = wave_vap_radio_get(vap_handle);
-  mtlk_hw_band_e band = wave_radio_band_get(radio);
-
-  switch (band) {
-    case MTLK_HW_BAND_5_2_GHZ:
-      return LINK_ID_5G;
-    case MTLK_HW_BAND_2_4_GHZ:
-      return LINK_ID_2G;
-    case MTLK_HW_BAND_6_GHZ:
-      return LINK_ID_6G;
-    default:
-      return INVALID_LINK_ID;
-  }
-}
-
-static mtlk_error_t wave_core_internal_ml_sta_add(mtlk_core_t *nic,
-                struct mxl_ml_sta_add_param *ml_sta_add_params, u8 *main_link_id)
-{
-  mtlk_error_t      res = MTLK_ERR_OK;
-  mtlk_txmm_msg_t   man_msg;
-  mtlk_txmm_data_t  *man_entry = NULL;
-  UMI_ADD_STA_MLD   *psUmiStaAdd;
-  volatile uint8    *pStatus;
-  sta_entry         *sta = NULL, *linked_sta = NULL;
-  mtlk_vap_handle_t vap_handle = MTLK_INVALID_VAP_HANDLE, linked_vap_handle = MTLK_INVALID_VAP_HANDLE;
-  mtlk_core_t       *linked_nic = NULL;
-  mtlk_hw_band_e    wave_band;
-  wave_ml_sta_info_t ml_sta_info;
-  wave_ml_rem_sta_mld_t *remove_sta_mld = NULL;
-  mtlk_hw_band_e wave_band_linked;
-  u8 dl_tid_to_link_bitmap[MLD_MAX_NUM_OF_LINKS] = {0};
-#ifdef BEST_EFFORT_TID_SPREADING
-  wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info;
-  wave_ml_str_sta_tid_spreading_info_t *ml_sta_tid_spread_info = NULL;
-  uint8 sta_tid_map = 0, linked_sta_tid_map = 0;
-#endif
-
-  MTLK_ASSERT(NULL != nic);
-  MTLK_ASSERT(NULL != ml_sta_add_params);
-
-  vap_handle = nic->vap_handle;
-  linked_vap_handle = wave_vap_get_sibling_vap_handle(vap_handle);
-  MTLK_ASSERT(MTLK_INVALID_VAP_HANDLE != linked_vap_handle);
-
-  linked_nic = mtlk_vap_get_core(linked_vap_handle);
-  MTLK_ASSERT(NULL != linked_nic);
-
-  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
-  if (!man_entry) {
-    ELOG_D("CID-%04x: Can't send ML_STA_ADD request to MAC due to the lack of MAN_MSG",
-           mtlk_vap_get_oid(nic->vap_handle));
-    res = MTLK_ERR_NO_RESOURCES;
-    goto FINISH;
-  }
-  man_entry->id           = UM_MAN_ADD_STA_MLD_REQ;
-  man_entry->payload_size = sizeof(UMI_ADD_STA_MLD);
-
-  memset(man_entry->payload, 0, man_entry->payload_size);
-  psUmiStaAdd = (UMI_ADD_STA_MLD *)man_entry->payload;
-  psUmiStaAdd->u8Status         = UMI_OK;
-
-  wave_band = wave_radio_band_get(wave_vap_radio_get(vap_handle));
-  /* Configure default TTLM for STR stations */
-  if (ml_sta_add_params->num_of_sim_links) {
-    wave_band_linked = wave_radio_band_get(wave_vap_radio_get(linked_vap_handle));
-    dl_tid_to_link_bitmap[wave_convert_radio_band_to_link_id(wave_band)] = TTLM_ASSOC_LINK_DEFAULT;
-    dl_tid_to_link_bitmap[wave_convert_radio_band_to_link_id(wave_band_linked)] = TTLM_AFFILIATED_LINK_DEFAULT;
-  }
-
-  if (ml_sta_add_params->assoc_link_bitmap & LINK_BIT_2_4G_IS_SET) {
-    psUmiStaAdd->u8AssocLinkBitmap |= LINK_BIT_2_4G_IS_SET;
-    ieee_addr_set(&psUmiStaAdd->sAddr[LINK_ID_2G], ml_sta_add_params->sta_addr1);
-    if (wave_band == MTLK_HW_BAND_2_4_GHZ) {
-      sta = mtlk_stadb_find_sta(&nic->slow_ctx->stadb, ml_sta_add_params->sta_addr1);
-    } else {
-      linked_sta = mtlk_stadb_find_sta(&linked_nic->slow_ctx->stadb, ml_sta_add_params->sta_addr1);
-    }
-  }
-
-  if (ml_sta_add_params->assoc_link_bitmap & LINK_BIT_5G_IS_SET) {
-    psUmiStaAdd->u8AssocLinkBitmap |= LINK_BIT_5G_IS_SET;
-    ieee_addr_set(&psUmiStaAdd->sAddr[LINK_ID_5G], ml_sta_add_params->sta_addr2);
-    if (wave_band == MTLK_HW_BAND_5_2_GHZ) {
-      sta = mtlk_stadb_find_sta(&nic->slow_ctx->stadb, ml_sta_add_params->sta_addr2);
-    } else {
-      linked_sta = mtlk_stadb_find_sta(&linked_nic->slow_ctx->stadb, ml_sta_add_params->sta_addr2);
-    }
-  }
-
-  if (ml_sta_add_params->assoc_link_bitmap & LINK_BIT_6G_IS_SET) {
-    psUmiStaAdd->u8AssocLinkBitmap |= LINK_BIT_6G_IS_SET;
-    ieee_addr_set(&psUmiStaAdd->sAddr[LINK_ID_6G], ml_sta_add_params->sta_addr3);
-    if (wave_band == MTLK_HW_BAND_6_GHZ) {
-      sta = mtlk_stadb_find_sta(&nic->slow_ctx->stadb, ml_sta_add_params->sta_addr3);
-    } else {
-      linked_sta = mtlk_stadb_find_sta(&linked_nic->slow_ctx->stadb, ml_sta_add_params->sta_addr3);
-    }
-  }
-
-  ieee_addr_set(&psUmiStaAdd->sStaMldMacAddr, ml_sta_add_params->mld_mac_addr);
-  psUmiStaAdd->u16MlAID = HOST_TO_MAC16(ml_sta_add_params->aid);
-  psUmiStaAdd->u8MldId = ml_sta_add_params->mld_id;
-  psUmiStaAdd->u16EmlCapabilities = HOST_TO_MAC16(ml_sta_add_params->eml_capab);
-  wave_memcpy(psUmiStaAdd->u8DlTid2LinkBitmap, sizeof(psUmiStaAdd->u8DlTid2LinkBitmap),
-              dl_tid_to_link_bitmap, sizeof(dl_tid_to_link_bitmap));
-  psUmiStaAdd->u8NumOfSimLink_R = ml_sta_add_params->num_of_sim_links;
-  pStatus              = &psUmiStaAdd->u8Status;
-
-  ILOG1_D("CID-%04x: UMI_ADD_STA_MLD", mtlk_vap_get_oid(nic->vap_handle));
-  mtlk_dump(1, psUmiStaAdd, sizeof(UMI_ADD_STA_MLD), "dump of UMI_ADD_STA_MLD:");
-  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
-  if (res != MTLK_ERR_OK) {
-    ELOG_DD("CID-%04x: Can't send UM_MAN_STA_ADD_MLD_REQ request to MAC (err=%d)",
-            mtlk_vap_get_oid(nic->vap_handle), res);
-    goto FINISH;
-  }
-
-  if (*pStatus != UMI_OK) {
-    WLOG_DYD("CID-%04x: Station %Y add failed in FW (status=%u)",
-             mtlk_vap_get_oid(nic->vap_handle),
-             psUmiStaAdd->sStaMldMacAddr.au8Addr,
-             psUmiStaAdd->u8Status);
-    res = MTLK_ERR_MAC;
-    goto FINISH;
-  }
-  ILOG1_DDD("CID-%04x: UMI_ADD_STA_MLD main absolute VAP ID: %u num_of_sim_links: %u", mtlk_vap_get_oid(nic->vap_handle), psUmiStaAdd->u8MainVapId, ml_sta_add_params->num_of_sim_links);
-  ml_sta_info.sibling_sta = linked_sta;
-  ml_sta_info.ml_supp_mode = _wave_core_find_ml_supp_mode(ml_sta_add_params);
-#ifdef BEST_EFFORT_TID_SPREADING
-  ml_sta_info.sta_tid_spread_info = NULL;
-  if (ml_sta_info.ml_supp_mode == STR_MODE) {
-    sta_tid_map = dl_tid_to_link_bitmap[wave_convert_radio_band_to_link_id(wave_band)];
-    linked_sta_tid_map = dl_tid_to_link_bitmap[wave_convert_radio_band_to_link_id(wave_band_linked)];
-    ml_vap_tid_spread_info = wave_vap_manager_get_str_tid_spreading_info(nic->vap_handle);
-    MTLK_ASSERT(NULL != ml_vap_tid_spread_info);
-    /* disable tid spreading when tid_to_link_bitmap config is invalid */
-    ml_vap_tid_spread_info->active = (((sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID0_BIT)) &&
-                                     ((sta_tid_map & TID3_BIT) ^ (linked_sta_tid_map & TID3_BIT)) &&
-                                     ((sta_tid_map & TID0_BIT) ^ (sta_tid_map & TID3_BIT)) &&
-                                     ((linked_sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID3_BIT)));
-    if (ml_vap_tid_spread_info->active) {
-      ml_sta_tid_spread_info = mtlk_osal_mem_alloc(sizeof(wave_ml_str_sta_tid_spreading_info_t), WAVE_MEM_TAG_TID_LINK_SPREADING);
-      if (ml_sta_tid_spread_info == NULL) {
-        ELOG_D("CID-%04x: Can't allocate memory for ml_sta_tid_spread_info", mtlk_vap_get_oid(nic->vap_handle));
-        res = MTLK_ERR_NO_MEM;
-        goto FINISH;
-      }
-      memset(ml_sta_tid_spread_info, 0, sizeof(wave_ml_str_sta_tid_spreading_info_t));
-      wave_memcpy(ml_sta_tid_spread_info->tid_to_link_bitmap, sizeof(ml_sta_tid_spread_info->tid_to_link_bitmap),
-                  dl_tid_to_link_bitmap, sizeof(dl_tid_to_link_bitmap));
-      wave_core_set_assigned_tid_to_link(ml_sta_tid_spread_info, ml_vap_tid_spread_info->high_bw_vap);
-      ml_sta_info.sta_tid_spread_info = ml_sta_tid_spread_info;
-    }
-  }
-#endif
-  ml_sta_info.remove_sta_mld = NULL;
-  if (linked_sta) {
-    remove_sta_mld = mtlk_osal_mem_alloc(sizeof(wave_ml_rem_sta_mld_t), WAVE_MEM_TAG_REM_STA_MLD);
-    if (remove_sta_mld == NULL) {
-      ELOG_D("CID-%04x: Can't allocate memory for remove_sta_mld", mtlk_vap_get_oid(nic->vap_handle));
-      res = MTLK_ERR_NO_MEM;
-      goto FINISH;
-    }
-    memset(remove_sta_mld, 0, sizeof(wave_ml_rem_sta_mld_t));
-    ml_sta_info.remove_sta_mld = remove_sta_mld;
-    mtlk_osal_lock_init(&ml_sta_info.remove_sta_mld->lock);
-  }
-  /* update mld sta info in sta_entry */
-  wave_update_ml_sta_info(sta, &ml_sta_info, psUmiStaAdd->u8MainVapId, mtlk_vap_get_id_fw(nic->vap_handle));
-
-  if (psUmiStaAdd->u8MainVapId == mtlk_vap_get_id_fw(vap_handle)) {
-    *main_link_id = _wave_core_get_link_id(vap_handle);
-  } else {
-   *main_link_id = _wave_core_get_link_id(linked_vap_handle);
-  }
-
-FINISH:
-  if (sta) mtlk_sta_decref(sta);
-  if (linked_sta) mtlk_sta_decref(linked_sta);
-  if (man_entry) {
-    mtlk_txmm_msg_cleanup(&man_msg);
-  }
-
-  return res;
-}
-
 int __MTLK_IFUNC wave_core_ml_sta_add (mtlk_handle_t hcore, const void *data, uint32 data_size)
 {
   mtlk_error_t res = MTLK_ERR_OK;
@@ -9993,109 +9689,10 @@ int __MTLK_IFUNC wave_core_ml_sta_add (mtlk_handle_t hcore, const void *data, ui
 
   ml_sta_add_params = mtlk_clpb_enum_get_next(clpb, &size);
   MTLK_CLPB_TRY(ml_sta_add_params, size)
-    wave_core_internal_ml_sta_add(nic, ml_sta_add_params, &main_link_id);
+    res = wave_core_internal_ml_sta_add(nic, ml_sta_add_params, &main_link_id);
   MTLK_CLPB_FINALLY(res)
     return mtlk_clpb_push_res_data(clpb, res, &main_link_id, sizeof(main_link_id));
   MTLK_CLPB_END
-}
-
-static mtlk_error_t
-core_cfg_internal_request_ml_sid (mtlk_core_t *nic,
-       struct mxl_ml_sta_mac_addr *ml_sta_mac, struct mxl_vendor_ml_sid *ml_sid)
-{
-  mtlk_vap_handle_t vap_handle;
-  unsigned          oid;
-  mtlk_error_t      res;
-  mtlk_txmm_msg_t   man_msg;
-  mtlk_txmm_data_t *man_entry;
-  UMI_REQUEST_SID_MLD  *umi_req_sid;
-  uint8             band;
-
-  MTLK_ASSERT(NULL != nic);
-  MTLK_ASSERT(NULL != ml_sid);
-  MTLK_ASSERT(NULL != ml_sta_mac);
-  if(!nic || !ml_sta_mac || !ml_sid)
-    return MTLK_ERR_PARAMS;
-
-  vap_handle = nic->vap_handle;
-  oid = mtlk_vap_get_oid(vap_handle);
-
-  /* prepare the msg to the FW */
-  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(vap_handle), &res);
-  if (!man_entry) {
-    ELOG_DD("CID-%04x: UM_MAN_REQUEST_SID_MLD_REQ init failed, err=%i", oid, res);
-    return MTLK_ERR_NO_RESOURCES;
-  }
-
-  man_entry->id = UM_MAN_REQUEST_SID_MLD_REQ;
-  man_entry->payload_size = sizeof(UMI_REQUEST_SID_MLD);
-  umi_req_sid = (UMI_REQUEST_SID_MLD *) man_entry->payload;
-  memset(umi_req_sid, 0, sizeof(UMI_REQUEST_SID_MLD));
-
-  if (ml_sta_mac->assoc_link_bitmap & LINK_BIT_2_4G_IS_SET) {
-    umi_req_sid->u8AssocLinkBitmap |= LINK_BIT_2_4G_IS_SET;
-    ieee_addr_set(&umi_req_sid->sAddr[LINK_ID_2G], ml_sta_mac->addr1);
-  }
-
-  if (ml_sta_mac->assoc_link_bitmap & LINK_BIT_5G_IS_SET) {
-    umi_req_sid->u8AssocLinkBitmap |= LINK_BIT_5G_IS_SET;
-    ieee_addr_set(&umi_req_sid->sAddr[LINK_ID_5G], ml_sta_mac->addr2);
-  }
-
-  if (ml_sta_mac->assoc_link_bitmap & LINK_BIT_6G_IS_SET) {
-    umi_req_sid->u8AssocLinkBitmap |= LINK_BIT_6G_IS_SET;
-    ieee_addr_set(&umi_req_sid->sAddr[LINK_ID_6G], ml_sta_mac->addr3);
-  }
-
-  mtlk_dump(2, umi_req_sid, sizeof(UMI_REQUEST_SID_MLD), "dump of UMI_REQUEST_SID_MLD before submitting to FW:");
-
-  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
-
-  mtlk_dump(2, umi_req_sid, sizeof(UMI_REQUEST_SID), "dump of UMI_REQUEST_SID_MLD after submitting to FW:");
-
-  if (res != MTLK_ERR_OK) {
-      ELOG_DD("CID-%04x: UM_MAN_REQUEST_SID_MLD_REQ send failed, err=%i", oid, res);
-  } else if (umi_req_sid->u8Status) {
-    ELOG_DD("CID-%04x: UM_MAN_REQUEST_SID_REQ execution failed, status=%hhu", oid, umi_req_sid->u8Status);
-    res = MTLK_ERR_MAC;
-  }
-
-  if (res == MTLK_ERR_OK) {
-    struct mxl_vendor_ml_sid tmp_ml_sid;
-    u16    sid = DB_UNKNOWN_SID;
-
-    tmp_ml_sid.sid[LINK_ID_2G] = MAC_TO_HOST16(umi_req_sid->u16SID[LINK_ID_2G]);
-    tmp_ml_sid.sid[LINK_ID_5G] = MAC_TO_HOST16(umi_req_sid->u16SID[LINK_ID_5G]);
-    tmp_ml_sid.sid[LINK_ID_6G] = MAC_TO_HOST16(umi_req_sid->u16SID[LINK_ID_6G]);
-
-    ILOG1_DDY("CID-%04x: SID %u is assigned for STA %Y", oid, tmp_ml_sid.sid[LINK_ID_2G], ml_sta_mac->addr1);
-    ILOG1_DDY("CID-%04x: SID %u is assigned for STA %Y", oid, tmp_ml_sid.sid[LINK_ID_5G], ml_sta_mac->addr2);
-    ILOG1_DDY("CID-%04x: SID %u is requested for STA %Y", oid, tmp_ml_sid.sid[LINK_ID_6G], ml_sta_mac->addr3);
-    band = core_cfg_get_freq_band_cfg(nic);
-    if (band == MTLK_HW_BAND_2_4_GHZ) {
-      sid = tmp_ml_sid.sid[LINK_ID_2G];
-    } else if (band == MTLK_HW_BAND_5_2_GHZ) {
-        sid = tmp_ml_sid.sid[LINK_ID_5G];
-    } else if (band == MTLK_HW_BAND_6_GHZ) {
-        sid = tmp_ml_sid.sid[LINK_ID_6G];
-    }
-    else {
-        ILOG0_DD("CID-%04x: Setting invalid SID %u due to invalid band", oid, tmp_ml_sid.sid[LINK_ID_6G]);
-    }
-    res = wave_hw_set_sid_in_use(mtlk_vap_get_hw(vap_handle), sid, mtlk_vap_get_id_fw(vap_handle));
-    if (res == MTLK_ERR_OK) {
-      ml_sid->sid[LINK_ID_2G] = tmp_ml_sid.sid[LINK_ID_2G];
-      ml_sid->sid[LINK_ID_5G] = tmp_ml_sid.sid[LINK_ID_5G];
-      ml_sid->sid[LINK_ID_6G] = tmp_ml_sid.sid[LINK_ID_6G];
-    } else {
-      /* a possible error can be handled somehow later */
-      ELOG_DD("CID-%04x: UM_MAN_REQUEST_SID_MLD_REQ wave_hw_set_sid_in_use failed, err=%i", oid, res);
-    }
-  }
-
-  mtlk_txmm_msg_cleanup(&man_msg);
-
-  return res;
 }
 
 int __MTLK_IFUNC
@@ -10109,7 +9706,6 @@ wave_core_req_ml_sid (mtlk_handle_t hcore, const void *data, uint32 data_size)
   uint32 ml_sta_mac_size;
   uint16 max_stas, sta_cnt;
   struct mxl_vendor_ml_sid ml_sid = {0};
-  IEEE_ADDR addr1;
 
   MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
 
@@ -10126,13 +9722,6 @@ wave_core_req_ml_sid (mtlk_handle_t hcore, const void *data, uint32 data_size)
       ILOG0_DD("Cannot request SID as sta_cnt (%d) max_stas (%d)", sta_cnt, max_stas);
       MTLK_CLPB_EXIT(MTLK_ERR_PARAMS);
     }
-
-    ieee_addr_set(&addr1, ml_sta_mac->addr1);
-    /* Check that station is not connected */
-    if (_core_cfg_check_sid_connected(nic, &addr1)) {
-      MTLK_CLPB_EXIT(MTLK_ERR_ALREADY_EXISTS);
-    }
-    /* To-do: need to check for STA2 address if already connected */
 
     res = core_cfg_internal_request_ml_sid(nic, ml_sta_mac, &ml_sid);
     if (res == MTLK_ERR_OK) {
@@ -10192,7 +9781,7 @@ wave_core_get_ml_link_stats_internal (mtlk_core_t *nic, uint8 *ml_aid, struct ml
   }
 
   stats->link_active_time[MLD_MAIN_LINK] = MAC_TO_HOST32(psUmilinkStats->u32TotalLinkActiveTime[MLD_MAIN_LINK]);
-  stats->link_active_time[MLD_SECONDARY_LINK] = MAC_TO_HOST32(psUmilinkStats->u32TotalLinkActiveTime[MLD_SECONDARY_LINK]); 
+  stats->link_active_time[MLD_SECOND_LINK] = MAC_TO_HOST32(psUmilinkStats->u32TotalLinkActiveTime[MLD_SECOND_LINK]); 
   stats->current_ml_operating_mode = psUmilinkStats->u8CurrentMlOperatingMode;
   stats->main_band = psUmilinkStats->u8MainBand;
   stats->secondary_band = psUmilinkStats->u8SecondaryBand;
@@ -10331,33 +9920,35 @@ static int
 wave_core_get_ml_sta_info (mtlk_core_t *core, sta_entry *sta, struct mxl_ml_sta_list *ml_sta)
 {
   struct ieee80211_sta *mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
-  mtlk_vap_handle_t sibling_vap_handle;
-  sta_entry *main_sta, *secondary_sta;
+  sta_entry *main_sta, *sibling_sta;
+  uint8 sib_idx, idx;
 
   ml_sta->mld_addr = *wave_get_sta_mld_addr(sta);
   ml_sta->aid = mac80211_sta->aid;
-  ml_sta->is_single_link = true;
+  ml_sta->link_type = (sta->ml_sta_info.link_type == ML_STA_TYPE_SINGLE_LINK) ? MLD_LINK_TYPE_SINGLE_LINK :
+                      (sta->ml_sta_info.link_type == ML_STA_TYPE_DUAL_LINK)   ? MLD_LINK_TYPE_DUAL_LINK :
+                      (sta->ml_sta_info.link_type == ML_STA_TYPE_TRI_LINK)    ? MLD_LINK_TYPE_TRI_LINK : 0;
   main_sta = sta;
 
   if (!mtlk_is_single_link_mld_sta(sta)) {
-    sibling_vap_handle = wave_vap_get_sibling_vap_handle(core->vap_handle);
-    secondary_sta = mtlk_get_sibling_sta(sta);
-    if (secondary_sta == NULL) {
-      ELOG_DY("CID-%04x: sibling station %Y not found", mtlk_vap_get_oid(sibling_vap_handle),
-               mac80211_sta->ml_sta_info.linked_sta_mac);
+    /* Find and populate main sta */
+    main_sta = mtlk_sta_get_ml_main_sta(sta);
+    if (main_sta == NULL) {
+      ELOG_D("CID-%04x: Can't get main sta", mtlk_vap_get_oid(core->vap_handle));
       return MTLK_ERR_UNKNOWN;
     }
-
-    /* Dual link mld station */
-    ml_sta->is_single_link = false;
-    if (wave_is_main_sta(sta) == false) {
-      main_sta = secondary_sta;
-      secondary_sta = sta;
+    for (sib_idx = 0; sib_idx < main_sta->ml_sta_info.num_of_siblings; sib_idx++) {
+      sibling_sta = mtlk_get_sibling_sta(main_sta, sib_idx);
+      if (sibling_sta == NULL) {
+        ELOG_DD("CID-%04x: Can't get sibling sta idx=%u", mtlk_vap_get_oid(core->vap_handle), sib_idx);
+        return MTLK_ERR_UNKNOWN;
+      }
+      idx = (sib_idx == 0) ? MLD_SECOND_LINK : MLD_THIRD_LINK;
+      ml_sta->sta_addr[idx] = *mtlk_sta_get_addr(sibling_sta);
+      ml_sta->sid[idx] = mtlk_sta_get_sid(sibling_sta);
+      wave_strcopy(ml_sta->ifname[idx], mtlk_df_get_name(mtlk_vap_get_df(sibling_sta->vap_handle)),
+                   sizeof(ml_sta->ifname[idx]));
     }
-    ml_sta->sta_addr[MLD_SECONDARY_LINK] = *mtlk_sta_get_addr(secondary_sta);
-    ml_sta->sid[MLD_SECONDARY_LINK] = mtlk_sta_get_sid(secondary_sta);
-    wave_strcopy(ml_sta->ifname[MLD_SECONDARY_LINK], mtlk_df_get_name(mtlk_vap_get_df(secondary_sta->vap_handle)),
-                 sizeof(ml_sta->ifname[MLD_SECONDARY_LINK]));
     ml_sta->supported_mode = mtlk_sta_get_ml_supp_mode(main_sta);
   }
   ml_sta->sta_addr[MLD_MAIN_LINK] = *mtlk_sta_get_addr(main_sta);
@@ -10392,6 +9983,7 @@ wave_core_get_ml_sta_list (mtlk_handle_t hcore, const void *data, uint32 data_si
     ELOG_V("Can't allocate memory for get ml sta list");
     MTLK_CLPB_EXIT(MTLK_ERR_NO_MEM);
   }
+  memset(ml_sta_list, 0, size);
 
   tmp_list = ml_sta_list;
   sta = mtlk_stadb_iterate_first(&nic->slow_ctx->stadb, &iter);
@@ -10515,7 +10107,7 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
   mtlk_core_t *tmp_core;
   mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;
   int res = MTLK_ERR_OK;
-  unsigned radio_id;
+  unsigned radio_id, sib_id;
   uint32 size;
   mtlk_error_t ret;
   mtlk_vap_handle_t vap_handle, sibling_vap_handle;
@@ -10530,6 +10122,7 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
   u8 ssid[MAX_SSID_LEN + 1];
   mtlk_vap_info_internal_t *vap_handle_internal;
   mtlk_pdb_size_t ssid_len = sizeof(ssid);
+  bool ssid_found = FALSE;
 
   MTLK_ASSERT(NULL != core);
   hw = mtlk_vap_get_hw(core->vap_handle);
@@ -10547,6 +10140,7 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
       ELOG_V("Can't allocate memory for get ml sta list");
       MTLK_CLPB_EXIT(MTLK_ERR_NO_MEM);
     }
+    memset(stats, 0, size);
     tmp_list = stats;
 
     radio_descr = (wave_radio_descr_t *)wave_card_radio_descr_get(hw);
@@ -10565,24 +10159,37 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
           if (ml_info.mld_id == MTLK_PARAM_DB_INVALID_UINT8)
             continue;
 
+          ssid_found = FALSE;
           tmp_list->mld_id = ml_info.mld_id;
           vap_handle_internal = (mtlk_vap_info_internal_t *)vap_handle;
-          sibling_vap_handle = vap_handle_internal->ml_vap_info.sibling;
-          if (MTLK_ERR_OK != MTLK_CORE_PDB_GET_BINARY(tmp_core, PARAM_DB_CORE_ESSID, ssid, &ssid_len)) {
-            tmp_core = mtlk_vap_get_core(sibling_vap_handle);
-            if (MTLK_ERR_OK != MTLK_CORE_PDB_GET_BINARY(tmp_core, PARAM_DB_CORE_ESSID, ssid, &ssid_len)) {
-	      ml_vap_cnt--;
-              continue;
+          if (MTLK_ERR_OK == MTLK_CORE_PDB_GET_BINARY(tmp_core, PARAM_DB_CORE_ESSID, ssid, &ssid_len)) {
+            ssid_found = TRUE;
+          } else {
+            for(sib_id = 0; sib_id < ml_info.num_of_sibling_vaps; sib_id++) {
+              sibling_vap_handle = vap_handle_internal->ml_vap_info.sibling_handles[sib_id];
+              tmp_core = mtlk_vap_get_core(sibling_vap_handle);
+              if (MTLK_ERR_OK == MTLK_CORE_PDB_GET_BINARY(tmp_core, PARAM_DB_CORE_ESSID, ssid, &ssid_len)) {
+                ssid_found = TRUE;
+                break;
+              }
             }
+          }
+          if (!ssid_found) {
+            ml_vap_cnt--;
+            continue;
           }
           wave_strcopy(tmp_list->ssid, ssid, sizeof(tmp_list->ssid));
           wave_strcopy(tmp_list->ifname[MLD_MAIN_LINK], mtlk_df_get_name(mtlk_vap_get_df(vap_handle)),
                        sizeof(tmp_list->ifname[MLD_MAIN_LINK]));
           ieee_addr_set(&tmp_list->mld_addr, ml_info.ap_mld_mac);
-
-          tmp_core = mtlk_vap_get_core(sibling_vap_handle);
-          wave_strcopy(tmp_list->ifname[MLD_SECONDARY_LINK], mtlk_df_get_name(mtlk_vap_get_df(sibling_vap_handle)),
-                       sizeof(tmp_list->ifname[MLD_SECONDARY_LINK]));
+          for (sib_id = 0; sib_id < ml_info.num_of_sibling_vaps; sib_id++) {
+            sibling_vap_handle = vap_handle_internal->ml_vap_info.sibling_handles[sib_id];
+            if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE)
+              continue;
+            tmp_core = mtlk_vap_get_core(sibling_vap_handle);
+            wave_strcopy(tmp_list->ifname[sib_id + 1], mtlk_df_get_name(mtlk_vap_get_df(sibling_vap_handle)),
+                       sizeof(tmp_list->ifname[sib_id + 1]));
+          }
           tmp_list++;
         }
       }
@@ -11298,19 +10905,19 @@ wave_core_max_tx_power_params(mtlk_core_t *core,int *max_tx_power, uint32 *chann
   mtlk_country_code_t country_code;
   unsigned sub_bw; /* subband's width */
   mtlk_hw_band_e band = wave_radio_band_get(radio);
-  wave_chan_bonding_t chan_bonding;
+  wave_chan_bonding_t chan_bonding = {0};
   psdb_pw_limits_t tmp_pwl, psd_pwl, cfg_pwl;
   int freq;
   int cf1;
   int base_index_ax = CW_20;
   int base_index_be = CW_20;
   uint16 freq_l, freq_u, freq_c;
-  enum chanWidth cfg_width;
+  enum chanWidth cfg_width = CW_DEFAULT;
   mtlk_pdb_t *param_db_core;
   int power_level_p_unit;
 
 #ifdef MTLK_WAVE_700
-  wave_chan_bonding_320mhz_t chan_bonding_320mhz;
+  wave_chan_bonding_320mhz_t chan_bonding_320mhz = {0};
   uint8 be_idx = 0;
 #endif
 
@@ -11344,7 +10951,7 @@ wave_core_max_tx_power_params(mtlk_core_t *core,int *max_tx_power, uint32 *chann
   for (sub_bw = CW_20; sub_bw <= cfg_width; sub_bw++) {
     unsigned ofdm_idx;
     /* skip invalid channel */
-    if (chan_bonding.lower_chan[sub_bw] == 0)
+    if (sub_bw >= ARRAY_SIZE(chan_bonding.lower_chan) || chan_bonding.lower_chan[sub_bw] == 0)
       continue;
 
     if (sub_bw <= CW_160) {
@@ -11480,6 +11087,15 @@ wave_core_get_max_tx_power (struct wiphy *wiphy, struct net_device *ndev, uint32
   mtlk_error_t res = MTLK_ERR_OK;
   wave_wssa_max_tx_power_stats_t *max_tx_power_stats;
   uint32 size;
+  mtlk_core_t *master_core;
+  struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
+  wave_radio_t *radio = wv_ieee80211_hw_radio_get(hw);
+
+  master_core = wave_radio_master_core_get(radio);
+  if (mtlk_core_get_net_state(master_core) != NET_STATE_CONNECTED) {
+    ILOG1_S("interface %s: is not in CONNECTED state", ndev->name);
+    return _mtlk_df_mtlk_to_linux_error_code(MTLK_ERR_NOT_READY);
+  }
 
   df_user = mtlk_df_user_from_ndev(ndev);
   MTLK_CHECK_DF_USER(df_user);
@@ -11516,7 +11132,7 @@ wave_core_get_ml_peer_stats (mtlk_handle_t hcore, const void *data, uint32 data_
   sta_entry *sta, *sibling_sta;
   mtlk_wssa_drv_ml_peer_stats_t *ml_sta_stats = NULL;
   struct ieee80211_sta *mac80211_sta;
-  mtlk_vap_handle_t sibling_vap_handle;
+  uint8 sib_idx, idx;
 
   MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
   addr = mtlk_clpb_enum_get_next(clpb, &addr_size);
@@ -11550,23 +11166,20 @@ wave_core_get_ml_peer_stats (mtlk_handle_t hcore, const void *data, uint32 data_
     MTLK_CLPB_EXIT(MTLK_ERR_NO_MEM);
   }
 
-  ml_sta_stats->is_single_link = true;
+  ml_sta_stats->is_single_link = mtlk_is_single_link_mld_sta(sta);
   ml_sta_stats->ml_peer_stats[0].link_addr = *mtlk_sta_get_addr(sta);
   mtlk_sta_get_peer_stats(sta, &ml_sta_stats->ml_peer_stats[0].peer_flow_status);
   mtlk_sta_decref(sta);
 
   if (!mtlk_is_single_link_mld_sta(sta)) {
-    sibling_vap_handle = wave_vap_get_sibling_vap_handle(core->vap_handle);
-    sibling_sta = mtlk_get_sibling_sta(sta);
-    if (sibling_sta == NULL) {
-      ELOG_DY("CID-%04x: sibling station %Y not found", mtlk_vap_get_oid(sibling_vap_handle),
-              mac80211_sta->ml_sta_info.linked_sta_mac);
-      mtlk_sta_decref(sta);
-      MTLK_CLPB_EXIT(MTLK_ERR_UNKNOWN);
+    for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+      sibling_sta = mtlk_get_sibling_sta(sta, sib_idx);
+      if (sibling_sta == NULL)
+        continue;
+      idx = (sib_idx == 0) ? 1 : 2;
+      ml_sta_stats->ml_peer_stats[idx].link_addr = *mtlk_sta_get_addr(sibling_sta);
+      mtlk_sta_get_peer_stats(sibling_sta, &ml_sta_stats->ml_peer_stats[idx].peer_flow_status);
     }
-    ml_sta_stats->is_single_link = false;
-    ml_sta_stats->ml_peer_stats[1].link_addr = *mtlk_sta_get_addr(sibling_sta);
-    mtlk_sta_get_peer_stats(sibling_sta, &ml_sta_stats->ml_peer_stats[1].peer_flow_status);
   }
 
   MTLK_CLPB_FINALLY(res)
@@ -15544,7 +15157,7 @@ wave_core_cfg_update_wiphy_regdb (mtlk_handle_t hcore, const void *data, uint32 
   mtlk_pdb_size_t cfg_size;
   wave_radio_reg_data_t *mxl_wave_reg_data;
   struct wiphy *wiphy = wv_mac80211_wiphy_get(wave_radio_mac80211_get(radio));
-  struct ieee80211_regdomain *regd;
+  struct ieee80211_regdomain *regd = NULL;
 
   MTLK_ASSERT(core != NULL);
   MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
@@ -15559,8 +15172,9 @@ wave_core_cfg_update_wiphy_regdb (mtlk_handle_t hcore, const void *data, uint32 
     }
 
     regulatory_set_wiphy_regd(wiphy, regd);
-    mtlk_osal_mem_free(regd);
   MTLK_CLPB_FINALLY(res)
+    if (regd)
+      mtlk_osal_mem_free(regd);
     return mtlk_clpb_push_res(clpb, res);
   MTLK_CLPB_END
 }

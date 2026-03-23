@@ -137,7 +137,19 @@ typedef struct _mtlk_tracer_t {
 
 #define MTLK_CHI_MAGIC_TIMEOUT_ASIC   ( 5 * MTLK_OSAL_MSEC_IN_SEC) /* ... seconds to ms */
 #define MTLK_CHI_MAGIC_TIMEOUT_FPGA   ( 5 * MTLK_OSAL_MSEC_IN_MIN) /* ... minutes to ms */
-#define MTLK_CHI_MAGIC_TIMEOUT_EMUL   (80 * MTLK_OSAL_MSEC_IN_MIN) /* ... minutes to ms */
+#define MTLK_CHI_MAGIC_TIMEOUT_EMUL   (10 * MTLK_OSAL_MSEC_IN_MIN) /* ... minutes to ms, normally takes about 5min */
+#ifdef MTLK_DEBUG
+#define MTLK_CHI_MAGIC_TIMEOUT_JTAG   (80 * MTLK_OSAL_MSEC_IN_MIN) /* ... minutes to ms - extended to allow easy insertion of breakpoints */
+#endif /* MTLK_DEBUG */
+
+
+// These scaling factors are used to extend various timeouts to
+// support Emulation slowdown and JTAG debugging. 15 and 100 were 
+// selected through trial and error and found to be reasonable values
+#define MTLK_EMUL_SCALING_FACTOR 15
+#ifdef MTLK_DEBUG
+#define MTLK_JTAG_SCALING_FACTOR 100
+#endif /* MTLK_DEBUG */
 
 #define MTLK_READY_CFM_TIMEOUT         10000 /* ms */
 #define MTLK_SW_RESET_CFM_TIMEOUT      10000 /* ms */
@@ -776,6 +788,10 @@ struct _mtlk_hw_t
   int dbg_unprotected_deauth;
   int dbg_pn_reset;
 #endif
+#ifdef MTLK_DEBUG
+  int jtag_debugging;
+#endif
+
   mtlk_osal_spinlock_t   whm_lock;
   BOOL                   whm_enable;
   BOOL                   whm_drv_warn;
@@ -938,12 +954,35 @@ __wave_mmb_dcdp_4umt_cntr_mode(mtlk_hw_t *hw)
 #endif /* WAVE_DCDP_4UMT_SUPPORTED */
 }
 
+static __INLINE BOOL
+__wave_mmb_dcdp_topaz_available(mtlk_hw_t *hw)
+{
+#if defined (MTLK_TOPAZ_PLATFORM) && defined (WAVE_DCDP_TOPAZ_SUPPORTED)
+  return TRUE; // Use platform defininition as currently no clear way to detect DCDP on TOPAZ
+#else
+  return FALSE;
+#endif /* MTLK_TOPAZ_PLATFORM && WAVE_DCDP_TOPAZ_SUPPORTED */
+}
+
+static __INLINE BOOL
+__wave_mmb_dcdp_topaz_l4s_available(mtlk_hw_t *hw)
+{
+#if defined (MTLK_TOPAZ_PLATFORM) && defined (WAVE_DCDP_TOPAZ_SUPPORTED)
+  //return (__wave_mmb_dcdp_topaz_available(hw) &&
+  //        (hw->dp_dev.dp_cap.fastpath.hw_cap & DC_DP_F_HOST_CAP_L4S));
+  return FALSE; // Update when L4S flag and registration is ready
+#else
+  return FALSE;
+#endif /* MTLK_TOPAZ_PLATFORM && WAVE_DCDP_TOPAZ_SUPPORTED */
+}
 #else /* MTLK_USE_DIRECTCONNECT_DP_API */
 
-#define __mtlk_mmb_fastpath_supported(hw)  (FALSE)
-#define __mtlk_mmb_fastpath_available(hw)  (FALSE)
-#define __mtlk_mmb_dcdp_path_available(hw) (FALSE)
-#define __wave_mmb_dcdp_4umt_cntr_mode(hw) (FALSE)
+#define __mtlk_mmb_fastpath_supported(hw)       (FALSE)
+#define __mtlk_mmb_fastpath_available(hw)       (FALSE)
+#define __mtlk_mmb_dcdp_path_available(hw)      (FALSE)
+#define __wave_mmb_dcdp_4umt_cntr_mode(hw)      (FALSE)
+#define __wave_mmb_dcdp_topaz_available(hw)     (FALSE)
+#define __wave_mmb_dcdp_topaz_l4s_available(hw) (FALSE)
 /* mtlk_mmb_fastpath_available() and mtlk_mmb_fastpath_available() are defined in hw_mmb.h */
 
 #endif /* MTLK_USE_DIRECTCONNECT_DP_API */
@@ -1248,7 +1287,6 @@ mtlk_hw_is_sid_valid (mtlk_hw_t *hw, uint32 sid)
 {
     return (sid < __mtlk_hw_get_max_sid(hw));
 }
-
 
 #undef LOG_LOCAL_GID
 #undef LOG_LOCAL_FID

@@ -242,4 +242,5 @@ _mtlk_irb_hash_on_evt (mtlk_irb_hash_t   *irb_hash,
   mtlk_osal_mutex_release(&irb_hash->lock);
 }
 
-
+#define   MTLK_IDEFS_OFF
+#include "mtlkidefs.h"

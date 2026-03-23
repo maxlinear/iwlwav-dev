@@ -730,13 +730,33 @@ typedef struct _wave_ml_remove_sta_mld
   mtlk_atomic_t        remove_sta_cnt;
 } wave_ml_rem_sta_mld_t;
 
+typedef enum ml_sta_link_type {
+  ML_STA_TYPE_NONE,
+  ML_STA_TYPE_SINGLE_LINK,
+  ML_STA_TYPE_DUAL_LINK,
+  ML_STA_TYPE_TRI_LINK,
+  ML_STA_TYPE_MAX
+} ml_sta_link_type_e;
+
+#define MAX_SIBLING_STAS    2
+#define ML_SINGLE_LINK      1
+#define ML_DUAL_LINK        2
+#define ML_TRIPLE_LINK      3
+
+#define ML_FISRT_SIBLING    0
+#define ML_SECOND_SIBLING   1
+
 typedef struct _wave_ml_sta_info
 {
   wave_ml_rem_sta_mld_t *remove_sta_mld;
-  sta_entry             *sibling_sta;           /* affiliated sta */
-  BOOL                  rem_sta_mld_done;       /* flag to denote REMOVE_STA_MLD is intimated to FW */
-  BOOL                  rem_sta_mld_inprogress; /* flag to indicate REMOVE_STA_MLD is ongoing */
-  uint8                 ml_supp_mode;           /* MLD STA supported mode - refer multilink_modes_e */
+  sta_entry             *sibling_sta[MAX_SIBLING_STAS]; /* affiliated stations */
+  uint8                 link_type;                      /* MLD STA link type - refer to ml_sta_link_type_e */
+  uint8                 num_of_siblings;                /* number of siblings of affiliated stations */
+  BOOL                  add_mld_done;
+  BOOL                  rem_sta_mld_done;               /* flag to denote REMOVE_STA_MLD is intimated to FW */
+  BOOL                  rem_sta_mld_inprogress;         /* flag to indicate REMOVE_STA_MLD is ongoing */
+  uint8                 rem_sta_count_limit;
+  uint8                 ml_supp_mode;                   /* MLD STA supported mode - refer multilink_modes_e */
   mtlk_osal_event_t     ml_discnt_event;
   wave_vap_id_t         assoc_vap_id_fw;
 #ifdef BEST_EFFORT_TID_SPREADING
@@ -1319,6 +1339,12 @@ mtlk_sta_is_ml_disconnected(sta_entry *sta)
 {
   return sta->ml_sta_info.rem_sta_mld_done;
 }
+
+static __INLINE uint8
+mtlk_sta_get_rem_count_limit(sta_entry *sta)
+{
+  return sta->ml_sta_info.rem_sta_count_limit;
+}
 /********************************************************/
 void  __MTLK_IFUNC mtlk_sta_wait_ml_discnt(sta_entry *sta);
 void  __MTLK_IFUNC mtlk_sta_ml_discnt_finish(sta_entry *sta);
@@ -1724,10 +1750,11 @@ mtlk_stadb_get_four_addr_sta_cnt (sta_db *stadb)
 
 #ifdef MTLK_WAVE_700
 static __INLINE sta_entry *
-mtlk_get_sibling_sta(sta_entry *sta)
+mtlk_get_sibling_sta(sta_entry *sta, uint8 sib_idx)
 {
   MTLK_ASSERT(NULL != sta);
-  return sta->ml_sta_info.sibling_sta;
+  MTLK_ASSERT(sib_idx < MAX_SIBLING_STAS);
+  return sta->ml_sta_info.sibling_sta[sib_idx];
 }
 #endif
 static __INLINE BOOL
@@ -1762,8 +1789,24 @@ wave_is_main_sta (sta_entry *sta)
 static __INLINE BOOL
 mtlk_is_single_link_mld_sta(sta_entry *sta)
 {
-  return mtlk_osal_is_zero_address(wv_sta_entry_get_mac80211_sta(sta)->ml_sta_info.linked_sta_mac);
+  return (wv_sta_entry_get_mac80211_sta(sta)->ml_sta_info.is_single_link ? TRUE : FALSE);
 }
+
+static __INLINE uint8
+mtlk_sta_get_link_id(sta_entry *sta)
+{
+  MTLK_ASSERT(NULL != sta);
+  return wv_sta_entry_get_mac80211_sta(sta)->ml_sta_info.link_id;
+}
+
+sta_entry* __MTLK_IFUNC
+mtlk_sta_get_ml_main_sta(sta_entry *sta);
+
+void __MTLK_IFUNC
+mtlk_sta_remove_mld_lock_acquire(sta_entry *sta);
+
+void __MTLK_IFUNC
+mtlk_sta_remove_mld_lock_release(sta_entry *sta);
 
 typedef enum multilink_modes {
   MLSR_MODE,

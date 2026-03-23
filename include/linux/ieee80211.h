@@ -5242,8 +5242,9 @@ static inline bool ieee80211_mle_reconf_sta_prof_size_ok(const u8 *data,
 
 struct ieee80211_ml_sta_info {
         bool is_ml;
+        u8 is_single_link;
         u8 mld_mac[ETH_ALEN];
-        u8 linked_sta_mac[ETH_ALEN];
+        u8 link_id;
         int assoc_link_id;
 } __packed;
 #endif /* LINUX_IEEE80211_H */

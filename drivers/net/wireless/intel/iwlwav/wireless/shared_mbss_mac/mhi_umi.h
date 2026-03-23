@@ -1717,10 +1717,10 @@ typedef struct _UMI_DATA_PATH_INIT_PARAMS
 	uint32 	mangTxRingSizeBytes; 
 	uint32 	mangRxRingStartAddress;
 	uint32 	mangRxRingSizeBytes;  
-	uint32 	txOutReadyCounterAddress;
-	uint32 	rxOutReadyCounterAddress;
-	uint32 	txInFreedCounterAddress;
-	uint32 	rxInFreedCounterAddress;
+	uint32 	txOutHostAddress;  	 // address of SOC memory counter to be updated by WAVE upon Tx Out enqueue
+	uint32 	rxOutHostAddress;  	 // address of SOC memory counter to be updated by WAVE upon Rx Out enqueue
+	uint32 	txInHostAddress;   	 // address of SOC memory counter to be updated by WAVE upon Tx In enqueue
+	uint32 	rxInHostAddress;   	 // address of SOC memory counter to be updated by WAVE upon Rx In enqueue
 	uint32	rxOutDw3FixedValues; //used for LGM & FLM
 	uint32	rxOutDw1FixedValues; //used for LGM
 	uint32	txOutDw1FixedValues; //used for LGM & FLM
@@ -1736,7 +1736,7 @@ typedef struct _UMI_DATA_PATH_INIT_PARAMS
 	uint8   dataPathPort;
 	uint8   Status;
 	uint8	loggerFifoMuxCfg;
-	uint8	reserved;
+	uint8	dicSettingMode; // used for Topaz, determines the HD[DIC] bit setting
 } __MTLK_PACKED UMI_DATA_PATH_INIT_PARAMS;
 
 typedef enum
@@ -1748,9 +1748,19 @@ typedef enum
 	DATA_PATH_MODE_DC_MODE_2 = DATA_PATH_MODE_DC_NUM_GEN5,	/* LGM */
 	DATA_PATH_MODE_DC_MODE_3,								/* FLM*/
 	DATA_PATH_MODE_DC_MODE_4,								/* LGM_FLOW_CONTROL_FOR_4_UMT*/
+	DATA_PATH_MODE_DC_MODE_5,								/* TOPAZ NON-L4S */
+	DATA_PATH_MODE_DC_MODE_6,								/* TOPAZ L4S */
 	DATA_PATH_MODE_DC_NUM,
 	DATA_PATH_MODE_DC_INVALID = 0xFF
 } DataPathMode_e;
+
+typedef enum
+{
+	DIC_SET_ON_AQM_ONLY	= 0,  /* HD[DIC] bit will be set to 1 only for packet discarded by AQM */
+	DIC_SET_ON_ALL_DISCARDED, /* HD[DIC] bit will be set to 1 for any discarded packet (AQM, Ager, max retry) */
+	DIC_SET_INVALID = 0xFF,
+} DicSettingMode_e;
+
 
 typedef enum
 {

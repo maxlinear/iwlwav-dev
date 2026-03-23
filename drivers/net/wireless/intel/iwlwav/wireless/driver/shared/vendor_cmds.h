@@ -687,6 +687,7 @@ struct intel_vendor_probe_req_info {
   DEF_IEEE_ADDR(addr);
   u16 age;
   s8 rssi;
+  s8 rssi_ant[4];
 } __attribute__ ((packed));
 
 /* SoftBlock Timer ACL configuration */
@@ -751,9 +752,14 @@ struct mxl_vendor_prop_phy_cap {
 /* Data for LTQ_NL80211_VENDOR_SUBCMD_GET_ML_LINKSWITCH_STATS */
 typedef enum {
   MLD_MAIN_LINK,
-  MLD_SECONDARY_LINK,
+  MLD_SECOND_LINK,
+  MLD_THIRD_LINK,
   MLD_MAX_ACTIVE_LINKS,
 }mld_active_links;
+
+#define MLD_LINK_TYPE_SINGLE_LINK     1
+#define MLD_LINK_TYPE_DUAL_LINK       2
+#define MLD_LINK_TYPE_TRI_LINK        3
 
 struct ml_link_stats {
   u32 link_active_time[MLD_MAX_ACTIVE_LINKS]; /* In usec */
@@ -945,12 +951,13 @@ struct _mxl_vendor_bcast_twt_config_t {
 } __attribute__ ((packed));
 
 /* MLO params */
+#define INVALID_MLD_ID           31
 #define MAX_NUM_OF_LINKS          3
 #define INVALID_LINK_ID          15
 #define LINK_ID_6G                2
 #define LINK_ID_5G                1
 #define LINK_ID_2G                0
-#define NUM_OF_SIBLING_LINKS      2
+#define NUM_OF_SIBLING_LINKS      (MAX_NUM_OF_LINKS - 1)
 
 struct _mxl_vendor_mld_info {
   int mld_id;
@@ -1138,7 +1145,7 @@ struct mxl_ml_sta_reassoc_notify {
 /* Data for LTQ_NL80211_VENDOR_SUBCMD_GET_ML_STA_LIST */
 struct mxl_ml_sta_list {
   char ifname [MLD_MAX_ACTIVE_LINKS][IFNAMSIZ + 1];
-  u8 is_single_link;
+  u8 link_type;
   u8 supported_mode;
   u16 aid;
   u16 sid[MLD_MAX_ACTIVE_LINKS];

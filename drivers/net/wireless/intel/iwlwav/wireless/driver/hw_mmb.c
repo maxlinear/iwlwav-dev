@@ -826,6 +826,18 @@ wave_mmb_dcdp_4umt_cntr_mode(mtlk_hw_t *hw)
 {
     return __wave_mmb_dcdp_4umt_cntr_mode(hw);
 }
+
+BOOL __MTLK_IFUNC
+wave_mmb_dcdp_topaz_available(mtlk_hw_t *hw)
+{
+    return __wave_mmb_dcdp_topaz_available(hw);
+}
+
+BOOL __MTLK_IFUNC
+wave_mmb_dcdp_topaz_l4s_available(mtlk_hw_t *hw)
+{
+    return __wave_mmb_dcdp_topaz_l4s_available(hw);
+}
 #endif /* MTLK_USE_DIRECTCONNECT_DP_API */
 
 static void
@@ -3611,8 +3623,6 @@ static int prepare_progmodel_string(mtlk_hw_t *hw, const mtlk_core_firmware_file
                       ff->fname, version, modified ? " (modified)" : "");
 
   hw->progmodel[STRING_PROGMODEL_SIZE - 1] = '\0';
-  if ( NULL != hw->progmodel )
-    res = MTLK_ERR_OK;
 
   mtlk_osal_lock_release(&hw->version_lock);
 
@@ -3932,20 +3942,24 @@ _mtlk_mmb_wait_chi_magic(mtlk_hw_t *hw)
 
   MTLK_ASSERT(NULL != hw->ccr);
 
-  /* Check for the magic value and then get the base address and length of the CHI area */
-
-  timeout = __hw_mmb_card_is_asic(hw) ?
-                MTLK_CHI_MAGIC_TIMEOUT_ASIC : MTLK_CHI_MAGIC_TIMEOUT_EMUL;
-
-  if (__hw_mmb_card_is_fpga(hw))
+#ifdef MTLK_DEBUG
+  if (hw->jtag_debugging) {
+    // Increase the timeout to allow stopping of execution during boot,
+    // regardless of the card type
+    timeout = MTLK_CHI_MAGIC_TIMEOUT_JTAG;
+  } else 
+#endif
   {
-    timeout = MTLK_CHI_MAGIC_TIMEOUT_FPGA;
+    timeout = __hw_mmb_card_is_asic(hw) ? MTLK_CHI_MAGIC_TIMEOUT_ASIC :
+              __hw_mmb_card_is_fpga(hw) ? MTLK_CHI_MAGIC_TIMEOUT_FPGA :
+                                          MTLK_CHI_MAGIC_TIMEOUT_EMUL;
   }
+
 #ifdef MTLK_LGM_PLATFORM_FPGA
-  /* LGM FPGA works very slow */
+  /* LGM (Host) FPGA works very slow relative to WiFi card*/
   timeout = timeout / 400;
 #endif
-
+  /* Check for the magic value and then get the base address and length of the CHI area */
   ILOG0_D("Wait for CHI Magic (%u ms)...", timeout);
   wait_res =
     (MTLK_HW_INIT_EVT_WAIT(hw, timeout) == MTLK_ERR_OK)?
@@ -5566,6 +5580,10 @@ mtlk_hw_mmb_init_card(mtlk_hw_t *hw, mtlk_ccr_t *ccr, unsigned char *mmb_base, u
   hw->logger_sid = _hw_type_is_gen7(hw) ? WAV700_LOGGER_6G_LAST_SID : (uint16)loggersid[hw->card_idx];
 #endif
 
+#ifdef MTLK_DEBUG
+  hw->jtag_debugging = jtag_debugging;
+  ILOG0_S("JTAG Debugging: %s ", hw->jtag_debugging ? "Enabled" : "Disabled");
+#endif
 
 #ifdef MTLK_WAVE_700
   if (_hw_type_is_gen7(hw)) {
@@ -6229,6 +6247,13 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
   man_entry->payload_size = sizeof(*umi_params);
   memset(man_entry->payload, 0, man_entry->payload_size);
 
+  /* dicSettingMode is valid only for Topaz */
+#ifdef MTLK_TOPAZ_PLATFORM
+  umi_params->dicSettingMode = DIC_SET_ON_ALL_DISCARDED;
+#else
+  umi_params->dicSettingMode = DIC_SET_INVALID;
+#endif
+
   /* Setup rings */
 #if MTLK_USE_DIRECTCONNECT_DP_API
   {
@@ -6244,10 +6269,10 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
     if (DC_DP_RING_HW_MODE1 == dp_dev->dp_devspec[0].dc_tx_ring_used) {
         /* GRX750 / PUMA7 */
         if (1*MTLK_DCDP_DCCNTR_SIZE == dp_dev->dp_resources.dccntr[0].dev2soc_enq_dccntr_len) {
-            umi_params->rxOutReadyCounterAddress = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].dev2soc_enq_phys_base));
-            umi_params->txOutReadyCounterAddress = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].soc2dev_ret_enq_phys_base));
-            umi_params->rxInFreedCounterAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].dev2soc_ret_deq_phys_base));
-            umi_params->txInFreedCounterAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].soc2dev_deq_phys_base));
+            umi_params->rxOutHostAddress = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].dev2soc_enq_phys_base));
+            umi_params->txOutHostAddress = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].soc2dev_ret_enq_phys_base));
+            umi_params->rxInHostAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].dev2soc_ret_deq_phys_base));
+            umi_params->txInHostAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].soc2dev_deq_phys_base));
         } else {
             ELOG_D("Unsupported size of UMT counters: %u", dp_dev->dp_resources.dccntr[0].dev2soc_enq_dccntr_len);
             res = MTLK_ERR_UNKNOWN;
@@ -6303,6 +6328,8 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
         umi_params->txOutDw1FixedValues   = HOST_TO_MAC32(dp_dev->dp_resources.rings.txout_temp_dw3);
         umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_3; /* FLM */
         break;
+#endif /* WAVE_DCDP_LGM_FLM_SUPPORTED */
+#if defined (WAVE_DCDP_LGM_FLM_SUPPORTED) || defined (WAVE_DCDP_TOPAZ_SUPPORTED)
       case DC_DP_RING_HW_MODE1_EXT:
         /* LGM */
         ILOG0_V("DCDP: setup HW_MODE1_EXT rings");
@@ -6319,12 +6346,18 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
         umi_params->rxOutDw1FixedValues   = HOST_TO_MAC32(dp_dev->dp_resources.rings.rxout_temp_dw1);
 #endif
         umi_params->txOutDw1FixedValues   = HOST_TO_MAC32(dp_dev->dp_resources.rings.txout_temp_dw3);
-        if (__wave_mmb_dcdp_4umt_cntr_mode(hw))
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+        if (__wave_mmb_dcdp_topaz_available(hw))
+          umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_5; /* TOPAZ NON-L4S */
+        else if (__wave_mmb_dcdp_4umt_cntr_mode(hw))
+#else
+        if (__wave_mmb_dcdp_4umt_cntr_mode(hw))  
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
           umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_4; /* LGM 4UMT */
         else
           umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_2; /* LGM */
         break;
-#endif /* WAVE_DCDP_LGM_FLM_SUPPORTED */
+#endif /* WAVE_DCDP_LGM_FLM_SUPPORTED || WAVE_DCDP_TOPAZ_SUPPORTED*/
       case DC_DP_RING_SW_MODE1:      /* SWPath only, LitePath + SWPath */
         ILOG0_V("DCDP: setup SW_MODE1 rings");
         umi_params->rxInRingStartAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.rings.dev2soc_ret.phys_base));
@@ -6418,10 +6451,10 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
   TRACE_PARAM_MAC32(umi_params->mangRxRingStartAddress);
   TRACE_PARAM_MAC32(umi_params->mangRxRingSizeBytes);
 #if MTLK_USE_DIRECTCONNECT_DP_API
-  TRACE_PARAM_MAC32(umi_params->txOutReadyCounterAddress);
-  TRACE_PARAM_MAC32(umi_params->rxOutReadyCounterAddress);
-  TRACE_PARAM_MAC32(umi_params->txInFreedCounterAddress);
-  TRACE_PARAM_MAC32(umi_params->rxInFreedCounterAddress);
+  TRACE_PARAM_MAC32(umi_params->txOutHostAddress);
+  TRACE_PARAM_MAC32(umi_params->rxOutHostAddress);
+  TRACE_PARAM_MAC32(umi_params->txInHostAddress);
+  TRACE_PARAM_MAC32(umi_params->rxInHostAddress);
 #endif
   TRACE_PARAM_MAC32 (umi_params->rxOutDw3FixedValues);
   TRACE_PARAM_MAC32 (umi_params->rxOutDw1FixedValues);
@@ -12649,4 +12682,25 @@ wave_hw_get_eeprom_rx_ant_num (mtlk_hw_t *hw)
     return 0;
   }
   return count_bits_set(data[WAVE_EEPROM_RSSI_DATA_RX_ANT_NUM_OFFS]); /* 1st byte is rx_ant_mask */
+}
+
+int __MTLK_IFUNC 
+wave_hw_get_watchdog_period(struct nic *nic)
+{
+  wave_radio_t *radio = wave_vap_radio_get(nic->vap_handle);
+  int period = WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_MAC_WATCHDOG_TIMER_PERIOD_MS);
+  mtlk_hw_t *hw = mtlk_vap_get_hw(nic->vap_handle);
+
+#ifdef MTLK_DEBUG
+  if (hw->jtag_debugging) {
+    period = period * MTLK_JTAG_SCALING_FACTOR;
+    ILOG1_D("JTAG debugging enabled. Increasing MAC Watchdog period to %dms.", period);
+  }
+  else
+#endif
+  if (hw->card_info.is_emul) {
+    period = period * MTLK_EMUL_SCALING_FACTOR;
+    ILOG1_D("Emulation mode detected. Increasing MAC Watchdog period to %dms.", period);
+  }
+  return period;
 }

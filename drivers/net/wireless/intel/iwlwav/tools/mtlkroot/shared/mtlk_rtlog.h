@@ -217,5 +217,7 @@ mtlk_rtlog_set_iph_csum(struct iphdr *iph)
 }
 
 #endif /* CONFIG_WAVE_RTLOG_REMOTE */
+#define   MTLK_IDEFS_OFF
+#include "mtlkidefs.h"
 
 #endif /* __MTLK_RTLOG_H__ */

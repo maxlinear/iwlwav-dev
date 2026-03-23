@@ -1335,6 +1335,7 @@ typedef enum str_tid_spread_mode
 #endif /* OTF_MLO_STR_TID_SPREADING */
 #define LOW_RATE_TID_IP_HDRLEN_THOLD  128
 #endif
+#define TTLM_MAP_DEFAULT             255 /* TID 0,1,2,3,4,5,6,7 */
 #define TTLM_ASSOC_LINK_DEFAULT      243 /* TID 0,1,4,5,6,7 */
 #define TTLM_AFFILIATED_LINK_DEFAULT 12  /* TID 2,3 */
 

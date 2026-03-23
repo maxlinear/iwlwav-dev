@@ -319,6 +319,7 @@ typedef struct _ieee_addr_time_entry_t {
   MTLK_HASH_ENTRY_T(ieee_addr) hentry;
   mtlk_osal_msec_t timestamp;
   int8 probe_rssi;
+  int8 probe_rssi_ant[4]; /* per antenna RSSI */
 } ieee_addr_entry_time_t;
 
 struct _wave_radio_t {
@@ -517,7 +518,7 @@ void __MTLK_IFUNC wave_radio_clean_probe_req_list(wave_radio_t *radio, BOOL flus
   mtlk_osal_lock_release(&list->ieee_addr_lock);
 }
 
-void __MTLK_IFUNC wave_probe_req_list_add(wave_radio_t *radio, const IEEE_ADDR *addr, int8 rssi)
+void __MTLK_IFUNC wave_probe_req_list_add(wave_radio_t *radio, const IEEE_ADDR *addr, mtlk_phy_info_t *phy_info)
 {
   ieee_addr_sized_list_t *list = &radio->probe_resp_list;
   ieee_addr_entry_time_t *ieee_addr_entry = NULL;
@@ -555,7 +556,8 @@ void __MTLK_IFUNC wave_probe_req_list_add(wave_radio_t *radio, const IEEE_ADDR *
     memset(ieee_addr_entry, 0, alloc_size);
 
     ieee_addr_entry->timestamp = mtlk_osal_timestamp_to_ms(mtlk_osal_timestamp());
-    ieee_addr_entry->probe_rssi = rssi;
+    ieee_addr_entry->probe_rssi = phy_info->max_rssi;
+    memcpy(ieee_addr_entry->probe_rssi_ant, phy_info->rssi, sizeof(ieee_addr_entry->probe_rssi_ant));
     list->size++;
     mtlk_hash_insert_ieee_addr(&list->hash, addr, &ieee_addr_entry->hentry);
     mtlk_osal_lock_release(&list->ieee_addr_lock);
@@ -563,7 +565,8 @@ void __MTLK_IFUNC wave_probe_req_list_add(wave_radio_t *radio, const IEEE_ADDR *
   else {
     ieee_addr_entry = MTLK_CONTAINER_OF(h, ieee_addr_entry_time_t, hentry);
     ieee_addr_entry->timestamp = mtlk_osal_timestamp_to_ms(mtlk_osal_timestamp());
-    ieee_addr_entry->probe_rssi = rssi;
+    ieee_addr_entry->probe_rssi = phy_info->max_rssi;
+    memcpy(ieee_addr_entry->probe_rssi_ant, phy_info->rssi, sizeof(ieee_addr_entry->probe_rssi_ant));
     mtlk_osal_lock_release(&list->ieee_addr_lock);
   }
 }
@@ -3358,6 +3361,22 @@ wave_convert_radio_band_to_link_id (mtlk_hw_band_e band)
   MTLK_ASSERT(wave_band_is_valid(band));
   return (band == MTLK_HW_BAND_2_4_GHZ) ? LINK_ID_2G : ((band == MTLK_HW_BAND_5_2_GHZ) ? LINK_ID_5G : LINK_ID_6G);
 }
+
+mtlk_hw_band_e __MTLK_IFUNC
+wave_convert_link_id_to_radio_band (uint8 link_id)
+{
+  switch (link_id) {
+    case LINK_ID_2G:
+      return MTLK_HW_BAND_2_4_GHZ;
+    case LINK_ID_5G:
+      return MTLK_HW_BAND_5_2_GHZ;
+    case LINK_ID_6G:
+      return MTLK_HW_BAND_6_GHZ;
+    default:
+      MTLK_ASSERT(FALSE);
+      return MTLK_HW_BAND_NONE;
+  }
+}
 #endif
 
 #define ADD_CH_TO_TAB(ch_tab_, max_size_, id_str_,channel_) \
@@ -5147,6 +5166,7 @@ wave_radio_copy_probe_req_list(wave_radio_t *radio, probe_req_info *info)
       probe_list[counter].addr = *addr;
       probe_list[counter].age = timediff / MTLK_OSAL_MSEC_IN_SEC; /* in sec */
       probe_list[counter].rssi = ieee_addr_entry->probe_rssi;
+      memcpy(probe_list[counter].rssi_ant, ieee_addr_entry->probe_rssi_ant, sizeof(probe_list[counter].rssi_ant));
       counter++;
       h = mtlk_hash_enum_next_ieee_addr(&list->hash, &e);
     }

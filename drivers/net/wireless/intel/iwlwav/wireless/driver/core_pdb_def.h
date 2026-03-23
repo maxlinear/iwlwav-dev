@@ -163,7 +163,9 @@ static const struct wave_eht_debug_mode_data wave_core_initial_eht_debug_mode_da
 static const struct mxl_vendor_eht_capa wave_core_initial_eht_non_advertised = {0};
 static const struct mxl_vendor_ml_critical_update wave_core_initial_ml_critical_update = {0};
 static const uint8 skip_set_beacon = 0;
-static const struct _mxl_vendor_mld_info mld_info = {.mld_id = mtlk_core_initial_invalid_uint8};
+static const struct _mxl_vendor_mld_info mld_info = {.mld_id = mtlk_core_initial_invalid_uint8,
+                                                     .sibling_vap_ids[0] = MTLK_VAP_INVALID_IDX,
+                                                     .sibling_vap_ids[1] = MTLK_VAP_INVALID_IDX};
 #endif
 
 static const mtlk_pdb_initial_value mtlk_core_parameters[] =

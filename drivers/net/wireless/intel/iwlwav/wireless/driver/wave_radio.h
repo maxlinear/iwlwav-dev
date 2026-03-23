@@ -690,7 +690,7 @@ void __MTLK_IFUNC wave_radio_roc_in_progress_set(wave_radio_t *radio, unsigned v
 unsigned __MTLK_IFUNC wave_radio_roc_in_progress_get(wave_radio_t *radio);
 
 void __MTLK_IFUNC wave_radio_clean_probe_req_list(wave_radio_t *radio, BOOL flush_probe_list);
-void __MTLK_IFUNC wave_probe_req_list_add(wave_radio_t *radio, const IEEE_ADDR *addr, int8 rssi);
+void __MTLK_IFUNC wave_probe_req_list_add(wave_radio_t *radio, const IEEE_ADDR *addr, mtlk_phy_info_t *phy_info);
 
 int __MTLK_IFUNC wave_radio_get_probe_req_list (struct wiphy *wiphy, struct net_device *ndev, uint8 isflush);
 int __MTLK_IFUNC
@@ -717,6 +717,7 @@ uint16 __MTLK_IFUNC wave_radio_inc_high_speed_counter (wave_radio_t *radio);
 uint16 __MTLK_IFUNC wave_radio_dec_high_speed_counter (wave_radio_t *radio);
 uint8 __MTLK_IFUNC wave_radio_get_rx_ant (wave_radio_t *radio);
 uint8 __MTLK_IFUNC wave_convert_radio_band_to_link_id (mtlk_hw_band_e band);
+mtlk_hw_band_e __MTLK_IFUNC wave_convert_link_id_to_radio_band (uint8 link_id);
 #endif
 BOOL __MTLK_IFUNC wave_radio_is_zwdfs_gen6_d2 (wave_radio_t *radio);
 mtlk_error_t wave_radio_get_su_mu_ru_stats (struct wiphy *wiphy, struct net_device *ndev, wave_vendor_su_mu_ru_stats_t *data);

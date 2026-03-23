@@ -504,7 +504,7 @@ typedef struct mtlk_wssa_drv_ml_link_stats {
 
 typedef struct mtlk_wssa_drv_ml_peer_stats {
   bool is_single_link;
-  mtlk_wssa_drv_ml_link_stats_t ml_peer_stats[2];
+  mtlk_wssa_drv_ml_link_stats_t ml_peer_stats[MAX_NUM_OF_LINKS]; /* max 3 links per ML peer */
 } __attribute__ ((packed)) mtlk_wssa_drv_ml_peer_stats_t;
 #endif
 

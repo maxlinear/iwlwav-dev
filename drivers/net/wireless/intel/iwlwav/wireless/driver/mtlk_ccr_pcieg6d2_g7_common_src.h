@@ -6,6 +6,7 @@
   this software module.
 
 *******************************************************************************/
+#include "hw_mmb_priv.h"
 
 #define LOG_LOCAL_GID   GID_CCR_PCIE
 #define LOG_LOCAL_FID   6
@@ -35,6 +36,24 @@ _mtlk_pcie_ccr_print_irq_regs(void *ccr_mem)
 static void
 _mtlk_pcie_secure_release_cpus_reset (void *ccr_mem)
 {
+#ifdef MTLK_DEBUG
+  mtlk_pcie_ccr_t *pci_mem = (mtlk_pcie_ccr_t *)ccr_mem;
+  
+  MTLK_ASSERT(NULL != pci_mem);
+  MTLK_ASSERT(NULL != pci_mem->hw);
+
+  if ((pci_mem->hw)->jtag_debugging)
+  {
+    ELOG_V("                                              \n \
+            /**********************************************************/\n \
+            /* JTAG debugging is enabled, UMAC has not been released. */\n \
+            /*         Open debugger and add breakpoints now.         */\n \
+            /*                When ready, start UMAC                  */\n \
+            /**********************************************************/");
+    return;
+  }
+#endif
+
   MTLK_ASSERT(NULL != ccr_mem);
 
   ILOG0_V("Release UMAC");

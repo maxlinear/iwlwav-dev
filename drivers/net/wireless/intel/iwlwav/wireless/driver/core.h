@@ -1010,6 +1010,10 @@ int core_change_bss(mtlk_handle_t hcore, const void* data, uint32 data_size);
 
 mtlk_error_t __MTLK_IFUNC wave_core_ap_stop_traffic (struct nic *nic, uint16 sid, IEEE_ADDR *sta_addr);
 mtlk_error_t __MTLK_IFUNC wave_core_ap_remove_sta (struct nic *nic, uint16 sid, IEEE_ADDR *sta_addr);
+#ifdef MTLK_WAVE_700
+mtlk_error_t __MTLK_IFUNC wave_core_ap_disconnect_sta_mld(mtlk_core_t *nic, sta_entry *sta);
+mtlk_error_t __MTLK_IFUNC wave_core_ap_remove_sta_mld (mtlk_core_t *nic, struct mxl_sta_mld_remove *sta_mld);
+#endif /* MTLK_WAVE_700 */
 
 uint32 __MTLK_IFUNC wave_core_param_db_basic_rates_get(mtlk_core_t *core, mtlk_hw_band_e band, uint8 *rates_buf, uint32 rates_buf_len);
 uint32 __MTLK_IFUNC wave_core_management_frames_rate_select (mtlk_core_t *core);

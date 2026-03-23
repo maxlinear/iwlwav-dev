@@ -1213,57 +1213,113 @@ READY:
        tx_ant_factor = _wave_psdb_get_tx_ant_factor_by_chan(psdb, chan_num);
     }
 
-    /* Add antenna factor to each limit which is set, i.e. non zero */
+    /* If the MU/BF/AX/N/AG values are not configured, we need to use the OFDM
+     * values instead. If BF_AX values are not configured, we need to use the BF
+     */
+    for (i = 0; i < MAXIMUM_BANDWIDTHS_GEN6; i++) {
+
+      /* 11N: if not configured, prefer BE else fallback to OFDM */
+      if (i < MAXIMUM_BANDWIDTHS_11N) {
+        if (pw_limits->pw_limits[PSDB_PHY_CW_N_20 + i] == 0) {
+          if (pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] == 0) {
+            pw_limits->pw_limits[PSDB_PHY_CW_N_20 + i] =
+            pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
+          } else {
+            pw_limits->pw_limits[PSDB_PHY_CW_N_20 + i] =
+            pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i];
+          }
+        }
+      }
+
+      /* 11AX: if not configured, prefer BE else fallback to OFDM */
+      if (pw_limits->pw_limits[PSDB_PHY_CW_AX_20 + i] == 0) {
+        if (pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] == 0) {
+          pw_limits->pw_limits[PSDB_PHY_CW_AX_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
+        } else {
+          pw_limits->pw_limits[PSDB_PHY_CW_AX_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i];
+        }
+      }
+
+      /* 11AX BF: if not configured, prefer BF_BE else fallback to OFDM */
+      if (pw_limits->pw_limits[PSDB_PHY_CW_BF_AX_20 + i] == 0) {
+        if (pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i] == 0) {
+          pw_limits->pw_limits[PSDB_PHY_CW_BF_AX_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
+        } else {
+          pw_limits->pw_limits[PSDB_PHY_CW_BF_AX_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i];
+        }
+      }
+    }
+#ifdef MTLK_WAVE_700
+    for (i = 0; i < MAXIMUM_BANDWIDTHS_GEN7; i++) {
+      /* MU: if not configured, prefer BE else fallback to OFDM */
+      if (pw_limits->pw_limits[PSDB_PHY_CW_MU_20 + i] == 0) {
+        if (pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] == 0) {
+          pw_limits->pw_limits[PSDB_PHY_CW_MU_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
+        } else {
+          pw_limits->pw_limits[PSDB_PHY_CW_MU_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i];
+        }
+      }
+
+      /* 11AC (OFDM): if not configured, inherit BE */
+      if (pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i] == 0) {
+        if (pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] != 0) {
+          pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i];
+        }
+      }
+
+      /* 11AC BF: if not configured, prefer BF_BE else fallback to OFDM */
+      if (pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i] == 0) {
+        if (pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i] == 0) {
+          pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
+        } else {
+          pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i] =
+          pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i];
+        }
+      }
+
+      /* 11BE: if not configured, fallback to OFDM */
+      if (pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] == 0) {
+        pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] =
+        pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
+      }
+
+      /* 11BE BF: fallback to BF */
+      if (pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i] == 0) {
+        pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i] =
+        pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i];
+      }
+    }
+#endif
+    /* 11AG: if not configured, fallback to OFDM */
+    if (pw_limits->pw_limits[PSDB_PHY_CW_AG_20] == 0) {
+      pw_limits->pw_limits[PSDB_PHY_CW_AG_20] =
+      pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20];
+    }
+
+    /* 11B: if not configured, fallback to OFDM */
+    if (pw_limits->pw_limits[PSDB_PHY_CW_11B] == 0) {
+      pw_limits->pw_limits[PSDB_PHY_CW_11B] =
+      pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20];
+    }
+
+    /* Add antenna factor to each limit which is set, i.e. >= zero */
     /* Note that overflow was checked during table parsing */
 
-#define _PWL_FACTOR_APLLY(value, factor)  if(0 != (value)) { (value) += (factor); }
+#define _PWL_FACTOR_APLLY(value, factor)  if(0 <= (value)) { (value) += (factor); }
 
     for (i = 0; i < MTLK_ARRAY_SIZE(pw_limits->pw_limits); i++) {
       _PWL_FACTOR_APLLY(pw_limits->pw_limits[i], tx_ant_factor);
     }
 
 #undef _PWL_FACTOR_APLLY
-
-    /* If the MU/BF/AX/N/AG values are not configured, we need to use the OFDM
-     * values instead. If BF_AX values are not configured, we need to use the BF
-     */
-
-#ifdef MTLK_WAVE_700
-    for (i = 0; i < MAXIMUM_BANDWIDTHS_GEN7; i++) {
-      if (pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i] == 0) {
-        pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
-      }
-      if (pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] == 0) {
-        pw_limits->pw_limits[PSDB_PHY_CW_BE_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
-      }
-      if (pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i] == 0) {
-        pw_limits->pw_limits[PSDB_PHY_CW_BF_BE_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i];
-      }
-    }
-#endif
-
-    for (i = 0; i < MAXIMUM_BANDWIDTHS_GEN6; i++) {
-        if (pw_limits->pw_limits[PSDB_PHY_CW_MU_20 + i] == 0) {
-            pw_limits->pw_limits[PSDB_PHY_CW_MU_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
-        }
-        if (pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i] == 0) {
-            pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
-        }
-        if (pw_limits->pw_limits[PSDB_PHY_CW_BF_AX_20 + i] == 0) {
-            pw_limits->pw_limits[PSDB_PHY_CW_BF_AX_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_BF_20 + i];
-        }
-        if (pw_limits->pw_limits[PSDB_PHY_CW_AX_20 + i] == 0) {
-            pw_limits->pw_limits[PSDB_PHY_CW_AX_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
-        }
-        if (i < MAXIMUM_BANDWIDTHS_11N) {
-            if (pw_limits->pw_limits[PSDB_PHY_CW_N_20 + i] == 0) {
-                pw_limits->pw_limits[PSDB_PHY_CW_N_20 + i] = pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20 + i];
-            }
-        }
-    }
-    if (pw_limits->pw_limits[PSDB_PHY_CW_AG_20] == 0) {
-        pw_limits->pw_limits[PSDB_PHY_CW_AG_20] = pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20];
-    }
 
 #define _CHAR_TO_PRINT_(c)  isprint(c) ? (c) : '.'
 
@@ -1275,7 +1331,7 @@ READY:
     ILOG1_DDD("domain 0x%02X, chan_freq %d, chan_num %d",
               regd_parsed->regd_code, chan_freq, chan_num);
 
-    ILOG2_DDDDDD("antennas factor: %d, 11B/OFDM power limits: %u %u %u %u %u",
+    ILOG1_DDDDDD("antennas factor: %d, 11B/OFDM power limits: %u %u %u %u %u",
                  tx_ant_factor, pw_limits->pw_limits[PSDB_PHY_CW_11B],
                  pw_limits->pw_limits[PSDB_PHY_CW_OFDM_20], pw_limits->pw_limits[PSDB_PHY_CW_OFDM_40],
                  pw_limits->pw_limits[PSDB_PHY_CW_OFDM_80], pw_limits->pw_limits[PSDB_PHY_CW_OFDM_160]);

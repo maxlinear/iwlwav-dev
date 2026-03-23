@@ -4118,41 +4118,47 @@ mtlk_hw_save_chan_statistics_info (mtlk_hw_t *hw, struct mtlk_chan_def *ccd, str
   if (idx != CHAN_IDX_ILLEGAL) {
     wave_drv_channel_stats_t  *drv_cs  = &hw->chan_statistics[idx];
     wifi_channelStats_t       *wifi_cs = &drv_cs->wifi_chan_stats;
+    mtlk_osal_hr_timestamp_t chan_stat_ts;
 
     hw_stats = &hw->hw_stats;
     mtlk_osal_lock_acquire(&hw_stats->lock);
+
+#ifdef WAVE_HW_CHAN_STATS_TSF_ENABLE
+    // HACK: Observed edge cases where channel satatistics were being saved from
+    // old statistics data isof fetching new from firmware.
+    // WLANRTSYS-98446 - This is a workaround and should be removed.
+    chan_stat_ts                       = MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilizationCurrTime, chip_id);
+    if (chan_stat_ts == drv_cs->chan_stat_ts) {
+      ILOG1_HD("skip saving current channel statistics, last call TS %llu us (ch %d)", hw_stats->last_call_timestamp, ch_data->channel);
+      mtlk_osal_lock_release(&hw_stats->lock);
+      return;
+    }
+    hw->chan_statistics_ts             = chan_stat_ts;
+#else
+    hw->chan_statistics_ts             = mtlk_osal_hr_timestamp_us();
+#endif
     wifi_cs->ch_number                 = ch_data->channel;
     wifi_cs->ch_noise                  = ch_data->cwi_noise;
     wifi_cs->ch_radar_noise            = ch_radar_noise;
-
     wifi_cs->ch_utilization_busy      += MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilizationBusy, chip_id);
     wifi_cs->ch_utilization_busy_tx   += MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilizationBusyTx, chip_id);
     wifi_cs->ch_utilization_busy_rx   += MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilizationBusyRx, chip_id);
     wifi_cs->ch_utilization_busy_self += MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilizationBusyRxSelf, chip_id);
     wifi_cs->ch_utilization_busy_ext  += MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilizationBusyExt, chip_id);
     wifi_cs->ch_non_80211_noise        = MTLK_GET_STATS(hw_stats->stats_copy, phyStatistics.devicePhyRxStatus[radio_id].CWIvalue, chip_id);
-    /* FW statistics chUtilization is only for the Channel Utilization parameter of the BSS Load element */
-    hw->chan_util_value[radio_id]              = MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilization, chip_id);
-
+    /* FW statistics chUtilization is only for the Channel Utilization parameter
+     * of the BSS Load element */
+    hw->chan_util_value[radio_id]      = MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilization, chip_id);
     drv_cs->chan_util_interf           = wifi_cs->ch_utilization_busy - wifi_cs->ch_utilization_busy_tx - wifi_cs->ch_utilization_busy_self;
-
-#ifdef WAVE_HW_CHAN_STATS_TSF_ENABLE
-    hw->chan_statistics_ts             = MTLK_GET_STATS(hw_stats->stats_copy, currentChannelStats.channelUtilizationStats[radio_id].chUtilizationCurrTime, chip_id);
-#else
-    hw->chan_statistics_ts             = mtlk_osal_hr_timestamp_us();
-#endif
-
     drv_cs->chan_active_time          += (hw->chan_statistics_ts - drv_cs->chan_stat_ts);
     drv_cs->chan_stat_ts               = hw->chan_statistics_ts;
     drv_cs->chan_idle_time             = drv_cs->chan_active_time - wifi_cs->ch_utilization_busy;
-
-    /* Although RDK-B header names this field as 'total', they expect 'active' time to be provided in this field, instead of:
-     * wifi_cs->ch_utilization_total   = wifi_cs->ch_utilization_busy_tx + wifi_cs->ch_utilization_busy_rx; */
+    /* Although RDK-B header names this field as 'total', they expect 'active'
+     * time to be provided in this field, isof:
+     *   `ch_utilization_busy_tx + ch_utilization_busy_rx` */
     wifi_cs->ch_utilization_total      = drv_cs->chan_active_time;
-
     /* Channel utilization in percents */
     wifi_cs->ch_utilization            = WAVE_GET_PERCENTAGE(wifi_cs->ch_utilization_busy, drv_cs->chan_active_time);
-
     mtlk_osal_lock_release(&hw_stats->lock);
   }
 }

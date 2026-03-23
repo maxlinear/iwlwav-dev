@@ -560,29 +560,86 @@ wave_vap_manager_get_vap_handle_by_fw_id (mtlk_vap_manager_t *obj,
   return MTLK_ERR_PARAMS;
 }
 
+mtlk_error_t __MTLK_IFUNC
+mtlk_vap_get_sibling_vap_handle_by_link_id(mtlk_vap_handle_t ref_vap_handle,
+                                           uint8 link_id,
+                                           mtlk_vap_handle_t *vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)ref_vap_handle;
+  mtlk_vap_handle_t sibling_vap_handle;
+  uint8 sibling_link_id;
+  int sib_idx;
+
+  MTLK_ASSERT(NULL != _info);
+  MTLK_ASSERT(NULL != vap_handle);
+
+  for (sib_idx = 0; sib_idx < _info->ml_vap_info.num_of_sibling_vaps; sib_idx++) {
+    sibling_vap_handle = wave_vap_get_sibling_vap_handle(ref_vap_handle, sib_idx);
+    sibling_link_id = wave_convert_radio_band_to_link_id(wave_radio_band_get(wave_vap_radio_get(sibling_vap_handle)));
+    if (sibling_link_id == link_id) {
+      *vap_handle = sibling_vap_handle;
+      return MTLK_ERR_OK;
+    }
+  }
+  return MTLK_ERR_NO_ENTRY;
+}
+
 void __MTLK_IFUNC
 wave_vap_manager_update_ml_vap_info (mtlk_vap_handle_t vap_handle,
                                     mtlk_ml_vap_info_t ml_vap_info)
 {
   mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
-  mtlk_vap_info_internal_t *_sibling_info = (mtlk_vap_info_internal_t *)ml_vap_info.sibling;
+  mtlk_vap_info_internal_t *_sibling_info = NULL;
+  int idx = 0,sib_idx = 0;
 
   MTLK_ASSERT(NULL != _info);
-  MTLK_ASSERT(NULL != _sibling_info);
 
+  _info->ml_vap_info.num_of_sibling_vaps = ml_vap_info.num_of_sibling_vaps;
+
+  for (sib_idx = 0, idx = 0; sib_idx < ml_vap_info.num_of_sibling_vaps; sib_idx++) {
+    _sibling_info = (mtlk_vap_info_internal_t *)ml_vap_info.sibling_handles[sib_idx];
+
+    MTLK_ASSERT(NULL != _sibling_info);
+
+    /* update the vap_handle's sibling vap info */
+    _info->ml_vap_info.sibling_handles[idx] = ml_vap_info.sibling_handles[sib_idx];
+    _info->ml_vap_info.ml_configured = TRUE;
+    _info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
+    idx++;
+
+    /* update the sibling vap_handle's 1st sibling vap info */
+    _sibling_info->ml_vap_info.sibling_handles[0] = vap_handle;
+    _sibling_info->ml_vap_info.ml_configured = TRUE;
+    _sibling_info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
+    _sibling_info->ml_vap_info.num_of_sibling_vaps = ml_vap_info.num_of_sibling_vaps;
 #ifdef BEST_EFFORT_TID_SPREADING
-  /* update ml vap str tid spreading info */
-  _info->ml_vap_info.tid_spread_info = ml_vap_info.tid_spread_info;
-  _sibling_info->ml_vap_info.tid_spread_info = ml_vap_info.tid_spread_info;
+    /* update ml vap str tid spreading info */
+    _info->ml_vap_info.tid_spread_info = ml_vap_info.tid_spread_info;  //TODO : WLANRTSYS-95649 - Need to handle for 3 link AP MLD
+    _sibling_info->ml_vap_info.tid_spread_info = ml_vap_info.tid_spread_info;  //TODO : WLANRTSYS-95649 - Need to handle for 3 link AP MLD
 #endif
 
-  /* update sibling vap info */
-  _info->ml_vap_info.sibling = ml_vap_info.sibling;
-  _info->ml_vap_info.ml_configured = TRUE;
-  _sibling_info->ml_vap_info.sibling = vap_handle;
-  _sibling_info->ml_vap_info.ml_configured = TRUE;
-  _info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
-  _sibling_info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
+  }
+
+  /* update the sibling vap_handle's remaining sibling vap info */
+  for (sib_idx = 0; sib_idx < ml_vap_info.num_of_sibling_vaps; sib_idx++) {
+    _sibling_info = (mtlk_vap_info_internal_t *)ml_vap_info.sibling_handles[sib_idx];
+
+    MTLK_ASSERT(NULL != _sibling_info);
+
+    for (idx = 0; idx < NUM_OF_SIBLING_LINKS; idx++) {
+      if (_sibling_info == (mtlk_vap_info_internal_t *)_info->ml_vap_info.sibling_handles[idx])
+        continue;
+      _sibling_info->ml_vap_info.sibling_handles[1] = _info->ml_vap_info.sibling_handles[idx];
+    }
+  }
+}
+
+mtlk_ml_vap_info_t* __MTLK_IFUNC
+wave_vap_manager_get_ml_vap_info(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+  MTLK_ASSERT(NULL != _info);
+  return &_info->ml_vap_info;
 }
 
 void __MTLK_IFUNC
@@ -650,20 +707,99 @@ mtlk_vap_ml_lock_release(mtlk_vap_handle_t vap_handle)
   }
 }
 
+void __MTLK_IFUNC
+mtlk_vap_wait_ml_sta_teardown(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+  int res;
+
+  res = mtlk_osal_event_wait(&_info->ml_vap_info.ml_sta_teardown_completed, 2000);
+  if (MTLK_ERR_OK != res) {
+    ELOG_D("ML sta teardown completed event wait error, teardown_count= %d",
+           mtlk_osal_atomic_get(&_info->ml_vap_info.ml_sta_teardown_in_progress));
+  }
+}
+
+int __MTLK_IFUNC
+mtlk_vap_initiate_ml_sta_teardown(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+  uint32 ref_cnt;
+
+  mtlk_vap_ml_sta_teardown_lock_acquire(vap_handle);
+  ref_cnt = mtlk_osal_atomic_inc(&_info->ml_vap_info.ml_sta_teardown_in_progress);
+  mtlk_vap_ml_sta_teardown_lock_release(vap_handle);
+  return ref_cnt;
+}
+
+BOOL __MTLK_IFUNC
+mtlk_vap_ml_sta_teardown_inprogress(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+  uint32 ref_cnt;
+
+  ref_cnt = mtlk_osal_atomic_get(&_info->ml_vap_info.ml_sta_teardown_in_progress);
+  return (ref_cnt ? TRUE : FALSE);
+}
+
+void __MTLK_IFUNC
+mtlk_vap_ml_finish_ml_sta_teardown(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+  uint32 ref_cnt;
+
+  ref_cnt = mtlk_osal_atomic_dec(&_info->ml_vap_info.ml_sta_teardown_in_progress);
+  if (ref_cnt == 0) {
+    mtlk_osal_event_set(&_info->ml_vap_info.ml_sta_teardown_completed);
+  }
+}
+
+void __MTLK_IFUNC
+mtlk_vap_ml_sta_teardown_lock_release(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+
+  mtlk_osal_lock_release(&_info->ml_vap_info.ml_vap_sta_teardown_sync_lock);
+}
+
+void __MTLK_IFUNC
+mtlk_vap_ml_sta_teardown_lock_acquire(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+
+  mtlk_osal_lock_acquire(&_info->ml_vap_info.ml_vap_sta_teardown_sync_lock);
+}
+
 static void
-mtlk_ml_vap_event_cleanup(mtlk_vap_handle_t vap_handle)
+mtlk_ml_vap_info_deinit(mtlk_vap_handle_t vap_handle)
 {
   mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
 
   mtlk_osal_event_cleanup(&_info->ml_vap_info.ml_teardown_completed);
+  mtlk_osal_event_cleanup(&_info->ml_vap_info.ml_sta_teardown_completed);
+  mtlk_osal_lock_cleanup(&_info->ml_vap_info.ml_vap_sta_teardown_sync_lock);
 }
 
 static int
-mtlk_ml_vap_event_init(mtlk_vap_handle_t vap_handle)
+mtlk_ml_vap_info_init(mtlk_vap_handle_t vap_handle)
 {
   mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
 
-  return mtlk_osal_event_init(&_info->ml_vap_info.ml_teardown_completed);
+  mtlk_osal_event_init(&_info->ml_vap_info.ml_sta_teardown_completed);
+  mtlk_osal_event_init(&_info->ml_vap_info.ml_teardown_completed);
+  mtlk_osal_lock_init(&_info->ml_vap_info.ml_vap_sta_teardown_sync_lock);
+  return MTLK_ERR_OK;
+}
+
+void __MTLK_IFUNC
+mtlk_vap_ml_notify_sta_teardown(mtlk_vap_handle_t vap_handle)
+{
+
+  mtlk_vap_ml_sta_teardown_lock_acquire(vap_handle);
+  if (mtlk_vap_ml_sta_teardown_inprogress(vap_handle)) {
+    mtlk_vap_ml_finish_ml_sta_teardown(vap_handle);
+  }
+  mtlk_vap_ml_sta_teardown_lock_release(vap_handle);
 }
 #endif
 
@@ -1004,7 +1140,7 @@ _mtlk_vap_cleanup (mtlk_vap_handle_t vap_handle)
                       mtlk_irbd_free, (vap_info->irbd));
 #ifdef MTLK_WAVE_700
     MTLK_CLEANUP_STEP(vap_handler, ML_VAP_INFO, MTLK_OBJ_PTR(vap_info),
-                      mtlk_ml_vap_event_cleanup, (vap_handle));
+                      mtlk_ml_vap_info_deinit, (vap_handle));
 #endif
     MTLK_CLEANUP_STEP(vap_handler, VAP_HANDLER_CORE_API_INIT, MTLK_OBJ_PTR(vap_info),
                       mtlk_core_api_cleanup, (vap_info->core_api));
@@ -1124,7 +1260,7 @@ _mtlk_vap_init (mtlk_vap_handle_t vap_handle,
                    mtlk_core_api_init, (vap_handle, vap_info->core_api, vap_info->df));
 #ifdef MTLK_WAVE_700
     MTLK_INIT_STEP(vap_handler, ML_VAP_INFO, MTLK_OBJ_PTR(vap_info),
-                   mtlk_ml_vap_event_init, (vap_handle));
+                   mtlk_ml_vap_info_init, (vap_handle));
 #endif
 
     /* validate core VFT

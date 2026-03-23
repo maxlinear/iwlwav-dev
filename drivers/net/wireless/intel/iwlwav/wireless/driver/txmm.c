@@ -19,6 +19,7 @@
 #include "txmm.h"
 #include "core.h"
 #include "hw_mmb.h"
+#include "hw_mmb_priv.h"
 
 #define LOG_LOCAL_GID   GID_TXMM
 #define LOG_LOCAL_FID   1
@@ -908,6 +909,21 @@ static int _mtlk_txmm_send_blocked(mtlk_txmm_t*      obj,
     ELOG_D("send (b): send failed. Err#%d", res);
     goto FINISH;
   }
+  
+#ifdef MTLK_DEBUG
+  if (mtlk_vap_get_hw(master_vap)->jtag_debugging)
+  {
+    timeout_ms = timeout_ms * MTLK_JTAG_SCALING_FACTOR;
+    ILOG4_D("JTAG debugging enabled. Increasing txmm timeout to %dms.", timeout_ms);
+  }
+  else 
+#endif
+  if (mtlk_vap_get_hw(master_vap)->card_info.is_emul)
+  {
+    timeout_ms = timeout_ms * MTLK_EMUL_SCALING_FACTOR;
+    ILOG4_D("Emulation mode detected. Increasing txmm timeout to %dms.", timeout_ms);
+  }
+
 
   ILOG4_D("send (b): wait event (%d ms)", (int)timeout_ms);
   res = mtlk_osal_event_wait(&obj->base->bsend.evt, timeout_ms);

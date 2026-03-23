@@ -5416,17 +5416,31 @@ static int _wave_ieee80211_vendor_setup_mld (struct wiphy *wiphy, struct wireles
   df_user = mtlk_df_user_from_wdev(wdev);
   MTLK_CHECK_DF_USER(df_user);
 
+  /* Validate MLD ID */
+  if (ml_info->mld_id == INVALID_MLD_ID) {
+    ELOG_SD("%s: The AP MLD ID %u is invalid", wdev->netdev->name, ml_info->mld_id);
+    res = MTLK_ERR_PARAMS;
+    goto fail;
+  }
+  /* Validate number of siblings */
+  if (ml_info->num_of_sibling_vaps > NUM_OF_SIBLING_LINKS) {
+    ELOG_SDD("%s: Invalid number of sibling VAPs(%u) for AP MLD ID %u",
+            wdev->netdev->name, ml_info->num_of_sibling_vaps, ml_info->mld_id);
+    res = MTLK_ERR_PARAMS;
+    goto fail;
+  }
   /* Validate MAC address */
   if (!mtlk_osal_is_valid_ether_addr(ml_info->ap_mld_mac)) {
     ELOG_SY("%s: The AP MLD MAC %Y is invalid", wdev->netdev->name, ml_info->ap_mld_mac);
     res = MTLK_ERR_PARAMS;
-    return _mtlk_df_mtlk_to_linux_error_code(res);
+    goto fail;
   }
   res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),
     WAVE_CORE_REQ_SETUP_MLD, &clpb, ml_info, sizeof(struct _mxl_vendor_mld_info));
   res = _mtlk_df_user_process_core_retval(res, clpb,
     WAVE_CORE_REQ_SETUP_MLD, TRUE);
 
+fail:
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
@@ -5455,11 +5469,18 @@ static int _wave_ieee80211_vendor_set_mld_info (struct wiphy *wiphy, struct wire
 
   ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
 
+  /* Validate MLD ID */
+  if (ml_link_info->mld_id == INVALID_MLD_ID) {
+    ELOG_SD("%s: The AP MLD ID %u is invalid", wdev->netdev->name, ml_link_info->mld_id);
+    res = MTLK_ERR_PARAMS;
+    goto fail;
+  }
+
   /* Validate MAC address */
   if (!mtlk_osal_is_valid_ether_addr(ml_link_info->ap_mld_mac)) {
     ELOG_SY("%s: The AP MLD MAC %Y is invalid", wdev->netdev->name, ml_link_info->ap_mld_mac);
     res = MTLK_ERR_PARAMS;
-    return _mtlk_df_mtlk_to_linux_error_code(res);
+    goto fail;
   }
   /* store MLD */
   res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),
@@ -5467,6 +5488,7 @@ static int _wave_ieee80211_vendor_set_mld_info (struct wiphy *wiphy, struct wire
   res = _mtlk_df_user_process_core_retval(res, clpb,
     WAVE_CORE_REQ_SET_MLD_INFO, TRUE);
 
+fail:
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 

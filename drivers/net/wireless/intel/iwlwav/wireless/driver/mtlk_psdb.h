@@ -235,6 +235,7 @@ typedef enum psdb_phy_cw_e {
     PSDB_PHY_CW_MU_40,
     PSDB_PHY_CW_MU_80,
     PSDB_PHY_CW_MU_160,
+    PSDB_PHY_CW_MU_320,
     PSDB_PHY_CW_BF_20,
     PSDB_PHY_CW_BF_40,
     PSDB_PHY_CW_BF_80,

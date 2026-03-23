@@ -84,6 +84,7 @@ int interface_index[PHY_INDEX_CONFIG_LIMIT]           = {0, 2, 4, 6, -1, -1};
 
 #ifdef MTLK_DEBUG
 extern int step_to_fail;
+int jtag_debugging;
 #endif
 static int disable_11d_hint = 0;
 static int disable_zwdfs = 0;
@@ -110,6 +111,7 @@ module_param_array(phy_index, int, &phy_index_count, 0);
 
 #ifdef MTLK_DEBUG
 module_param(step_to_fail, int, 0);
+module_param(jtag_debugging, int, 0);
 #endif
 module_param(disable_11d_hint, int, 0);
 module_param(disable_zwdfs, int, 0);
@@ -135,6 +137,7 @@ MODULE_PARM_DESC(panic_on_fw_error, "Kernel Panic on FW assert Enable flag");
 
 #ifdef MTLK_DEBUG
 MODULE_PARM_DESC(step_to_fail, "Init step to simulate fail");
+MODULE_PARM_DESC(jtag_debugging, "Facilitates JTAG debugging of the WAVE ARCs by increasing timeouts and delaying the release of the UMAC to allow insertion of breakpoints.");
 #endif
 MODULE_PARM_DESC(disable_11d_hint, "Disable 802.11d country hint from beacons");
 MODULE_PARM_DESC(disable_zwdfs, "Disable creating ZWDFS phy in case supported by CAL/PSDB");
@@ -721,10 +724,11 @@ _pci_start (struct pci_dev *pdev, mtlk_mmb_drv_t *obj, mtlk_card_type_t hw_type,
   pci_clear_master(pdev);
 
   /* set master mode for PCI device */
+  mtlk_udelay(1000);
   pci_set_master(pdev);
-  mtlk_udelay(100);
 
   /* request device memory for BAR1 */
+  mtlk_udelay(1000);
   _pci_mem_get(pdev, MTLK_MEM_PCI_BAR1_INDEX, &obj->bar1, &obj->bar1_physical);
   if (NULL == obj->bar1) {
     return -ENOMEM;
@@ -1598,6 +1602,7 @@ _mmb_drv_init (mtlk_mmb_drv_t *obj, mtlk_card_type_t hw_type)
                    mtlk_hw_mmb_init_card, (hw, &obj->ccr, obj->bar1, obj->bar1_physical, obj->shram_writable,
                                            radio_descr, fastpath[mtlk_hw_mmb_get_card_idx(hw)],
                                            obj->g6_dual_pci));
+
 #if WAVE_USE_BSS_TX_MONITOR
     MTLK_INIT_STEP(mmb_drv, MMB_HW_BSS_TX_HD_MAP_LOCK_INIT, MTLK_OBJ_PTR(obj),
                     wave_hw_bss_tx_hd_map_lock_init, (hw));

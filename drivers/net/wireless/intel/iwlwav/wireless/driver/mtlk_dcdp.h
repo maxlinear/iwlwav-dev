@@ -62,6 +62,10 @@
 #define WAVE_DCDP_4UMT_SUPPORTED
 #endif
 
+#if DC_DP_API_VERSION_CODE >= DC_DP_API_VERSION(5,2,0)
+#define WAVE_DCDP_TOPAZ_SUPPORTED
+#endif
+
 /* Define new flags for compatibility with version not supporting LGM */
 #ifndef WAVE_DCDP_LGM_FLM_SUPPORTED
 #define DC_DP_F_FAST_WLAN           (0)     /* Formal definition. Real value is != 0 */
@@ -69,12 +73,20 @@
 #define DC_DP_RING_HW_MODE1_EXT     (0x11)  /* Formal definition. Real value differs! */
 #endif
 
+#ifdef MTLK_TOPAZ_PLATFORM_FPGA
+#define MTLK_DCDP_SWPATH_SUPPORTED  (1)     /* Set to 1 if DC DP SWPATH is supported by DCDP and driver */
+#else
 #define MTLK_DCDP_SWPATH_SUPPORTED  (0)     /* Set to 1 if DC DP SWPATH is supported by DCDP and driver */
+#endif /* MTLK_TOPAZ_PLATFORM_FPGA */
 
 #define MTLK_DCDP_DCCNTR_NUM        (1)     /* Number of DC counters. For WAVE500/600 it is 1 */
 #define MTLK_DCDP_DCCNTR_NUM_4UMT   (2)     /* Number of DC counters. For 4UMT CNTR mode, it is 2 */
 #define MTLK_DCDP_DCCNTR_NUM_MAX    MAX(MTLK_DCDP_DCCNTR_NUM, MTLK_DCDP_DCCNTR_NUM_4UMT)
+#ifdef MTLK_TOPAZ_PLATFORM
+#define MTLK_DCDP_DCCNTR_SIZE       (1)     /* Counter has 1 byte length */
+#else
 #define MTLK_DCDP_DCCNTR_SIZE       (4)     /* Counter has 4 bytes length */
+#endif
 #define MTLK_DCDP_DCCNTR_LENGTH     (1)     /* Length of counters. */
 
 #define WAVE_DCDP_MAX_PORTS         (3)     /* Max number of supported ports */

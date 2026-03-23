@@ -55,6 +55,7 @@ int __MTLK_IFUNC core_cfg_internal_request_sid (mtlk_core_t *core, IEEE_ADDR *ad
 int __MTLK_IFUNC core_cfg_remove_aid (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC core_cfg_remove_all_sids_if_needed (mtlk_core_t *core);
 mtlk_error_t __MTLK_IFUNC core_cfg_ap_disconnect_all (mtlk_handle_t hcore, const void* data, uint32 data_size);
+BOOL __MTLK_IFUNC core_cfg_check_sid_connected (mtlk_core_t *nic, IEEE_ADDR *mac_addr);
 BOOL core_cfg_is_current_channel (mtlk_handle_t hcore, uint32 channel);
 int wv_ieee80211_vendor_event_coc(uint8 event_num, struct wireless_dev *wdev, const void * data, int data_len);
 
@@ -399,6 +400,10 @@ mtlk_error_t __MTLK_IFUNC wave_core_get_pcie_auto_gen_transition (mtlk_core_t *c
 mtlk_error_t __MTLK_IFUNC wave_core_setup_ap_mld (mtlk_handle_t hcore, const void* data, uint32 data_size);
 mtlk_error_t wave_core_send_ap_mld_info (mtlk_core_t *core, struct _mxl_vendor_mld_info *ml_info);
 mtlk_error_t __MTLK_IFUNC wave_core_set_ap_mld_info (mtlk_handle_t hcore, const void* data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC core_cfg_internal_request_ml_sid (mtlk_core_t *nic, struct mxl_ml_sta_mac_addr *ml_sta_mac,
+                       struct mxl_vendor_ml_sid *ml_sid);
+mtlk_error_t __MTLK_IFUNC wave_core_internal_ml_sta_add(mtlk_core_t *nic,
+              struct mxl_ml_sta_add_param *ml_sta_add_params, u8 *main_link_id);
 int __MTLK_IFUNC wave_core_req_ml_sid (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_set_ml_sid (mtlk_handle_t hcore, const void *data, uint32 data_size);
 int __MTLK_IFUNC wave_core_ml_sta_add (mtlk_handle_t hcore, const void *data, uint32 data_size);
@@ -413,7 +418,6 @@ int __MTLK_IFUNC wave_core_scs_rem_req (mtlk_handle_t hcore, const void *data, u
 int __MTLK_IFUNC wave_core_ml_send_t2lm_teardown (mtlk_handle_t hcore, const void *data, uint32 data_size);
 uint8 wv_zwdfs_adjust_radar_bitmap_gen7(struct mtlk_chan_def *cd, uint8 rbm);
 int __MTLK_IFUNC wave_core_ml_sta_reassoc_notify(mtlk_handle_t hcore, const void *data, uint32 data_size);
-mtlk_error_t __MTLK_IFUNC wave_core_ap_disconnect_sta_mld(mtlk_core_t *nic, sta_entry *sta);
 mtlk_error_t __MTLK_IFUNC wave_core_vap_remove_mld(mtlk_core_t *nic);
 mtlk_error_t wave_core_get_ml_peer_flow_status (struct wiphy *wiphy, struct net_device *ndev, const uint8 *addr);
 int __MTLK_IFUNC wave_core_get_ml_peer_stats (mtlk_handle_t hcore, const void *data, uint32 data_size);

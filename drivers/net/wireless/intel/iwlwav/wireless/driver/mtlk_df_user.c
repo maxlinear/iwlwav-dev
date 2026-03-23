@@ -6477,6 +6477,9 @@ static int mtlk_df_ui_tx_power(mtlk_seq_entry_t *s, void *data)
     /* Skip printing 11b lines for 5GHz (because not supported by 802.11b spec) */
     if ((MTLK_HW_BAND_5_2_GHZ == tx_pw_data->cur_band) && (is_11b)) continue;
 
+    /* Skip printing 11b/11n/11ac/ac_bf lines for 6GHz (because not supported by 802.11be spec) */
+    if ((MTLK_HW_BAND_6_GHZ == tx_pw_data->cur_band) && ((is_11b) || (is_11n) || (is_11ac) || (PHY_MODE_11AC_BF_DL == entry->phy_mode))) continue;
+
     /* Skip printing 11ac lines for 2.4GHz (because not supported by 802.11ac spec) */
     if ((MTLK_HW_BAND_2_4_GHZ == tx_pw_data->cur_band) && (is_11ac)) continue;
 
@@ -6508,40 +6511,16 @@ static int mtlk_df_ui_tx_power(mtlk_seq_entry_t *s, void *data)
         power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_11B];
         power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_11B]);
       }
-      else if (is_11ax) {
-        power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_AX_20 + i];
-        power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_AX_20 + i]);
-      }
 #ifdef MTLK_WAVE_700
-      else if (is_11be) {
+      else if (is_11be || is_11ax || is_11ac || is_11n || entry->phy_mode == PHY_MODE_11AX_MU_DL) {
         power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_BE_20 + i] - *antenna_gain;
         power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_BE_20 + i] - *antenna_gain);
       }
-      else if (is_11beBf) {
+      else if (is_11beBf || entry->phy_mode == PHY_MODE_11AC_BF_DL || entry->phy_mode == PHY_MODE_11AX_BF_DL) {
         power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_BF_BE_20 + i]  - *antenna_gain;
         power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_BF_BE_20 + i] - *antenna_gain);
       }
 #endif
-      else if (is_11ac) {
-        power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_OFDM_20 + i] - *antenna_gain;
-        power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_OFDM_20 + i] - *antenna_gain);
-      }
-      else if (entry->phy_mode == PHY_MODE_11AX_MU_DL) {
-        power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_MU_20 + i] - *antenna_gain;
-        power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_MU_20 + i] - *antenna_gain);
-      }
-      else if (entry->phy_mode == PHY_MODE_11AC_BF_DL) {
-        power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_BF_20 + i] - *antenna_gain;
-        power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_BF_20 + i] - *antenna_gain);
-      }
-      else if (entry->phy_mode == PHY_MODE_11AX_BF_DL) {
-        power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_BF_AX_20 + i] - *antenna_gain;
-        power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_BF_AX_20 + i] - *antenna_gain);
-      }
-      else if (is_11n) {
-        power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_N_20 + i] - *antenna_gain;
-        power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_N_20 + i] - *antenna_gain);
-      }
       else if (is_11ag) {
         power_cfg = tx_pw_data->power_tpc_cfg.pw_limits[PSDB_PHY_CW_AG_20] - *antenna_gain;
         power_cfg = hw_mmb_get_tx_power_target(power_cfg, tx_pw_data->power_tpc_psd.pw_limits[PSDB_PHY_CW_AG_20] - *antenna_gain);
@@ -6597,7 +6576,7 @@ static int mtlk_df_ui_tx_power(mtlk_seq_entry_t *s, void *data)
     }
 
     /* Print a line of power array for all supported phy modes. */
-    _mtlk_df_print_power_array(s, "", &pw_per_rate[0], pw_size_tmp, TRUE, power_cfg_limit);
+    _mtlk_df_print_power_array(s, "", &pw_per_rate[0], pw_size_tmp, TRUE, power_cfg);
   }
 
 finish:
@@ -10790,8 +10769,13 @@ _mtlk_df_dcdp_fastpath_dcmode (enum dc_dp_mode_type dc_mode)
 #ifdef WAVE_DCDP_LGM_FLM_SUPPORTED
     case DC_DP_MODE_TYPE_0_EXT:
       return "MODE_0_EXT";
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+    case DC_DP_MODE_TYPE_1_EXT:
+      return "MODE_1_EXT_TOPAZ";
+#else
     case DC_DP_MODE_TYPE_1_EXT:
       return "MODE_1_EXT";
+#endif
 #endif
     default:
       return "Unknown";
@@ -10951,8 +10935,13 @@ mtlk_df_dcdp_datapath_dev_init (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev)
 #ifdef WAVE_DCDP_LGM_FLM_SUPPORTED
       case DC_DP_MODE_TYPE_0_EXT:
         dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_3; break;
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+      case DC_DP_MODE_TYPE_1_EXT:
+        dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_5; break; // TODO: add topaz l4s
+#else
       case DC_DP_MODE_TYPE_1_EXT:
         dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_2; break;
+#endif
 #endif
     }
   }
@@ -11240,6 +11229,8 @@ mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk
     dp_dev->dp_resources.dccntr[0].soc2dev_ret_deq_dccntr_len = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
     dp_dev->dp_resources.dccntr[0].dev2soc_deq_dccntr_len     = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
     dp_dev->dp_resources.dccntr[0].dev2soc_ret_enq_dccntr_len = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
+
+    // TODO: Request L4S if supported by DCDP
 
     if (MTLK_DC_DP_CNTR_MODE_BIG_ENDIAN == dp_init->cntr_mode) {
       ILOG1_V("Setup BIG-ENDIAN counters");

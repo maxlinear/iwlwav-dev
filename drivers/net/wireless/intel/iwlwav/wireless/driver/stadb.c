@@ -386,7 +386,8 @@ _mtlk_sta_get_peer_stats (const sta_entry* sta, mtlk_wssa_drv_peer_stats_t* stat
 
 static __INLINE uint64
 __wave_sta_get_errors_sent_stats (const sta_entry* sta) {
-  return sta->sta_stats64_cntrs.exhaustedCount +
+  return /* From PerClientStatistics: */
+         sta->sta_stats64_cntrs.exhaustedCount +
          sta->sta_stats64_cntrs.dropCntReasonClassifier +
          sta->sta_stats64_cntrs.dropCntReasonDisconnect +
          sta->sta_stats64_cntrs.dropCntReasonATF +
@@ -395,12 +396,16 @@ __wave_sta_get_errors_sent_stats (const sta_entry* sta) {
          sta->sta_stats64_cntrs.dropCntReasonSetKey +
          sta->sta_stats64_cntrs.dropCntReasonDiscard +
          sta->sta_stats64_cntrs.dropCntReasonDsabled +
-         sta->sta_stats64_cntrs.dropCntReasonAggError;
+         sta->sta_stats64_cntrs.dropCntReasonAggError +
+         sta->sta_stats64_cntrs.dropCntReasonAqm +
+         /* From HostIfCountersPerSta: */
+         sta->sta_stats64_cntrs.agerPdNoTransmitCountSta;
 }
 
 static __INLINE uint64
 __wave_sta_get_errors_sent_stats_snapshot (const sta_entry* sta) {
-  return sta->sta_stats64_cntrs_snapshot.exhaustedCount +
+  return /* From PerClientStatistics: */
+         sta->sta_stats64_cntrs_snapshot.exhaustedCount +
          sta->sta_stats64_cntrs_snapshot.dropCntReasonClassifier +
          sta->sta_stats64_cntrs_snapshot.dropCntReasonDisconnect +
          sta->sta_stats64_cntrs_snapshot.dropCntReasonATF +
@@ -409,7 +414,10 @@ __wave_sta_get_errors_sent_stats_snapshot (const sta_entry* sta) {
          sta->sta_stats64_cntrs_snapshot.dropCntReasonSetKey +
          sta->sta_stats64_cntrs_snapshot.dropCntReasonDiscard +
          sta->sta_stats64_cntrs_snapshot.dropCntReasonDsabled +
-         sta->sta_stats64_cntrs_snapshot.dropCntReasonAggError;
+         sta->sta_stats64_cntrs_snapshot.dropCntReasonAggError +
+         sta->sta_stats64_cntrs_snapshot.dropCntReasonAqm +
+         /* From HostIfCountersPerSta: */
+         sta->sta_stats64_cntrs_snapshot.agerPdNoTransmitCountSta;
 }
 
 void
@@ -735,28 +743,79 @@ end:
 #endif
 
 #ifdef MTLK_WAVE_700
-#define MAX_NUM_OF_STA_PER_ML 2
+
+void __MTLK_IFUNC
+mtlk_sta_remove_mld_lock_acquire(sta_entry *sta)
+{
+  MTLK_ASSERT(NULL != sta);
+
+  if (sta->ml_sta_info.remove_sta_mld) {
+    mtlk_osal_lock_acquire(&sta->ml_sta_info.remove_sta_mld->lock);
+  }
+}
+
+void __MTLK_IFUNC
+mtlk_sta_remove_mld_lock_release(sta_entry *sta)
+{
+  MTLK_ASSERT(NULL != sta);
+  if (sta->ml_sta_info.remove_sta_mld) {
+    mtlk_osal_lock_release(&sta->ml_sta_info.remove_sta_mld->lock);
+  }
+}
+
+sta_entry* __MTLK_IFUNC
+mtlk_sta_get_ml_main_sta(sta_entry *sta)
+{
+  sta_entry *main_sta = NULL, *sibling_sta = NULL;
+  struct ieee80211_sta *mac80211_sta;
+  uint8 sib_idx;
+  MTLK_ASSERT(NULL != sta);
+
+  mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
+  if (!mac80211_sta->ml_sta_info.is_ml)
+    return NULL;
+  
+  if (wave_is_main_sta(sta))
+    main_sta = sta;
+  else {
+    for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+      sibling_sta = mtlk_get_sibling_sta(sta, sib_idx);
+      if (sibling_sta && wave_is_main_sta(sibling_sta)) {
+        main_sta = sibling_sta;
+        break;
+      }
+    }
+  }
+  return main_sta;
+}
+
 static void _mtlk_sta_ml_info_cleanup(sta_entry *sta)
 {
-#ifdef BEST_EFFORT_TID_SPREADING
-  sta_entry *linked_sta = sta->ml_sta_info.sibling_sta;
-  if (sta->ml_sta_info.sta_tid_spread_info) {
-    mtlk_osal_mem_free(sta->ml_sta_info.sta_tid_spread_info);
-    sta->ml_sta_info.sta_tid_spread_info = NULL;
-    if (linked_sta) {
-      linked_sta->ml_sta_info.sta_tid_spread_info = NULL;
-    }
-  }
-#endif /* BEST_EFFORT_TID_SPREADING */
+  uint32 remove_sta_cnt = 0;
+
   if (sta->ml_sta_info.remove_sta_mld) {
-    if (mtlk_osal_atomic_inc(&sta->ml_sta_info.remove_sta_mld->remove_sta_cnt) == (MAX_NUM_OF_STA_PER_ML)) {
+    mtlk_sta_remove_mld_lock_acquire(sta);
+    remove_sta_cnt = mtlk_osal_atomic_inc(&sta->ml_sta_info.remove_sta_mld->remove_sta_cnt);
+    mtlk_sta_remove_mld_lock_release(sta);
+    if (remove_sta_cnt == mtlk_sta_get_rem_count_limit(sta)) {
       mtlk_osal_lock_cleanup(&sta->ml_sta_info.remove_sta_mld->lock);
       mtlk_osal_mem_free(sta->ml_sta_info.remove_sta_mld);
+#ifdef BEST_EFFORT_TID_SPREADING
+      if (sta->ml_sta_info.sta_tid_spread_info != NULL) {
+        mtlk_osal_mem_free(sta->ml_sta_info.sta_tid_spread_info);
+      }
+#endif /* BEST_EFFORT_TID_SPREADING */
     }
   }
+  sta->ml_sta_info.rem_sta_mld_inprogress = FALSE;
   sta->ml_sta_info.remove_sta_mld = NULL;
   mtlk_osal_event_cleanup(&sta->ml_sta_info.ml_discnt_event);
+  sta->ml_sta_info.add_mld_done = FALSE;
+#ifdef BEST_EFFORT_TID_SPREADING
+  sta->ml_sta_info.sta_tid_spread_info = NULL;
+#endif /* BEST_EFFORT_TID_SPREADING */
 }
+
 #ifdef BEST_EFFORT_TID_SPREADING
 #define SKB_HASH_AGE_TIME   5000 /* msec */
 static void _wave_sta_tid_link_cleanup (sta_entry *sta, BOOL cleanup)
@@ -869,37 +928,92 @@ _mtlk_sta_cleanup (sta_entry *sta)
 }
 
 #ifdef MTLK_WAVE_700
+static uint8 __MTLK_IFUNC
+_wave_set_rem_sta_count_limit(uint8 link_type)
+{
+  uint8 rem_sta_limit = 0;
+  switch (link_type) {
+    case ML_STA_TYPE_DUAL_LINK: rem_sta_limit = ML_DUAL_LINK;    break;
+    case ML_STA_TYPE_TRI_LINK:  rem_sta_limit = ML_TRIPLE_LINK;  break;
+    default: break;
+  }
+  return rem_sta_limit;
+}
+
 void __MTLK_IFUNC
 wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 main_vap_id, wave_vap_id_t vap_id_fw)
 {
-  sta_entry *linked_sta = ml_sta_info->sibling_sta;
+  sta_entry *linked_sta = ml_sta_info->sibling_sta[ML_FISRT_SIBLING];
+  sta_entry *linked_sta2 = ml_sta_info->sibling_sta[ML_SECOND_SIBLING];
+  uint8 num_of_siblings = 0;
+  ml_sta_link_type_e link_type = ml_sta_info->link_type;
 
   MTLK_ASSERT(sta != NULL);
 
   if (!sta)
     return;
 
-  sta->ml_sta_info.sibling_sta = linked_sta;
+  switch (link_type) {
+    case ML_STA_TYPE_TRI_LINK:
+      num_of_siblings = 2;
+      break;
+    case ML_STA_TYPE_DUAL_LINK:
+      num_of_siblings = 1;
+      break;
+    case ML_STA_TYPE_SINGLE_LINK:
+    default:
+      num_of_siblings = 0;
+      break;
+  }
+
+  sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = linked_sta;
+  if (link_type == ML_STA_TYPE_TRI_LINK && linked_sta2)
+    sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = linked_sta2;
   /* update the main_vap_id */
   sta->info.MainVapId = main_vap_id;
   /* update mld sta supporting mode */
   sta->ml_sta_info.ml_supp_mode = ml_sta_info->ml_supp_mode;
   sta->ml_sta_info.assoc_vap_id_fw = vap_id_fw;
   sta->ml_sta_info.remove_sta_mld = ml_sta_info->remove_sta_mld;
+  sta->ml_sta_info.rem_sta_count_limit = _wave_set_rem_sta_count_limit(link_type);
+  sta->ml_sta_info.link_type = link_type;
+  sta->ml_sta_info.num_of_siblings = num_of_siblings;
 #ifdef BEST_EFFORT_TID_SPREADING
   sta->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
 #endif
 
   if (linked_sta) {
-    linked_sta->ml_sta_info.sibling_sta = sta;
+    linked_sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = sta;
+    if ((link_type == ML_STA_TYPE_TRI_LINK) && linked_sta2)
+      linked_sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = linked_sta2;
     /* update the main_vap_id */
     linked_sta->info.MainVapId = main_vap_id;
     /* update mld sta supporting mode */
     linked_sta->ml_sta_info.ml_supp_mode = ml_sta_info->ml_supp_mode;
     linked_sta->ml_sta_info.assoc_vap_id_fw = vap_id_fw;
     linked_sta->ml_sta_info.remove_sta_mld = ml_sta_info->remove_sta_mld;
+    linked_sta->ml_sta_info.rem_sta_count_limit = _wave_set_rem_sta_count_limit(link_type);
+    linked_sta->ml_sta_info.link_type = link_type;
+    linked_sta->ml_sta_info.num_of_siblings = num_of_siblings;
 #ifdef BEST_EFFORT_TID_SPREADING
     linked_sta->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
+#endif
+  }
+
+  if ((link_type == ML_STA_TYPE_TRI_LINK) && linked_sta && linked_sta2) {
+    linked_sta2->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = sta;
+    linked_sta2->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = linked_sta;
+    /* update the main_vap_id */
+    linked_sta2->info.MainVapId = main_vap_id;
+    /* update mld sta supporting mode */
+    linked_sta2->ml_sta_info.ml_supp_mode = ml_sta_info->ml_supp_mode;
+    linked_sta2->ml_sta_info.assoc_vap_id_fw = vap_id_fw;
+    linked_sta2->ml_sta_info.remove_sta_mld = ml_sta_info->remove_sta_mld;
+    linked_sta2->ml_sta_info.rem_sta_count_limit = _wave_set_rem_sta_count_limit(link_type);
+    linked_sta2->ml_sta_info.link_type = link_type;
+    linked_sta2->ml_sta_info.num_of_siblings = num_of_siblings;
+#ifdef BEST_EFFORT_TID_SPREADING
+    linked_sta2->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
 #endif
   }
 }
@@ -907,24 +1021,33 @@ wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 
 void __MTLK_IFUNC
 wave_cleanup_ml_sta_info (sta_entry *sta)
 {
-  sta_entry *linked_sta = sta->ml_sta_info.sibling_sta;
+  sta_entry *sib_sta = NULL;
+  uint8 sib_idx;
 
-  sta->ml_sta_info.rem_sta_mld_done = TRUE;
-  sta->ml_sta_info.sibling_sta = NULL;
 #ifdef BEST_EFFORT_TID_SPREADING
-  if (sta->ml_sta_info.sta_tid_spread_info) {
+  if (sta->ml_sta_info.sta_tid_spread_info != NULL) {
     mtlk_osal_mem_free(sta->ml_sta_info.sta_tid_spread_info);
     sta->ml_sta_info.sta_tid_spread_info = NULL;
   }
-#endif
-  /* MLSR/EMLSR/STR */
-  if (linked_sta) {
-    linked_sta->ml_sta_info.rem_sta_mld_done = TRUE;
-    linked_sta->ml_sta_info.sibling_sta = NULL;
+#endif /* BEST_EFFORT_TID_SPREADING */
+
+  for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+    sib_sta = mtlk_get_sibling_sta(sta, sib_idx);
+    if (sib_sta) {
+      sib_sta->ml_sta_info.rem_sta_mld_done = TRUE;
+      sib_sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = NULL;
+      sib_sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = NULL;
+      sib_sta->ml_sta_info.link_type = ML_STA_TYPE_NONE;
 #ifdef BEST_EFFORT_TID_SPREADING
-    linked_sta->ml_sta_info.sta_tid_spread_info = NULL;
-#endif
+      sib_sta->ml_sta_info.sta_tid_spread_info = NULL;
+#endif /* BEST_EFFORT_TID_SPREADING */
+    }
   }
+
+  sta->ml_sta_info.rem_sta_mld_done = TRUE;
+  sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = NULL;
+  sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = NULL;
+  sta->ml_sta_info.link_type = ML_STA_TYPE_NONE;
 }
 
 static void
@@ -1602,7 +1725,8 @@ _wave_calculate_str_sta_effective_rates (sta_entry *sta)
   if (!(info->active) || (info->tid_spreading_mode != TID_SPREAD_DYNAMIC) || !ml_sta_tid_spread_info)
     return;
 
-  sibling_sta = sta->ml_sta_info.sibling_sta;
+  // TODO WLANRTSYS-95778: take only first sibling for now - align TID spreading for 3 band MLD
+  sibling_sta = mtlk_get_sibling_sta(sta, 0);
   MTLK_ASSERT(sibling_sta != NULL);
 
   sibling_vap_handle = sibling_sta->vap_handle;
@@ -1717,7 +1841,8 @@ wave_get_ml_str_sta_tid_spread_stat (sta_db *stadb, mtlk_clpb_t *clpb)
           sta = mtlk_stadb_iterate_next(&iter);
           continue;
         }
-        sibling_sta = sta->ml_sta_info.sibling_sta;
+          // TODO WLANRTSYS-95778: take only first sibling for now - align TID spreading for 3 band MLD
+        sibling_sta = mtlk_get_sibling_sta((sta_entry *)sta, 0);
         mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
         memset(&stadb_stat, 0, sizeof(stadb_stat));
 

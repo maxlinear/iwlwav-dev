@@ -46,7 +46,7 @@
     \brief Default management message sending timeout.
 */
 #ifdef MTLK_LGM_PLATFORM_FPGA
-/* LGM FPGA works very slow */
+  /* LGM (Host) FPGA works very slow relative to WiFi card*/
 #define MTLK_MM_BLOCKED_SEND_TIMEOUT (30000/10) /* ms */
 #else
 #define MTLK_MM_BLOCKED_SEND_TIMEOUT 30000    /* ms */

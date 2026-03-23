@@ -92,6 +92,9 @@ extern int cpu_dma_latency;
 extern int logger_fifo_cfg;
 #endif
 
+#ifdef MTLK_DEBUG
+extern int jtag_debugging;
+#endif
 /**************************************************************
  *  Export global interfaces                                  *
  **************************************************************/

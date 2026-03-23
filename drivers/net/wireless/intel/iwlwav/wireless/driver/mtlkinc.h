@@ -197,7 +197,12 @@ typedef uint16      K_MSG_TYPE;
 /* #define MTLK_LGM_PLATFORM_FPGA */
 #endif
 
-#if defined(MTLK_PUMA_PLATFORM) || defined(MTLK_LGM_PLATFORM)
+#ifdef CONFIG_SOC_MXL
+#define MTLK_TOPAZ_PLATFORM
+#define MTLK_TOPAZ_PLATFORM_FPGA
+#endif
+
+#if defined(MTLK_PUMA_PLATFORM) || defined(MTLK_LGM_PLATFORM) || defined(MTLK_TOPAZ_PLATFORM)
 #define MTLK_WAVE_700
 #endif
 
@@ -206,7 +211,7 @@ typedef uint16      K_MSG_TYPE;
 #define OTF_MLO_STR_TID_SPREADING /* Enable Static tid spreading with 1:1 tid split ratio */
 #endif
 
-#if defined(MTLK_PUMA_PLATFORM) || defined(MTLK_LGM_PLATFORM)
+#if defined(MTLK_PUMA_PLATFORM) || defined(MTLK_LGM_PLATFORM) || defined(MTLK_TOPAZ_PLATFORM)
 #define WAVE_VAPID_CONVERT_IN_DRV
 #endif
 
