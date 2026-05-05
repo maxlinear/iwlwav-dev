@@ -5028,12 +5028,20 @@ static int _wave_cfg80211_vendor_set_bss_critical_update_info (struct wiphy *wip
   df_user = mtlk_df_user_from_wdev(wdev);
   MTLK_CHECK_DF_USER(df_user);
 
+  if (ml_critical_update->mbss_info.use_mbss_info &&
+      (ml_critical_update->mbss_info.num_reporting_mld_links > MBSSID_NON_TX_MLD_REPORTING_LINKS)) {
+      WLOG_S("%s: invalid num of reporting links", wdev->netdev->name);
+      res = MTLK_ERR_PARAMS;
+      goto end;
+  }
+
   res = _mtlk_df_user_invoke_core(mtlk_df_user_get_df(df_user),
     WAVE_CORE_REQ_SET_ML_CRITICAL_UPDATE, &clpb, ml_critical_update,
     sizeof(struct mxl_vendor_ml_critical_update));
   res = _mtlk_df_user_process_core_retval(res, clpb,
     WAVE_CORE_REQ_SET_ML_CRITICAL_UPDATE, TRUE);
 
+end:
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
@@ -5804,6 +5812,20 @@ int _wave_ieee80211_vendor_get_FixedPower(struct wiphy *wiphy, struct wireless_d
 {
   ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   return get_int_params(wiphy, wdev, data, data_len, PRM_ID_FIXED_POWER, 4);
+}
+
+static int _wave_cfg80211_vendor_set_mru_tx_power_enable(struct wiphy *wiphy, struct wireless_dev *wdev,
+  const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_MRU_TX_POWER_ENABLE);
+}
+
+static int _wave_cfg80211_vendor_get_mru_tx_power_enable (struct wiphy *wiphy, struct wireless_dev *wdev,
+  const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_MRU_TX_POWER_ENABLE, 1);
 }
 
 
@@ -7293,6 +7315,9 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
 
   VENDOR_CMD_WDEV(SET_FIXED_POWER, _wave_ieee80211_vendor_set_FixedPower),
   VENDOR_CMD_WDEV(GET_FIXED_POWER, _wave_ieee80211_vendor_get_FixedPower),
+
+  VENDOR_CMD_WDEV(SET_MRU_TX_POWER_ENABLE, _wave_cfg80211_vendor_set_mru_tx_power_enable),
+  VENDOR_CMD_WDEV(GET_MRU_TX_POWER_ENABLE, _wave_cfg80211_vendor_get_mru_tx_power_enable),
 
   /******************** DEBUG COMMANDS ********************/
 #ifdef CONFIG_WAVE_DEBUG

@@ -109,6 +109,8 @@ static const mtlk_ability_id_t _radio_general_abilities[] = {
   WAVE_RADIO_REQ_GET_RADIO_PEER_LIST,
   WAVE_RADIO_REQ_UPDATE_WIPHY_REGDB,
   WAVE_RADIO_REQ_UPDATE_AFC_REG_INFO,
+  WAVE_CORE_REQ_SET_MRU_TX_POWER_ENABLE,
+  WAVE_CORE_REQ_GET_MRU_TX_POWER_ENABLE,
 
 /* DEBUG ABILITIES */
 #ifdef CONFIG_WAVE_DEBUG
@@ -116,8 +118,8 @@ static const mtlk_ability_id_t _radio_general_abilities[] = {
   WAVE_RADIO_REQ_SET_FW_LOG_SEVERITY,
   WAVE_RADIO_REQ_SET_DEBUG_CMD_FW,
   WAVE_RADIO_REQ_SET_MTLK_DEBUG,
-  WAVE_RADIO_REQ_GET_MU_GROUP_PLAN,
 #endif
+  WAVE_RADIO_REQ_GET_MU_GROUP_PLAN,
 };
 
 static const mtlk_ability_id_t _radio_ap_general_abilities[] = {

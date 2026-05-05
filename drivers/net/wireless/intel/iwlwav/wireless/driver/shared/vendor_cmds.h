@@ -425,6 +425,8 @@ enum ltq_nl80211_vendor_subcmds {
   LTQ_NL80211_VENDOR_SUBCMD_SET_PCIE_AUTO_GEN_ENABLE,
   LTQ_NL80211_VENDOR_SUBCMD_SET_VW_TEST_MODE,
   LTQ_NL80211_VENDOR_SUBCMD_GET_VW_TEST_MODE,
+  LTQ_NL80211_VENDOR_SUBCMD_SET_MRU_TX_POWER_ENABLE,
+  LTQ_NL80211_VENDOR_SUBCMD_GET_MRU_TX_POWER_ENABLE,
   LTQ_NL80211_VENDOR_SUBCMD_SET_PBAC,
   LTQ_NL80211_VENDOR_SUBCMD_SET_AQM_STA_EN,
   LTQ_NL80211_VENDOR_SUBCMD_GET_AQM_STA_EN,
@@ -761,11 +763,14 @@ typedef enum {
 #define MLD_LINK_TYPE_DUAL_LINK       2
 #define MLD_LINK_TYPE_TRI_LINK        3
 
+#define MLO_LINK_STAT_BAND_INVALID    0xFF
+
 struct ml_link_stats {
   u32 link_active_time[MLD_MAX_ACTIVE_LINKS]; /* In usec */
   u8 current_ml_operating_mode;
   u8 main_band;
   u8 secondary_band;
+  u8 third_band;
 } __attribute__ ((packed));
 
 struct ml_vap_list {
@@ -1016,10 +1021,26 @@ struct mxl_sta_mld_remove {
   u8 sendto_fw;
 } __attribute__ ((packed));
 
+/* BSS critical update flags */
+#define BSS_CRITICAL_UPDATE_COMMON            (1U << 0)  /* 0x01 - Common Info update */
+#define BSS_CRITICAL_UPDATE_CSA               (1U << 1)  /* 0x02 - Channel Switch */
+#define ML_PER_STA_PROF_MCST                  (1U << 2)  /* 0x04 - Per-STA Profile MCST */
+#define NON_TX_BSS_CRITICAL_UPDATE_COMMON     (1U << 3)  /* 0x08 - Non-TX BSS Common */
+#define NON_TX_BSS_CRITICAL_UPDATE_CSA        (1U << 4)  /* 0x10 - Non-TX BSS CSA */
+#define ML_NON_TX_BSS_PER_STA_PROF_MCST       (1U << 5)  /* 0x20 - Non-TX Per-STA Profile MCST */
+
+#define MBSSID_NON_TX_MLD_REPORTING_LINKS     (5)
+struct mxl_vendor_ml_mbss_info {
+  u8 use_mbss_info;
+  u8 num_reporting_mld_links;
+  u8 mld_id[MBSSID_NON_TX_MLD_REPORTING_LINKS];
+} __attribute__ ((packed));
+
 struct mxl_vendor_ml_critical_update {
   u8  flags;
   u8  op_class;
   u32 max_chan_switch_time;
+  struct mxl_vendor_ml_mbss_info mbss_info;
 } __attribute__ ((packed));
 
 /* Filter values and filter len for the type10 classifier is obtained *

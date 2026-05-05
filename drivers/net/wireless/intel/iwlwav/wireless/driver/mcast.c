@@ -811,9 +811,13 @@ mtlk_mc_transmit (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_data, uint32 
     if (sta) {
       do {
         /* ignore sending to itself or to non-4addr clients */
-        if ((sta->peer_ap || mtlk_sta_is_4addr(sta)) && (sta != src_sta)){
-          clone_data.dst_sta = (sta_entry *)sta;
+        if (sta->peer_ap || mtlk_sta_is_4addr(sta)) {
           wds_sta_num++;
+          if (sta == src_sta) {
+            sta = mtlk_stadb_iterate_next(&iter);
+            continue;
+          }
+          clone_data.dst_sta = (sta_entry *)sta;
 
           mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
           if (mac80211_sta->ml_sta_info.is_ml) {

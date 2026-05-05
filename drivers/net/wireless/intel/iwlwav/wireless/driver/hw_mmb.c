@@ -14,6 +14,7 @@
 #include "mtlkinc.h"
 #include "eeprom.h"
 #include "mtlk_eeprom.h"
+#include "fw_recovery.h"
 
 #define SAFE_PLACE_TO_DEFINE_CHIP_INFO
 
@@ -31,6 +32,8 @@
 /**************************************************************/
 /* TODO: DEV_DF made external for init in DFG will be fixed */
 mtlk_hw_mmb_t mtlk_mmb_obj;
+static uint32 g_rx_corrupted_frame_count = 0;
+static uint32 g_rx_corrupted_frame_count_threshold = 10;
 
 static char *band_cfg_to_str[] = {
   "WAVE_HW_RADIO_BAND_CFG_UNSUPPORTED",
@@ -9601,7 +9604,26 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
 
     if (data.make_assert ) {
         ELOG_D("Corrupted frame err_code:%d", res);
-        goto critical_error;
+        g_rx_corrupted_frame_count++;
+        ILOG0_DDD("CID-%02x: Corrupted frame received, err_code:%d, total count:%u", hw->card_idx, res, g_rx_corrupted_frame_count);
+        if (g_rx_corrupted_frame_count >= g_rx_corrupted_frame_count_threshold) {
+           ELOG_D("CID-%02x: Corrupted frame recovery threshold exceeded, triggering unrecoverable error", hw->card_idx);
+           g_rx_corrupted_frame_count = 0;
+          wave_rcvry_drv_assert_unrecoverable_error_set();
+          goto critical_error;
+        } else {
+           ILOG0_DDD("CID-%02x: Corrupted frame count %u, threshold %u", hw->card_idx, g_rx_corrupted_frame_count, g_rx_corrupted_frame_count_threshold);
+           __wave_hw_dump_ring_variables(&hw->bss_mgmt.rx_ring, "RxMgmt");
+           __wave_hw_dump_hd(&hd_copy);
+           /* Remap buffer before returning HD to firmware for reuse */
+           dma_addr = mtlk_osal_map_to_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr), buf, total_size, MTLK_DATA_FROM_DEVICE);
+           if (!dma_addr) {
+             ELOG_P("Failed remapping 0x%p for dropped frame", buf);
+             goto critical_error;
+           }
+           goto send_resp; /* skip this frame but do not reset HW yet */
+         }
+
     }
   }
 

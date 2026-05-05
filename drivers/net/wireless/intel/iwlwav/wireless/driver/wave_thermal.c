@@ -111,8 +111,8 @@ wave_thermal_zone_get_temp (struct thermal_zone_device *dev, int *temperature)
   radio_idx = wave_radio_id_get(radio);
 
   master_core = wave_radio_master_core_get(radio);
-  if (mtlk_core_get_net_state(master_core) != NET_STATE_CONNECTED) {
-  /* send the default temperature value to upper layer before interface UP */
+  if (mtlk_core_get_net_state(master_core) < NET_STATE_READY) {
+  /* VAP is not yet in ready state, return default temperature */
   /* convert to millicelsius */
     *temperature = DEFAULT_TEMPERATURE_VALUE * MILLIDEGREE_PER_DEGREE;
     ILOG3_DD("Thermal: Band-%d Default temperature %d", wave_band, *temperature);

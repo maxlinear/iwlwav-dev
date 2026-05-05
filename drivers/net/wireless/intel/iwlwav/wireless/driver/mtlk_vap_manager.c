@@ -584,6 +584,30 @@ mtlk_vap_get_sibling_vap_handle_by_link_id(mtlk_vap_handle_t ref_vap_handle,
   return MTLK_ERR_NO_ENTRY;
 }
 
+mtlk_error_t __MTLK_IFUNC
+wave_vap_manager_get_vap_handle_by_mld_id (mtlk_vap_manager_t *obj,
+                                           uint8              mld_id,
+                                           mtlk_vap_handle_t  *vap_handle)
+{
+  int vap_index;
+  int max_vaps_count = 0;
+  u8 other_mld_id;
+  MTLK_ASSERT(NULL != obj);
+
+  max_vaps_count = mtlk_vap_manager_get_max_vaps_count(obj);
+  for (vap_index = 0; vap_index < max_vaps_count; vap_index++) {
+    mtlk_vap_handle_t vap = __mtlk_vap_manager_vap_handle_by_id(obj, vap_index);
+    if (vap && mtlk_vap_ml_configured(vap)) {
+      other_mld_id = MTLK_CORE_PDB_GET_INT(mtlk_vap_get_core(vap), PARAM_DB_CORE_MLD_ID);
+      if (other_mld_id == mld_id) {
+        *vap_handle = vap;
+        return MTLK_ERR_OK;
+      }
+    }
+  }
+  return MTLK_ERR_PARAMS;
+}
+
 void __MTLK_IFUNC
 wave_vap_manager_update_ml_vap_info (mtlk_vap_handle_t vap_handle,
                                     mtlk_ml_vap_info_t ml_vap_info)

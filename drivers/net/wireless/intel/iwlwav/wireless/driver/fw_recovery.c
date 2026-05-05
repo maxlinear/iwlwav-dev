@@ -58,6 +58,34 @@ static const uint32 wave_rcvry_wss_cnt_id_map[] =
   MTLK_WWSS_WLAN_STAT_ID_NOF_FULL_RCVRY_FAILED,     /* RCVRY_NOF_FULL_RCVRY_FAILED */
 };
 
+/* Global flag to trigger unrecoverable error from driver assertion */
+static atomic_t g_drv_assert_unrecoverable_error_pending = { 0 };
+
+/* Setter for driver unrecoverable error flag */
+static __INLINE void _drv_assert_unrecoverable_error_set(void)
+{
+  atomic_set(&g_drv_assert_unrecoverable_error_pending, 1);
+}
+
+/* Getter for driver unrecoverable error flag */
+static __INLINE BOOL _drv_assert_unrecoverable_error_get(void)
+{
+  return (atomic_read(&g_drv_assert_unrecoverable_error_pending) != 0);
+}
+
+/* Clear/reset the driver unrecoverable error flag */
+static __INLINE void _drv_assert_unrecoverable_error_clear(void)
+{
+  atomic_set(&g_drv_assert_unrecoverable_error_pending, 0);
+}
+
+/* Public function to set driver unrecoverable error flag */
+void wave_rcvry_drv_assert_unrecoverable_error_set(void)
+{
+  _drv_assert_unrecoverable_error_set();
+  ELOG_V("Driver assertion triggered unrecoverable error flag");
+}
+
 /* VAP info (per radio instance) */
 typedef struct {
   uint8             vap_number;             /* VAP global number */
@@ -2245,8 +2273,13 @@ static wave_rcvry_type_e _rcvry_type_current_determine (wave_rcvry_task_ctx_t *r
 
   /* Determine Recovery type */
 
+  if (_drv_assert_unrecoverable_error_get()) {
+    type = RCVRY_TYPE_UNRECOVERABLE_ERROR;
+    __rcvry_type_global_set(type);
+    ELOG_V("Driver unrecoverable error detected - forcing UNRECOVERABLE_ERROR recovery");
+  }
   /* Note: None Recovery can be executed only once */
-  if (__rcvry_cnt_current_get(rcvry_ctx, RCVRY_TYPE_NONE) > 0)
+  else if (__rcvry_cnt_current_get(rcvry_ctx, RCVRY_TYPE_NONE) > 0)
     type = RCVRY_TYPE_IGNORE;
   else {
     if (_wv_rcvry_is_enabled(rcvry_ctx)) {
@@ -2519,12 +2552,21 @@ static int _wave_rcvry_nl_process_msg_dump_send (wave_rcvry_card_cfg_t *pcard)
 static int wave_rcvry_nl_send_msg_unrecoverable_error (wave_rcvry_card_cfg_t *pcard)
 {
   struct intel_vendor_unrecoverable_error_info unrecoverable_error_nl_event_data = { 0 };
+  int res;
 
   unrecoverable_error_nl_event_data.card_idx = pcard->card_idx;
 
   /* Send message */
-  return _rcvry_nl_send_msg(LTQ_NL80211_VENDOR_EVENT_UNRECOVERABLE_ERROR, pcard,
-                            &unrecoverable_error_nl_event_data, sizeof(unrecoverable_error_nl_event_data), "Unrecoverable Error event");
+  res = _rcvry_nl_send_msg(LTQ_NL80211_VENDOR_EVENT_UNRECOVERABLE_ERROR, pcard,
+                           &unrecoverable_error_nl_event_data, sizeof(unrecoverable_error_nl_event_data), "Unrecoverable Error event");
+
+  /* Reset the driver unrecoverable error flag after message is sent */
+  if (res == MTLK_ERR_OK) {
+    _drv_assert_unrecoverable_error_clear();
+    ILOG1_V("Driver unrecoverable error flag cleared after netlink message sent");
+  }
+
+  return res;
 }
 
 int wave_rcvry_process_msg_unrecoverable_error (const void *mmb_base)

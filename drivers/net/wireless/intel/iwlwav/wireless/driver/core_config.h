@@ -327,6 +327,9 @@ int __MTLK_IFUNC wave_core_get_logger_fifo_mux_cfg (mtlk_handle_t hcore, const v
 
 mtlk_error_t __MTLK_IFUNC wave_core_set_fixed_rate_thermal (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC wave_core_get_fixed_rate_thermal (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_set_mru_tx_power_enable (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_get_mru_tx_power_enable (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_recover_mru_tx_power_enable (mtlk_core_t *core);
 
 mtlk_error_t __MTLK_IFUNC wave_core_get_is_zwdfs_background_supp (mtlk_handle_t hcore, const void* data, uint32 data_size);
 
@@ -520,10 +523,10 @@ int __MTLK_IFUNC wave_core_send_test_bus_mode         (mtlk_core_t *core, const 
 int __MTLK_IFUNC mtlk_core_cfg_get_multi_ap_blacklist_entries (mtlk_handle_t hcore, const void* data, uint32 data_size);
 int __MTLK_IFUNC mtlk_core_cfg_get_wds_wpa_entry      (mtlk_handle_t hcore, const void* data, uint32 data_size);
 int __MTLK_IFUNC wave_core_cfg_set_debug_cmd          (mtlk_handle_t hcore, const void* data, uint32 data_size);
-mtlk_error_t __MTLK_IFUNC wave_core_get_mu_group_plan (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC mtlk_core_set_mtlk_log_level (mtlk_handle_t hcore, const void* data, uint32 data_size);
 
 #endif /* CONFIG_WAVE_DEBUG */
+mtlk_error_t __MTLK_IFUNC wave_core_get_mu_group_plan (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC mtlk_core_send_fixed_pwr_cfg (mtlk_core_t *core, FIXED_POWER *fixed_pwr_params);
 mtlk_error_t __MTLK_IFUNC mtlk_core_store_and_send_fixed_pwr_cfg (mtlk_core_t *core, FIXED_POWER *fixed_pwr_params);
 mtlk_error_t __MTLK_IFUNC wave_core_cfg_send_and_store_fixed_rate_thermal_cfg (mtlk_core_t *core, wave_thermal_cfg_t *rate_thermal_params);

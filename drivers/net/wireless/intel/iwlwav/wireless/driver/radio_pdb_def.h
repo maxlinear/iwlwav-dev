@@ -78,6 +78,7 @@ static const mtlk_country_code_t wave_radio_initial_country_code = { { COUNTRY_C
 static const iwpriv_cca_th_t wave_radio_initial_cca_threshold = { { -62, -62, -72, -72, -69 }, 1 };
 static const iwpriv_cca_adapt_t wave_radio_initial_cca_intervals = { 0, 0, -1, 10, 5, 30, 60 };
 static const uint32  wave_radio_initial_radio_mode = WAVE_RADIO_ON; /* Radio is ON */
+static const uint32  wave_radio_initial_mru_tx_power_enable = 0; /* Disabled by default */
 static const uint32  wave_radio_initial_radar_rssi_thresh_cfg = WAVE_RADAR_DETECTION_RSSI_TH_INVALID;
 static const uint32  wave_radio_initial_fils_beacon_flag = 1;
 static const uint32  wave_radio_initial_bf_mode = 0;
@@ -199,6 +200,7 @@ static const mtlk_pdb_initial_value wave_radio_parameters[] =
   {PARAM_DB_RADIO_QAMPLUS_MODE,                               PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32), &wave_radio_initial_invalid_uint32},
   {PARAM_DB_RADIO_MODE_CURRENT,                               PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_radio_mode),     &wave_radio_initial_radio_mode},
   {PARAM_DB_RADIO_MODE_REQUESTED,                             PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_radio_mode),     &wave_radio_initial_radio_mode},
+  {PARAM_DB_RADIO_MRU_TX_POWER_ENABLE,                        PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_mru_tx_power_enable),     &wave_radio_initial_mru_tx_power_enable},
   {PARAM_DB_RADIO_ACS_UPDATE_TO,                              PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_zero_int),       &wave_radio_initial_zero_int},
   {PARAM_DB_RADIO_MU_OPERATION,                               PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32), &wave_radio_initial_invalid_uint32},
   {PARAM_DB_RADIO_RADAR_RSSI_TH,                              PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_radar_rssi_thresh_cfg), &wave_radio_initial_radar_rssi_thresh_cfg},

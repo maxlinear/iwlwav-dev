@@ -1714,6 +1714,7 @@ mtlk_core_analyze_and_send_up (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_
     #endif
           } else {
             ILOG3_V("Loop detected ! Don't forward packet !");
+            nbuf_flags |= MTLK_NBUFF_CONSUME; /* still deliver to local stack */
           }
         } else nbuf_flags |= MTLK_NBUFF_CONSUME; /* let the system forward - dst STA not found */
       } else nbuf_flags |= MTLK_NBUFF_CONSUME; /* let the system forward - FWD disabled */
@@ -5047,15 +5048,19 @@ _mtlk_core_set_nickname_by_cfg(mtlk_core_t *core, mtlk_gen_core_cfg_t *core_cfg)
 
 int mtlk_core_set_essid_by_cfg(mtlk_core_t *core, mtlk_gen_core_cfg_t *core_cfg)
 {
+  int res = MTLK_ERR_OK;
   u32 ap_short_ssid = 0;
-  int res = MTLK_CORE_PDB_SET_BINARY(core, PARAM_DB_CORE_ESSID, core_cfg->essid, wave_strlen(core_cfg->essid, MAX_SSID_LEN));
-  if (MTLK_ERR_OK != res) {
-    ELOG_DD("CID-%04x: Can't store ESSID (err=%d)", mtlk_vap_get_oid(core->vap_handle), res);
-  } else {
-    ILOG2_DS("CID-%04x: Set ESSID to \"%s\"", mtlk_vap_get_oid(core->vap_handle), core_cfg->essid);
+  u32 hidden_ssid = MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_HIDDEN_SSID);
+  if (!hidden_ssid) {
+    res = MTLK_CORE_PDB_SET_BINARY(core, PARAM_DB_CORE_ESSID, core_cfg->essid, wave_strlen(core_cfg->essid, MAX_SSID_LEN));
+    if (MTLK_ERR_OK != res) {
+      ELOG_DD("CID-%04x: Can't store ESSID (err=%d)", mtlk_vap_get_oid(core->vap_handle), res);
+    } else {
+      ILOG2_DS("CID-%04x: Set ESSID to \"%s\"", mtlk_vap_get_oid(core->vap_handle), core_cfg->essid);
+    }
+    /* Compute short SSID and store it in Param DB for later use */
+    ap_short_ssid = cpu_to_le32(ieee80211_crc32(core_cfg->essid, wave_strlen(core_cfg->essid, MAX_SSID_LEN)));
   }
-  /* Compute short SSID and store it in Param DB for later use */
-  ap_short_ssid = cpu_to_le32(ieee80211_crc32(core_cfg->essid, wave_strlen(core_cfg->essid, MAX_SSID_LEN)));
   wave_pdb_set_int(mtlk_vap_get_param_db(core->vap_handle), PARAM_DB_CORE_SHORT_SSID, ap_short_ssid);
   return res;
 }
@@ -10412,8 +10417,11 @@ mtlk_core_handle_tx_ctrl (mtlk_vap_handle_t    vap_handle,
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_LA_MU_HE_EHT_STATS,    wave_core_get_la_mu_he_eht_stats);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,    wave_core_set_fixed_rate_thermal);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,    wave_core_get_fixed_rate_thermal);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_MRU_TX_POWER_ENABLE,   wave_core_set_mru_tx_power_enable);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_MRU_TX_POWER_ENABLE,   wave_core_get_mru_tx_power_enable);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_MSCS_ADD,                   wave_core_mscs_add_req);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_MSCS_REM,                   wave_core_mscs_rem_req);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_RADIO_REQ_GET_MU_GROUP_PLAN,         wave_core_get_mu_group_plan);
 
 /* DEBUG COMMANDS */
 #ifdef CONFIG_WAVE_DEBUG
@@ -10487,7 +10495,6 @@ mtlk_core_handle_tx_ctrl (mtlk_vap_handle_t    vap_handle,
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_RADIO_PHY_RX_STATS,    wave_core_get_radio_phy_rx_statistics);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_DYNAMIC_BW_STATS,      wave_core_get_dynamic_bw_statistics);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_LA_MU_VHT_STATS,       wave_core_get_la_mu_vht_statistics);
-    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_RADIO_REQ_GET_MU_GROUP_PLAN,        wave_core_get_mu_group_plan);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_RADIO_REQ_GET_CSI_CAPABILITY,       wave_core_get_csi_capability);
 
 #endif /* CONFIG_WAVE_DEBUG */
@@ -12178,6 +12185,10 @@ static int _core_on_rcvry_configure (mtlk_core_t *core, uint32 target_net_state)
 
     RECOVERY_INFO("set Dynamic EDCA", core_oid);
     res = _wave_core_recover_dynamic_edca(core);
+    if (res != MTLK_ERR_OK) { goto ERR_END; }
+
+    RECOVERY_INFO("set MRU TX power enable", core_oid);
+    res = wave_core_recover_mru_tx_power_enable(core);
     if (res != MTLK_ERR_OK) { goto ERR_END; }
   }
 

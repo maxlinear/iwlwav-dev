@@ -9215,10 +9215,13 @@ FINISH:
 
 #ifdef BEST_EFFORT_TID_SPREADING
 static wave_ml_vap_str_tid_spreading_info_t *
-_wave_core_create_vap_tid_spread_info(mtlk_core_t *core, wave_radio_t *sib_radio, mtlk_vap_handle_t sibling_vap_handle)
+_wave_core_create_vap_tid_spread_info(mtlk_core_t *core, mtlk_ml_vap_info_t *ml_vap_info)
 {
   wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info = NULL;
-  struct mtlk_chan_def *current_chandef, *sibling_chandef;
+  mtlk_core_t       *sib_core = NULL;
+  mtlk_vap_handle_t high_bw_vap, sec_high_bw_vap, sib_vap_handle;
+  struct mtlk_chan_def *high_chandef = NULL, *second_high_chandef = NULL, *sibling_chandef = NULL;
+  uint8 sib_idx;
 
   /* Init is only valid for dual band MLD */
   ml_vap_tid_spread_info = mtlk_osal_mem_alloc(sizeof(wave_ml_vap_str_tid_spreading_info_t), WAVE_MEM_TAG_TID_LINK_SPREADING);
@@ -9227,21 +9230,45 @@ _wave_core_create_vap_tid_spread_info(mtlk_core_t *core, wave_radio_t *sib_radio
     return NULL;
   }
   memset(ml_vap_tid_spread_info, 0, sizeof(wave_ml_vap_str_tid_spreading_info_t));
-  current_chandef = __wave_core_chandef_get(core);
-  sibling_chandef = wave_radio_chandef_get(sib_radio);
+
+  /* Find the highest and second highest bw vap */
+  sec_high_bw_vap = MTLK_INVALID_VAP_HANDLE;
+  high_bw_vap = core->vap_handle;
+  high_chandef = __wave_core_chandef_get(core);
+  for (sib_idx = 0; sib_idx < ml_vap_info->num_of_sibling_vaps; sib_idx++) {
+    sib_vap_handle = ml_vap_info->sibling_handles[sib_idx];
+    if (sib_vap_handle == MTLK_INVALID_VAP_HANDLE)
+      continue;
+    sib_core = mtlk_vap_get_core(sib_vap_handle);
+    MTLK_ASSERT(NULL != sib_core);
+    sibling_chandef = __wave_core_chandef_get(sib_core);
+    MTLK_ASSERT(NULL != sibling_chandef);
+    if (sibling_chandef->width > high_chandef->width) {
+      /* New highest found - demote current highest to second */
+      sec_high_bw_vap = high_bw_vap;
+      second_high_chandef = high_chandef;
+      high_bw_vap = sib_vap_handle;
+      high_chandef = sibling_chandef;
+    } else if ((sec_high_bw_vap == MTLK_INVALID_VAP_HANDLE) || 
+               (sibling_chandef->width > second_high_chandef->width)) {
+      /* Update second highest */
+      sec_high_bw_vap = sib_vap_handle;
+      second_high_chandef = sibling_chandef;
+    }
+  }
   ml_vap_tid_spread_info->active = TRUE;
 #ifdef OTF_MLO_STR_TID_SPREADING
   ml_vap_tid_spread_info->tid_spreading_mode = TID_SPREAD_STATIC;
 #else
   ml_vap_tid_spread_info->tid_spreading_mode = TID_SPREAD_DYNAMIC;
 #endif /* OTF_MLO_STR_TID_SPREADING */
-  if (current_chandef->width > sibling_chandef->width) {
-    ml_vap_tid_spread_info->tid_split_ratio = wave_core_find_tid_flip_ratio(current_chandef->width, sibling_chandef->width);
-    ml_vap_tid_spread_info->high_bw_vap = core->vap_handle;
+  if (high_chandef && second_high_chandef) {
+    ml_vap_tid_spread_info->tid_split_ratio = wave_core_find_tid_flip_ratio(high_chandef->width, second_high_chandef->width);
   } else {
-    ml_vap_tid_spread_info->tid_split_ratio = wave_core_find_tid_flip_ratio(sibling_chandef->width, current_chandef->width);
-    ml_vap_tid_spread_info->high_bw_vap = sibling_vap_handle;
+    ILOG0_D("CID-%04x: Unable to set tid split ratio, using static", mtlk_vap_get_oid(core->vap_handle));
+    ml_vap_tid_spread_info->tid_split_ratio = STATIC_TID_SPREAD_RATIO;
   }
+  ml_vap_tid_spread_info->high_bw_vap = high_bw_vap;
 #ifdef OTF_MLO_STR_TID_SPREADING
   ml_vap_tid_spread_info->tid_split_ratio = STATIC_TID_SPREAD_RATIO;
 #endif /* OTF_MLO_STR_TID_SPREADING */
@@ -9285,28 +9312,6 @@ _wave_core_update_ml_vap_info (mtlk_core_t *core,  struct _mxl_vendor_mld_info *
       if (result == MTLK_ERR_OK) {
         ml_vap_info.sibling_handles[sib_id] = sibling_vap_handle;
         ml_vap_info.num_of_sibling_vaps++;
-  #ifdef BEST_EFFORT_TID_SPREADING
-        /* Allocate vap tid spread info only once */
-        if (ml_vap_info.tid_spread_info == NULL) {
-          /* TODO: align to Triband MLD */
-          ml_vap_tid_spread_info = _wave_core_create_vap_tid_spread_info(core, radio, sibling_vap_handle);
-          if (ml_vap_tid_spread_info == NULL)
-            ELOG_D("CID-%04x: Can't create ml_vap_tid_spread_info", mtlk_vap_get_oid(core->vap_handle));
-          else
-            ml_vap_info.tid_spread_info = ml_vap_tid_spread_info;
-        }
-  #endif /* BEST_EFFORT_TID_SPREADING */
-
-        /* Allocate vap rem lock only once */
-        if (ml_vap_info.ml_vap_rem_sync_lock == NULL) {
-          ml_vap_lock = mtlk_osal_mem_alloc(sizeof(mtlk_osal_spinlock_t), WAVE_MEM_TAG_MLD_VAP_LOCK);
-          if (ml_vap_lock == NULL) {
-            ELOG_D("CID-%04x: Can't allocate memory for ml_vap_lock", mtlk_vap_get_oid(core->vap_handle));
-          } else {
-            mtlk_osal_lock_init(ml_vap_lock);
-            ml_vap_info.ml_vap_rem_sync_lock = ml_vap_lock;
-          }
-        }
         break;
       }
     }
@@ -9315,6 +9320,28 @@ _wave_core_update_ml_vap_info (mtlk_core_t *core,  struct _mxl_vendor_mld_info *
       ELOG_DD("CID-%04x: No vap handle for sibling id:%d", mtlk_vap_get_oid(core->vap_handle), sib_vap_id);
     }
   }
+
+  if (ml_vap_info.num_of_sibling_vaps) {
+    ml_vap_lock = mtlk_osal_mem_alloc(sizeof(mtlk_osal_spinlock_t), WAVE_MEM_TAG_MLD_VAP_LOCK);
+    if (ml_vap_lock == NULL) {
+      ELOG_DD("CID-%04x: Can't allocate memory for ml_vap_lock for mldId %d",
+        mtlk_vap_get_oid(core->vap_handle), ml_info->mld_id);
+    } else {
+      mtlk_osal_lock_init(ml_vap_lock);
+      ml_vap_info.ml_vap_rem_sync_lock = ml_vap_lock;
+      ILOG1_DD("CID-%04x: ml_vap_lock allocated and initialized for mldId %d",
+        mtlk_vap_get_oid(core->vap_handle), ml_info->mld_id);
+    }
+#ifdef BEST_EFFORT_TID_SPREADING
+    ml_vap_tid_spread_info = _wave_core_create_vap_tid_spread_info(core, &ml_vap_info);
+    if (ml_vap_tid_spread_info == NULL)
+      ELOG_DD("CID-%04x: Can't create ml_vap_tid_spread_info for mldId %d",
+        mtlk_vap_get_oid(core->vap_handle), ml_info->mld_id);
+    else
+      ml_vap_info.tid_spread_info = ml_vap_tid_spread_info;
+#endif /* BEST_EFFORT_TID_SPREADING */
+  }
+
   wave_vap_manager_update_ml_vap_info(core->vap_handle, ml_vap_info);
 }
 
@@ -9781,10 +9808,12 @@ wave_core_get_ml_link_stats_internal (mtlk_core_t *nic, uint8 *ml_aid, struct ml
   }
 
   stats->link_active_time[MLD_MAIN_LINK] = MAC_TO_HOST32(psUmilinkStats->u32TotalLinkActiveTime[MLD_MAIN_LINK]);
-  stats->link_active_time[MLD_SECOND_LINK] = MAC_TO_HOST32(psUmilinkStats->u32TotalLinkActiveTime[MLD_SECOND_LINK]); 
+  stats->link_active_time[MLD_SECOND_LINK] = MAC_TO_HOST32(psUmilinkStats->u32TotalLinkActiveTime[MLD_SECOND_LINK]);
+  stats->link_active_time[MLD_THIRD_LINK] = MAC_TO_HOST32(psUmilinkStats->u32TotalLinkActiveTime[MLD_THIRD_LINK]);
   stats->current_ml_operating_mode = psUmilinkStats->u8CurrentMlOperatingMode;
   stats->main_band = psUmilinkStats->u8MainBand;
   stats->secondary_band = psUmilinkStats->u8SecondaryBand;
+  stats->third_band = psUmilinkStats->u8BackupBand;
 
 FINISH:
   if (man_entry) {
@@ -11248,7 +11277,7 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
   /* priority need to be updated only for mld sta in STR mode */
   if (dst_sta && wave_is_mld_sta(dst_sta)) {
     info = wave_vap_manager_get_str_tid_spreading_info(dst_sta->vap_handle);
-    if (!info->active)
+    if (!info || !info->active)
       return;
 
     ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(dst_sta);
@@ -11272,6 +11301,10 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
         if (iph->protocol == IPPROTO_TCP && (tcph->rst || tcph->fin)) {
           mtlk_df_nbuf_set_priority(nbuf, high_rate_tid);
           mtlk_osal_lock_acquire(&dst_sta->lock);
+          if (!dst_sta->skb_hash.nof_buckets) {
+            mtlk_osal_lock_release(&dst_sta->lock);
+            return;
+          }
           h = mtlk_hash_find_skb_hash(&dst_sta->skb_hash, &nbuf->hash);
           if (h) {
             /* Cleanup if hash entry exists */
@@ -11296,6 +11329,10 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
         }
 
         mtlk_osal_lock_acquire(&dst_sta->lock);
+        if (!dst_sta->skb_hash.nof_buckets) {
+          mtlk_osal_lock_release(&dst_sta->lock);
+          return;
+        }
         h = mtlk_hash_find_skb_hash(&dst_sta->skb_hash, &nbuf->hash);
         if (h) {
           /* update hash_entry if nbuf->hash is already known */
@@ -11657,6 +11694,7 @@ int __MTLK_IFUNC wave_core_cfg_set_debug_cmd (mtlk_handle_t hcore, const void* d
     return mtlk_clpb_push_res(clpb, res);
   MTLK_CLPB_END
 }
+#endif /* CONFIG_WAVE_DEBUG */
 
 mtlk_error_t __MTLK_IFUNC
 wave_core_get_mu_group_plan (mtlk_handle_t hcore, const void *data, uint32 data_size)
@@ -11675,8 +11713,6 @@ wave_core_get_mu_group_plan (mtlk_handle_t hcore, const void *data, uint32 data_
   res = WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_PLAN_MU_GROUP_STATS, &UmiDbgMuGroupStats[0], &UmiDbgMuGroupStatsSize);
   return mtlk_clpb_push_res_data(clpb, res, &UmiDbgMuGroupStats[0], sizeof(UmiDbgMuGroupStats));
 }
-
-#endif /* CONFIG_WAVE_DEBUG */
 
 int __MTLK_IFUNC
 wave_core_cfg_send_cca_preamble_puncture_override(mtlk_core_t *core, const UMI_PREAMBLE_PUNCT_CCA_OVERRIDE *req)
@@ -15661,6 +15697,149 @@ mtlk_error_t wave_core_set_vw_test_mode(mtlk_core_t *core, uint8 enable)
   }
 
   return res;
+}
+
+static mtlk_error_t
+_wave_core_send_mru_tx_power_enable_req (mtlk_core_t *core, uint32 mru_tx_power_enable)
+{
+  mtlk_txmm_msg_t man_msg;
+  mtlk_txmm_data_t *man_entry;
+  UMI_SET_MRU_TX_POWER_ENABLE *mac_msg;
+  mtlk_error_t res;
+  unsigned oid;
+
+  MTLK_ASSERT(core != NULL);
+  oid = mtlk_vap_get_oid(core->vap_handle);
+
+  if (mru_tx_power_enable > 1) {
+    ELOG_DD("CID-%04x: Incorrect MRU Tx Power Enable value %u, must be 0 or 1", oid, mru_tx_power_enable);
+    return MTLK_ERR_PARAMS;
+  }
+
+  ILOG1_DD("CID-%04x: Set MRU TX Power Enable to %u", oid, mru_tx_power_enable);
+
+  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(core->vap_handle), NULL);
+  if (!man_entry) {
+    ELOG_D("CID-%04x: Can not get TXMM slot", oid);
+    return MTLK_ERR_NO_RESOURCES;
+  }
+
+  /* fill the message data */
+  man_entry->id = UM_MAN_SET_MRU_TX_POWER_ENABLE_REQ;
+  man_entry->payload_size = sizeof(UMI_SET_MRU_TX_POWER_ENABLE);
+  mac_msg = (UMI_SET_MRU_TX_POWER_ENABLE *)man_entry->payload;
+  memset(mac_msg, 0, sizeof(*mac_msg));
+
+  mac_msg->mruTxPowerEnable = (uint8)mru_tx_power_enable;
+
+  /* send the message to FW */
+  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
+
+  if (MTLK_ERR_OK != res || UMI_OK != mac_msg->status) {
+    ELOG_DDD("CID-%04x: Set UM_MAN_SET_MRU_TX_POWER_ENABLE_REQ failed, res=%d status=%hhu",
+             oid, res, mac_msg->status);
+    if (UMI_OK != mac_msg->status)
+      res = MTLK_ERR_MAC;
+  }
+
+  /* cleanup the message */
+  mtlk_txmm_msg_cleanup(&man_msg);
+  return res;
+}
+
+static mtlk_error_t
+_wave_core_set_mru_tx_power_enable (mtlk_core_t *core, uint32 enable)
+{
+  wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
+  mtlk_error_t res;
+
+  if (!mtlk_hw_type_is_gen7(mtlk_vap_get_hw(core->vap_handle))) {
+    return MTLK_ERR_NOT_SUPPORTED;
+  }
+
+  if (enable > 1) {
+    ELOG_D("CID-%04x: MRU Tx Power Enable must be 0 or 1", mtlk_vap_get_oid(core->vap_handle));
+    return MTLK_ERR_PARAMS;
+  }
+
+  res = _wave_core_send_mru_tx_power_enable_req(core, !!enable);
+  if (MTLK_ERR_OK == res) {
+    WAVE_RADIO_PDB_SET_INT(radio, PARAM_DB_RADIO_MRU_TX_POWER_ENABLE, enable);
+  }
+
+  return res;
+}
+
+static mtlk_error_t
+_wave_core_get_mru_tx_power_enable (mtlk_core_t *core, uint32 *enable)
+{
+  if (!mtlk_hw_type_is_gen7(mtlk_vap_get_hw(core->vap_handle))) {
+    return MTLK_ERR_NOT_SUPPORTED;
+  }
+
+  *enable = WAVE_RADIO_PDB_GET_INT(wave_vap_radio_get(core->vap_handle), PARAM_DB_RADIO_MRU_TX_POWER_ENABLE);
+  return MTLK_ERR_OK;
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_set_mru_tx_power_enable (mtlk_handle_t hcore, const void *data, uint32 data_size)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  mtlk_core_t *core = (mtlk_core_t *)hcore;
+  wave_mru_tx_power_enable_cfg_t *cfg = NULL;
+  uint32 cfg_size;
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **)data;
+
+  MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
+
+  cfg = mtlk_clpb_enum_get_next(clpb, &cfg_size);
+  MTLK_CLPB_TRY(cfg, cfg_size)
+  MTLK_CFG_START_CHEK_ITEM_AND_CALL()
+    MTLK_CFG_CHECK_ITEM_AND_CALL(cfg, mru_tx_power_enable, _wave_core_set_mru_tx_power_enable,
+                                (core, cfg->mru_tx_power_enable), res);
+
+    MTLK_CFG_END_CHEK_ITEM_AND_CALL()
+  MTLK_CLPB_FINALLY(res)
+    return mtlk_clpb_push_res(clpb, res);
+  MTLK_CLPB_END
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_recover_mru_tx_power_enable (mtlk_core_t *core)
+{
+  uint32 mru_tx_power_enable;
+
+  if (!mtlk_hw_type_is_gen7(mtlk_vap_get_hw(core->vap_handle))) {
+    return MTLK_ERR_OK;
+  }
+
+  mru_tx_power_enable = WAVE_RADIO_PDB_GET_INT(wave_vap_radio_get(core->vap_handle), PARAM_DB_RADIO_MRU_TX_POWER_ENABLE);
+
+  if (MTLK_PARAM_DB_VALUE_IS_INVALID(mru_tx_power_enable)) {
+    return MTLK_ERR_OK;
+  }
+
+  return _wave_core_set_mru_tx_power_enable(core, !!mru_tx_power_enable);
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_get_mru_tx_power_enable (mtlk_handle_t hcore, const void *data, uint32 data_size)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  uint32 enable = 0;
+  wave_mru_tx_power_enable_cfg_t cfg;
+  mtlk_core_t *core = (mtlk_core_t *)hcore;
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **)data;
+
+  MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
+
+  memset(&cfg, 0, sizeof(cfg));
+  res = _wave_core_get_mru_tx_power_enable(core, &enable);
+  if (MTLK_ERR_OK == res) {
+    MTLK_CFG_SET_ITEM(&cfg, mru_tx_power_enable, enable);
+  }
+
+  return mtlk_clpb_push_res_data(clpb, res, &cfg, sizeof(cfg));
 }
 
 mtlk_error_t __MTLK_IFUNC wave_core_handle_rx_measure_event (mtlk_handle_t hcore, const void *payload, uint32 data_size)

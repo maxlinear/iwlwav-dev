@@ -58,7 +58,7 @@
 #define MAX_NUM_OF_MIMO_STA_STATS_ENTRIES   (96)  // MAX_NUM_OF_HE_MU_UL_GROUPS(12) * MAX_MIMO_STAS_IN_GROUP(4)  * 2 (Due to StatisticsManager not synced with HeGroupManager)
 #define REDUCED_SPATIAL_STREAMS_SIZE        (2) // A reduced number of SPATIAL streams done to reduce the memory footprint of the DL MIMO statistics
 #define REDUCED_MCS_SIZE                    (3) // A reduced number of MCS done to reduce the memory footprint of the DL MIMO statistics
-#define MAX_STA_IN_GROUP					(8)
+#define MAX_STA_IN_GROUP					(4)
 
 #if !defined GEN6_NUM_OF_BANDS
 #define GEN6_NUM_OF_BANDS 					(2)

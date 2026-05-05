@@ -141,13 +141,6 @@ wave_param_db_value_is_invalid_ex (unsigned param, size_t size)
 #define DEFAULT_AGREEMENT_TYPE           MIN_AGREEMENT_TYPE_INDIVIDUAL
 #define DEFAULT_TWT_ID                   MIN_INDIVIDUAL_FLOW_ID
 
-/* BSS critical update flags */
-#define BSS_CRITICAL_UPDATE_COMMON            0x1
-#define BSS_CRITICAL_UPDATE_CSA               0x2
-
-#define ML_BCN_PER_STA_PROF_MAX_SWITCH_TIME   0x4
-#define ML_NON_TX_BSS_CRITICAL_UPDATE         0x8
-
 /* Per rate station statistics */
 #define MTLK_PER_RATE_STAT
 
@@ -452,6 +445,8 @@ typedef enum
 #endif
   WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL,         /*!< Set Fixed Rate Thermal */
   WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,         /*!< Get Fixed Rate Thermal */
+  WAVE_CORE_REQ_SET_MRU_TX_POWER_ENABLE,        /*!< Set MRU Tx Power Test Mode */
+  WAVE_CORE_REQ_GET_MRU_TX_POWER_ENABLE,        /*!< Get MRU Tx Power Test Mode */
   WAVE_CORE_REQ_MSCS_ADD,                       /*!< MSCS ADD Request */
   WAVE_CORE_REQ_MSCS_REM,                       /*!< MSCS REM Request */
 /* DEBUG COMMANDS */
@@ -1473,6 +1468,10 @@ MTLK_DECLARE_CFG_START(wave_3addr_mcast_mode_t)
   MTLK_CFG_ITEM(uint32, allow_3addr_mcast)
 MTLK_DECLARE_CFG_END(wave_3addr_mcast_mode_t)
 
+MTLK_DECLARE_CFG_START(wave_mru_tx_power_enable_cfg_t)
+  MTLK_CFG_ITEM(uint32, mru_tx_power_enable)
+MTLK_DECLARE_CFG_END(wave_mru_tx_power_enable_cfg_t)
+
 /* Calculate antennas factor depending on TX antennas number */
 /* Exception: (-1) in case of 0 antennas number */
 static __INLINE int
@@ -2402,8 +2401,8 @@ MTLK_DECLARE_CFG_END(ax_default_params_t)
 #define WAVE_DYNAMIC_MU_TYPE_UL_MU_TYPE_MIN 0
 #define WAVE_DYNAMIC_MU_TYPE_UL_MU_TYPE_MAX 3
 #define WAVE_DYNAMIC_MU_TYPE_UL_MU_TYPE_DEFAULT WAVE_DYNAMIC_MU_TYPE_UL_MU_TYPE_MIN /*OFDMA*/
-#define WAVE_DYNAMIC_MU_TYPE_MIN_STA_IN_GROUP_NUM_DEFAULT 8
-#define WAVE_DYNAMIC_MU_TYPE_MAX_STA_IN_GROUP_NUM_DEFAULT 8
+#define WAVE_DYNAMIC_MU_TYPE_MIN_STA_IN_GROUP_NUM_DEFAULT 2
+#define WAVE_DYNAMIC_MU_TYPE_MAX_STA_IN_GROUP_NUM_DEFAULT 4
 #define WAVE_DYNAMIC_MU_TYPE_CDB_CFG_DEFAULT 0 /* ??? */
 /* HE MU Fixed Parameters Configuration */
 #define WAVE_HE_MU_FIXED_PARAMTERS_CFG_SIZE 4

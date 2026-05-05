@@ -701,6 +701,8 @@ typedef struct mtlk_wssa_drv_general_stats{
   uint32 debugStatistics;
   uint32 exceedsETSIMaxSizeUnicast;
   uint32 exceedsETSIMaxSizeMulticast;
+  uint32 freePdCount;
+  uint32 freeRdCount;
 }mtlk_wssa_drv_general_stats_t;
 
 typedef struct mtlk_wssa_drv_cur_channel_stats{

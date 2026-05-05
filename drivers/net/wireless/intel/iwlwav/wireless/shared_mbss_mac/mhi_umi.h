@@ -614,7 +614,8 @@ typedef enum _UMI_Msgs
 	UMI_MAN_MLO_STA_REASSOC_NOTIFY,			// UMI_MLO_STA_REASSOC_NOTIFY
 	UMI_MAN_PCIE_CONTROL_TRAFFIC,			// UMI_PCIE_CONTROL_TRAFFIC
 	UMI_MAN_AQM_STA_EN,						// UMI_AQM_STA_EN
-	UMI_MAN_RX_MEASURE,        					// UMI_RX_MEASURE
+	UMI_MAN_RX_MEASURE,        				// UMI_RX_MEASURE
+	UMI_MAN_SET_MRU_TX_POWER_ENABLE,		// UMI_SET_MRU_TX_POWER_ENABLE
 	UMI_TOTAL_NUM_MSGS
 } UMI_Msgs;
 
@@ -1107,6 +1108,9 @@ typedef enum _UMI_Msgs
 
 #define MC_MAN_RX_MEASURE_IND   UMI_MSG_MAN_IND(UMI_MAN_RX_MEASURE)  //0x3398
 #define UM_MAN_RX_MEASURE_RES   UMI_MSG_MAN_RES(UMI_MAN_RX_MEASURE)  //0x2398
+
+#define UM_MAN_SET_MRU_TX_POWER_ENABLE_REQ    UMI_MSG_MAN_REQ(UMI_MAN_SET_MRU_TX_POWER_ENABLE) //0x04A1
+#define MC_MAN_SET_MRU_TX_POWER_ENABLE_CFM    UMI_MSG_MAN_CFM(UMI_MAN_SET_MRU_TX_POWER_ENABLE) //0x14A1
 /***************************************************************************/
 /***                          Management Messages                        ***/
 /***************************************************************************/
@@ -2920,7 +2924,8 @@ typedef struct _UMI_MLO_STA_REASSOC_NOTIFY
 	uint8		u8Status;
 } __MTLK_PACKED UMI_MLO_STA_REASSOC_NOTIFY;
 
-#define MAX_MLD_ACTIVE_LINKS	2
+#define MAX_MLD_ACTIVE_LINKS		3
+#define MLO_STATS_INVALID_BAND		0xFF
 
 typedef struct _UMI_MLO_LINK_STATS
 {
@@ -2930,8 +2935,9 @@ typedef struct _UMI_MLO_LINK_STATS
 	uint8		u8CurrentMlOperatingMode;
 	uint8		u8MainBand;
 	uint8		u8SecondaryBand;
+	uint8		u8BackupBand;
 	uint8		u8Status;
-	uint8		reserved[2];
+	uint8		reserved[1];
 } __MTLK_PACKED UMI_MLO_LINK_STATS;
 
 typedef struct _UMI_DYN_EDCA_CONFIG {
@@ -3141,29 +3147,42 @@ typedef struct _UMI_STOP_TRAFFIC
 } __MTLK_PACKED UMI_STOP_TRAFFIC;
 
 
+/* u8CriticalUpdateFlags description: */
+#define CRITICAL_UPDATE_TX_BSS				MTLK_BFIELD_INFO(0, 1)
+#define CRITICAL_UPDATE_NON_TX_BSS			MTLK_BFIELD_INFO(1, 1)
+#define CRITICAL_UPDATE_NON_TX_BSS_CSA		MTLK_BFIELD_INFO(2, 1)
+#define CRITICAL_UPDATE_SYNC_WITH_CSA		MTLK_BFIELD_INFO(3, 1)
+
+/* Current supported maximum number of MBSSID sub-parts */
+/* Align struct if changed */
+#define MAX_MBSSID_SUB_PARTS				(6)
+#define INVALID_IDX_TO_VAP_ID				(0xFF)
+
 typedef struct _UMI_BEACON_SET
 {
-	uint32 u32hostAddress;
-	uint16 u16part1Len;
-	uint16 u16part2Len;
-	uint16 u16part3Len;  
-	uint16 u16part4Len;  
-	uint16 u16part5Len;	
-	uint16 u16part6Len;  
-	uint16 u16part7Len;
-	uint16 u16part8Len;
-	uint16 u16part9Len;
-	uint16 u16partMbssidLen;
-	uint32 u32partMbssidAddr;
-	uint8  u8vapIndex;
-	uint8  u8Status;
-	uint8  addBssLoadIe;
-	uint8  critical_update;
-	uint8  non_tx_bss_critical_update;
-	uint8  sync_with_csa;
-	uint8  max_ch_switch_time_ie_add;
-	uint8  bssColorDisable;
-	uint32 max_ch_switch_time;
+	uint32		u32hostAddress;
+	uint16		u16part1Len;
+	uint16		u16part2Len;
+	uint16		u16part3Len;
+	uint16		u16part4Len;
+	uint16		u16part5Len;
+	uint16		u16part5SubLen[MAX_MBSSID_SUB_PARTS];
+	uint16		u16part6Len;
+	uint16		u16part7Len;
+	uint16		u16part8Len;
+	uint16		u16part9Len;
+	uint16		u16partMbssidLen;
+	uint16		u16partMbssidSubLen[MAX_MBSSID_SUB_PARTS];
+	uint32		u32partMbssidAddr;
+	uint8 		u8MbssidSubIdxToVapId[MAX_MBSSID_SUB_PARTS];
+	uint8 		u8vapIndex;
+	uint8 		u8Status;
+	uint8 		addBssLoadIe;
+	uint8 		bssColorDisable;
+	uint8 		u8CriticalUpdateFlags;
+	uint8 		u8CriticalUpdateFlagsExt;
+	uint32		mcst_ie_add_bitmap;
+	uint32		max_ch_switch_time;
 } __MTLK_PACKED UMI_BEACON_SET;
 
 /***************************************************************************
@@ -3285,13 +3304,13 @@ typedef enum
 
 
 #define	HE_MU_MAX_NUM_OF_GROUPS 					(26) // MAX_NUM_OF_HE_MU_GROUPS(24) + MAX_NUM_OF_HE_TWT_GROUPS(2)
-#define	HE_MU_MAX_NUM_OF_USERS_PER_GROUP 			(8)
+#define	HE_MU_MAX_NUM_OF_USERS_PER_GROUP 			(4)
 
 #define INVALID_SID_FOR_HE_GROUP					(0x1FF)
 #define HE_MU_GROUP_SET 							(1)
 #define HE_MU_GROUP_RESET 							(0)
 
-#define STATIC_PLAN_MANAGER_MAX_NUM_OF_MU_USERS 	(8)
+#define STATIC_PLAN_MANAGER_MAX_NUM_OF_MU_USERS 	(4)
 
 
 typedef struct _UMI_MU_PLAN_COMMON_CONFIGURATION
@@ -4716,6 +4735,18 @@ typedef struct _UMI_PCIE_CONTROL_TRAFFIC {
 	uint8 action;		// 1- for stop traffic and 0 for resume traffic
 	uint8 status;
 } __MTLK_PACKED UMI_PCIE_CONTROL_TRAFFIC;
+
+/***************************************************************************
+**
+** NAME         UMI_SET_MRU_TX_POWER_ENABLE
+**
+** DESCRIPTION: Enable/Disable MRU TX Power Test Mode
+****************************************************************************/
+typedef struct _UMI_SET_MRU_TX_POWER_ENABLE {
+	uint8 mruTxPowerEnable;  /* 0=Disabled, 1=Enabled */
+	uint8 status;
+	uint8 reserved[2];       /* Padding for alignment */
+} __MTLK_PACKED UMI_SET_MRU_TX_POWER_ENABLE;
 
 #define   MTLK_PACK_OFF
 #include "mtlkpack.h"

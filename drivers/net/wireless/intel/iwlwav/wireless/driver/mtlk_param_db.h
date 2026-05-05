@@ -224,6 +224,7 @@ typedef enum {
   PARAM_DB_RADIO_QAMPLUS_MODE,                              /*!< QAMplus mode */
   PARAM_DB_RADIO_MODE_CURRENT,                              /*!< Current actual radio mode */
   PARAM_DB_RADIO_MODE_REQUESTED,                            /*!< Requested radio mode */
+  PARAM_DB_RADIO_MRU_TX_POWER_ENABLE,                       /*!< MRU TX Power Test Mode enabled */
   PARAM_DB_RADIO_ACS_UPDATE_TO,                             /*!< AOCS update timeout */
   PARAM_DB_RADIO_MU_OPERATION,                              /*!< MU operation */
   PARAM_DB_RADIO_RADAR_RSSI_TH,                             /*!< Radar Detection RSSI threshold */
@@ -296,8 +297,8 @@ typedef enum {
 
 #ifdef CONFIG_WAVE_DEBUG
   PARAM_DB_RADIO_TEST_BUS_MODE,                             /*!< Test Bus mode */
-  PARAM_DB_RADIO_PLAN_MU_GROUP_STATS,                       /*!< HE MU Group manager statistics */
 #endif
+  PARAM_DB_RADIO_PLAN_MU_GROUP_STATS,                       /*!< HE MU Group manager statistics */
   PARAM_DB_RADIO_FILS_DISCOVERY_FRAME,                      /*!< FILS Discovery frame */
   PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN,                  /*!< FILS Discovery frame length */
   PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_MODE,                  /*!< Unsolicited frame tx cfg mode */

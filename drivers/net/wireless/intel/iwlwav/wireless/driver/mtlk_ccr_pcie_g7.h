@@ -35,7 +35,8 @@ enum g7_proc_fw_dump_idx { /* index in array */
   FW_IDX_SHRAM,
 #if ENABLE_FULL_MEM_DUMP_IN_W700
   FW_IDX_IF_COUNTERS,
-  FW_IDX_IF_UC_INT,
+  FW_IDX_IF_UC_ICCM,
+  FW_IDX_IF_UC_DCCM,
   FW_IDX_IF_UC_CLUS,
   FW_IDX_DESC_RAM_A,
   FW_IDX_DESC_RAM_B,
@@ -131,7 +132,8 @@ static wave_fw_dump_info_t  g7_proc_fw_dump_files[FW_IDX_TOTAL] = {
   [ FW_IDX_SHRAM        ] =			 { "shram",               			PROC_FW_IO,  SHARED_RAM_OFFSET_FROM_BAR0,              		SHARED_RAM_SIZE_LEGAL        	  },
 #if ENABLE_FULL_MEM_DUMP_IN_W700
   [ FW_IDX_IF_COUNTERS  ] =			 { "host_if_counters",    			PROC_FW_IO,  HOST_IF_COUNTERS_OFFSET_FROM_BAR0,        		HOST_IF_COUNTERS_SIZE        	  },
-  [ FW_IDX_IF_UC_INT    ] =			 { "host_if_uc_internal", 			PROC_FW_IO,  MAC_HOSTIF_UC_INTERNAL_OFFSET_FROM_BAR0,  		MAC_HOSTIF_UC_INTERNAL_SIZE  	  },
+  [ FW_IDX_IF_UC_ICCM   ] =			 { "host_if_uc_iccm", 				PROC_FW_IO,  HOST_IF_U_ICCM_RAM0_OFFSET_FROM_BAR0,  		HOST_IF_U_ICCM_RAM_SIZE			  },
+  [ FW_IDX_IF_UC_DCCM   ] =			 { "host_if_uc_dccm",	 			PROC_FW_IO,  HOST_IF_U_DCCM_RAM_BANK0_OFFSET_FROM_BAR0,		HOST_IF_U_DCCM_RAM_SIZE			  },
   [ FW_IDX_IF_UC_CLUS   ] =			 { "host_if_uc_cluster",  			PROC_FW_IO,  MAC_HOSTIF_UC_CLUSTER_OFFSET_FROM_BAR0,   		MAC_HOSTIF_UC_CLUSTER_SIZE   	  },
   [ FW_IDX_DESC_RAM_A   ] =			 { "descriptor_ram_a",    			PROC_FW_IO,  DESCRIPTOR_RAM_A_OFFSET_FROM_BAR0,        		DESCRIPTOR_RAM_A_SIZE        	  },
   [ FW_IDX_DESC_RAM_B   ] =			 { "descriptor_ram_b",    			PROC_FW_IO,  DESCRIPTOR_RAM_B_OFFSET_FROM_BAR0,        		DESCRIPTOR_RAM_B_SIZE        	  },

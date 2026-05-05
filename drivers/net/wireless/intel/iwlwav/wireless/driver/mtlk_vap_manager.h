@@ -108,6 +108,9 @@ mtlk_error_t         __MTLK_IFUNC wave_vap_manager_get_vap_handle_by_fw_id(mtlk_
 mtlk_error_t         __MTLK_IFUNC mtlk_vap_get_sibling_vap_handle_by_link_id(mtlk_vap_handle_t ref_vap_handle,
                                                                              uint8 link_id,
                                                                              mtlk_vap_handle_t *vap_handle) __MTLK_INT_HANDLER_SECTION;
+mtlk_error_t         __MTLK_IFUNC wave_vap_manager_get_vap_handle_by_mld_id(mtlk_vap_manager_t *obj,
+                                                                            uint8              mld_id,
+                                                                            mtlk_vap_handle_t  *vap_handle)  __MTLK_INT_HANDLER_SECTION;
 void                 __MTLK_IFUNC wave_vap_manager_update_ml_vap_info(mtlk_vap_handle_t vap_handle,
                                                                       mtlk_ml_vap_info_t ml_vap_info);
 mtlk_ml_vap_info_t*  __MTLK_IFUNC  wave_vap_manager_get_ml_vap_info(mtlk_vap_handle_t vap_handle);

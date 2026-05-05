@@ -33,7 +33,7 @@
 #define MAX_MCS_GEN7                        (NUM_OF_MCS_GEN7)
 #define TWT_MAX_INDIVIDUAL_AGREEMENTS_ALLOWED_PER_STA           (1)
 #define TWT_MAX_BROADCAST_MEMBERSHIPS_ALLOWED_PER_STA           (2)
-#define MAX_STA_IN_GROUP					(8)
+#define MAX_STA_IN_GROUP					(4)
 #else
 #define MAX_MCS_GEN7                        (NUM_OF_MCS)
 #endif //CPU_ARC
@@ -885,6 +885,8 @@ typedef struct
 	uint32 debugStatistics[GEN7_NUM_OF_BANDS];
 	uint32 exceedsETSIMaxSizeUnicast[GEN7_NUM_OF_BANDS];
 	uint32 exceedsETSIMaxSizeMulticast[GEN7_NUM_OF_BANDS];
+	uint32 freePdCount;	// shared for all bands, not band specific
+	uint32 freeRdCount;	// shared for all bands, not band specific
 } GeneralStatistics_t_wave700;
 #ifdef CPU_ARC
 typedef GeneralStatistics_t_wave700 GeneralStatistics_t;

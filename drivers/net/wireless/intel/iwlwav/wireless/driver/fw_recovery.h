@@ -117,6 +117,7 @@ int wave_rcvry_task_initiate(mtlk_hw_t *hw_ctx, BOOL is_dut);
 
 void wave_rcvry_no_dump_event (const void *mmb_base);
 int wave_rcvry_process_msg_unrecoverable_error(const void *mmb_base);
+void wave_rcvry_drv_assert_unrecoverable_error_set(void);
 
 BOOL wave_rcvry_is_configured(const mtlk_hw_t *hw_ctx);
 BOOL wave_rcvry_fw_dump_in_progress_get(const mtlk_hw_t *hw_ctx);

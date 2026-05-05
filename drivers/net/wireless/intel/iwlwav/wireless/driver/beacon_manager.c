@@ -143,6 +143,7 @@
 #define ML_PER_STA_PROF_HDR_LEN               2
 #define ML_IE_STA_CONTROL_LEN                 2
 #define ML_IE_STA_PROF_CAPAB_INFO_LEN         2
+#define MBSSID_NON_TX_PROFILE_ID              0
 #define MBSSID_NON_TX_SUB_ELEM_OFFSET         3
 #define MBSSID_NON_TX_CAPAB_INFO_OFFSET       4
 #define ML_CRTIC_UPDATE_BIT_OFFSET            6
@@ -150,6 +151,16 @@
 #define MME_IE_EID_LEN_SIZE                   2
 
 #ifdef MTLK_WAVE_700
+/* The trailing sub-part after the last reporting MLD link split point */
+#define MBSSID_TRAILING_SUB_PART              1
+
+typedef struct {
+  mtlk_vap_handle_t reporting_links[MBSSID_NON_TX_MLD_REPORTING_LINKS];
+  u8 mld_addr[MBSSID_NON_TX_MLD_REPORTING_LINKS][ETH_ALEN];
+  u8 num_reporting_mld_links;
+  uint32 mbssid_sub_part_len[MAX_MBSSID_SUB_PARTS];
+} ml_mbss_critical_update_info_t;
+
 void static _wave_check_and_free_mbssid_buffer (mtlk_hw_t *hw, uint32 *p_mbssid_dma_addr, uint8  **p_mbssid_critical_update, int *p_len)
 {
   if (!mtlk_hw_type_is_gen7(hw))
@@ -292,7 +303,7 @@ _wave_parse_update_multilink_ie_length(uint8 *ie, int ie_len, int *part8_len,
     sta_info_len = ie[sta_info_len_offset];
     per_sta_prof_len = ie[IE_HDR_SIZE + ml_ie_tag_len_no_link_info + 1];
 
-    ILOG0_DDD("CSA debug: per_sta_prof_len %d ml_ie_tag_len %d ie_len %d",
+    ILOG1_DDD("CSA debug: per_sta_prof_len %d ml_ie_tag_len %d ie_len %d",
               per_sta_prof_len, ml_ie_tag_len, ie_len);
     /*
      * ML IE length is being manipulated taking into account the IEs
@@ -309,7 +320,7 @@ _wave_parse_update_multilink_ie_length(uint8 *ie, int ie_len, int *part8_len,
     if (ie_len >= ml_ie_part8_len) {
       *part8_len += ml_ie_part8_len;
       *part9_len += (ie_len - ml_ie_part8_len);
-      ILOG0_DDDD("CSA debug: ml_ie_tag_len_no_link_info %d sta_info_len %d\
+      ILOG1_DDDD("CSA debug: ml_ie_tag_len_no_link_info %d sta_info_len %d\
                  ml_ie_part8_len %d part9 len %d", ml_ie_tag_len_no_link_info,
                  sta_info_len, ml_ie_part8_len, *part9_len);
       return part9_len;
@@ -479,38 +490,103 @@ _wave_get_beacon_data_length(beacon_template_t *tmpl, int *part1_len, int *part2
 }
 
 #ifdef MTLK_WAVE_700
-static void _wave_beacon_update_eht_mld_info(mtlk_core_t *core, UMI_BEACON_SET *psUmiBeacon)
+static void
+_wave_beacon_reset_critical_update_info(mtlk_core_t *core,
+  struct mxl_vendor_ml_critical_update *ml_critical_update)
 {
-  struct mxl_vendor_ml_critical_update ml_critical_update = {0};
-  mtlk_pdb_size_t ml_critical_update_len = sizeof(ml_critical_update);
+  mtlk_pdb_size_t ml_critical_update_len = sizeof(struct mxl_vendor_ml_critical_update);
 
-  MTLK_CORE_PDB_GET_BINARY(core, PARAM_DB_CORE_BSS_CRITICAL_UPDATE,
-                           &ml_critical_update, &ml_critical_update_len);
+  if (!ml_critical_update)
+    return;
+
+  ml_critical_update->flags = 0;
+  memset(&ml_critical_update->mbss_info, 0, sizeof(struct mxl_vendor_ml_mbss_info));
+  MTLK_CORE_PDB_SET_BINARY(core, PARAM_DB_CORE_BSS_CRITICAL_UPDATE,
+                         ml_critical_update, ml_critical_update_len);
+}
+
+static void _wave_beacon_update_eht_mld_info(mtlk_core_t *core, UMI_BEACON_SET *psUmiBeacon,
+                      struct mxl_vendor_ml_critical_update *ml_critical_update,
+                      ml_mbss_critical_update_info_t *mbss_info)
+{
+  wave_vap_id_t vap_id;
+  uint32 mcst_bitmap = 0;
+  uint8 idx, u8Flags = 0;
 
   ILOG1_DD("Set Beacon: critical_update = %u max_chan_switch_time %d",
-           ml_critical_update.flags, ml_critical_update.max_chan_switch_time);
+           ml_critical_update->flags, ml_critical_update->max_chan_switch_time);
 
-  if (ml_critical_update.flags & BSS_CRITICAL_UPDATE_COMMON) {
-     psUmiBeacon->critical_update  = TRUE;
-     if (ml_critical_update.flags & BSS_CRITICAL_UPDATE_CSA)
-       psUmiBeacon->sync_with_csa  = TRUE;
-  } else if (ml_critical_update.flags & ML_BCN_PER_STA_PROF_MAX_SWITCH_TIME) {
-       psUmiBeacon->max_ch_switch_time_ie_add = TRUE;
-       psUmiBeacon->max_ch_switch_time = HOST_TO_MAC32(ml_critical_update.max_chan_switch_time);
-       ml_critical_update.max_chan_switch_time = 0;
-  }
-  if (ml_critical_update.flags & ML_NON_TX_BSS_CRITICAL_UPDATE) {
-     psUmiBeacon->non_tx_bss_critical_update = TRUE;
+  if (ml_critical_update->flags & BSS_CRITICAL_UPDATE_COMMON) {
+    MTLK_BFIELD_SET(u8Flags, CRITICAL_UPDATE_TX_BSS, 1);
+    if (ml_critical_update->flags & BSS_CRITICAL_UPDATE_CSA) {
+      MTLK_BFIELD_SET(u8Flags, CRITICAL_UPDATE_SYNC_WITH_CSA, 1);
+    }
+  } else if (ml_critical_update->flags & ML_PER_STA_PROF_MCST) {
+    mcst_bitmap |= (1 << mtlk_vap_get_id(core->vap_handle));
+    psUmiBeacon->max_ch_switch_time = HOST_TO_MAC32(ml_critical_update->max_chan_switch_time);
+    ml_critical_update->max_chan_switch_time = 0;
   }
 
+
+  if (!ml_critical_update->mbss_info.use_mbss_info || !mbss_info) {
+    ILOG1_D("CID-%04x: No MBSS info available", mtlk_vap_get_oid(core->vap_handle));
+    goto finish;
+  }
+
+  memset(psUmiBeacon->u8MbssidSubIdxToVapId, INVALID_IDX_TO_VAP_ID, sizeof(psUmiBeacon->u8MbssidSubIdxToVapId));
+
+  if (ml_critical_update->flags & NON_TX_BSS_CRITICAL_UPDATE_COMMON) {
+    if (!psUmiBeacon->u32partMbssidAddr) {
+      ELOG_D("CID-%04x: MbssidAddr not provided", mtlk_vap_get_oid(core->vap_handle));
+      goto finish;
+    }
+    MTLK_BFIELD_SET(u8Flags, CRITICAL_UPDATE_NON_TX_BSS, 1);
+    if (ml_critical_update->flags & NON_TX_BSS_CRITICAL_UPDATE_CSA) {
+      MTLK_BFIELD_SET(u8Flags, CRITICAL_UPDATE_SYNC_WITH_CSA, 1);
+      for (idx = 0; idx < MAX_MBSSID_SUB_PARTS; idx++) {
+        psUmiBeacon->u16part5SubLen[idx] = (uint16)mbss_info->mbssid_sub_part_len[idx];
+        psUmiBeacon->u16partMbssidSubLen[idx] = (uint16)mbss_info->mbssid_sub_part_len[idx];
+      }
+      /* During non-TX MBSS CSA - FW will use the subparts to build the MBSS IE */
+      /* u16part5Len and u16part5SubLen are mutually exclusive */
+      psUmiBeacon->u16part5Len = 0;
+      /* u16partMbssidLen and u16partMbssidSubLen are mutually exclusive */
+      psUmiBeacon->u16partMbssidLen = 0;
+      for (idx = 0; idx < mbss_info->num_reporting_mld_links; idx++) {
+        MTLK_ASSERT(mbss_info->reporting_links[idx] != MTLK_INVALID_VAP_HANDLE);
+        vap_id = mtlk_vap_get_id(mbss_info->reporting_links[idx]);
+        psUmiBeacon->u8MbssidSubIdxToVapId[idx] = vap_id;
+      }
+    }
+  } else if (ml_critical_update->flags & ML_NON_TX_BSS_PER_STA_PROF_MCST) {
+      for (idx = 0; idx < MAX_MBSSID_SUB_PARTS; idx++) {
+        psUmiBeacon->u16part5SubLen[idx] = (uint16)mbss_info->mbssid_sub_part_len[idx];
+      }
+      /* During non-TX MBSS CSA - FW will use the subparts to build the MBSS IE */
+      /* u16part5Len and u16part5SubLen are mutually exclusive */
+      psUmiBeacon->u16part5Len = 0;
+      for (idx = 0; idx < mbss_info->num_reporting_mld_links; idx++) {
+        MTLK_ASSERT(mbss_info->reporting_links[idx] != MTLK_INVALID_VAP_HANDLE);
+        vap_id = mtlk_vap_get_id(mbss_info->reporting_links[idx]);
+        psUmiBeacon->u8MbssidSubIdxToVapId[idx] = vap_id;
+        mcst_bitmap |= (1 << vap_id);
+      }
+      if (ml_critical_update->max_chan_switch_time) {
+        psUmiBeacon->max_ch_switch_time = HOST_TO_MAC32(ml_critical_update->max_chan_switch_time);
+        ml_critical_update->max_chan_switch_time = 0;
+      }
+  }
+
+finish:
+  if (ml_critical_update->flags & (ML_PER_STA_PROF_MCST | ML_NON_TX_BSS_PER_STA_PROF_MCST))
+    psUmiBeacon->mcst_ie_add_bitmap = HOST_TO_MAC32(mcst_bitmap);
+  psUmiBeacon->u8CriticalUpdateFlags = u8Flags;
   /* Reset ml critical update flags in param db */
-  ml_critical_update.flags = 0;
-  MTLK_CORE_PDB_SET_BINARY(core, PARAM_DB_CORE_BSS_CRITICAL_UPDATE,
-                           &ml_critical_update, sizeof(ml_critical_update));
+  _wave_beacon_reset_critical_update_info(core, ml_critical_update);
 }
 
 static mtlk_error_t
-_wave_reset_mbssid_non_tx_critical_update(uint8 *mbssid_critical_update, uint8 *pos, int buf_len, BOOL *p_send_mbssid_buf)
+_wave_reset_mbssid_non_tx_critical_update(uint8 *mbssid_critical_update, uint8 *pos, int buf_len)
 {
   mtlk_error_t result = MTLK_ERR_OK;
   int ie_id, ie_len;
@@ -551,7 +627,6 @@ _wave_reset_mbssid_non_tx_critical_update(uint8 *mbssid_critical_update, uint8 *
         capab = non_tx_sub + MBSSID_NON_TX_CAPAB_INFO_OFFSET;
         if (*capab & (1 << ML_CRTIC_UPDATE_BIT_OFFSET))
         {
-          *p_send_mbssid_buf = TRUE;
           *capab &= ~(1 << ML_CRTIC_UPDATE_BIT_OFFSET);
         }
         non_tx_sub += tag_len;
@@ -559,6 +634,291 @@ _wave_reset_mbssid_non_tx_critical_update(uint8 *mbssid_critical_update, uint8 *
     }
   }
   return result;
+}
+
+static mtlk_error_t
+_wave_beacon_parse_and_calc_mbssid_sub_parts(uint8 *eid, int buf_len,
+             ml_mbss_critical_update_info_t *mbss_cu_info, BOOL reset_cu)
+{
+  uint8 *pos, *end, *mbss_ie, *subelem_ie, *tag_ie, *per_sta_prof_ie, *capab;
+  int mbssid_len, subelem_len, tag_len;
+  int ml_ie_tag_len, ml_common_info_len, ml_common_info_end_offset;
+  int per_sta_prof_len, capab_info_end_offset, per_sta_info_len;
+  int tmp_len = 0, fw_added_len = 0;
+  IEEE_ADDR addr;
+  uint8 *mld_mac_addr, *offset_pos;
+  uint8 offset_idx = 0;
+  BOOL handle_ml_ie = FALSE;
+
+  pos = eid;
+  end = eid + buf_len;
+
+  if (pos + IE_HDR_SIZE > end) {
+    ELOG_V("Bad MBSSID IE buffer");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  offset_pos = pos;
+
+  while (pos < end) {
+    mbss_ie = pos;
+    mbssid_len = *(pos + 1) + IE_HDR_SIZE;
+    pos += mbssid_len;
+
+    if (pos > end) {
+      ELOG_D("Wrong MBSSID IE length %d", mbssid_len);
+      return MTLK_ERR_UNKNOWN;
+    }
+
+    if (*mbss_ie == IE_MULTIPLE_BSSID) {
+      subelem_ie = mbss_ie + MBSSID_NON_TX_SUB_ELEM_OFFSET;
+      
+      while (subelem_ie < pos) {
+        /* Validate subelement length */
+        subelem_len = *(subelem_ie + 1) + IE_HDR_SIZE;
+        if (subelem_ie + subelem_len > pos) {
+          ELOG_D("Wrong subelement length %d", subelem_len);
+          return MTLK_ERR_UNKNOWN;
+        }
+
+        if (*subelem_ie != MBSSID_NON_TX_PROFILE_ID) {
+          ILOG1_D("Skipping MBSSID subelement ID %d", *subelem_ie);
+          subelem_ie += subelem_len;
+          continue;
+        }
+
+        /* Save capab position to reset critical update bit if needed later */
+        capab = subelem_ie + MBSSID_NON_TX_CAPAB_INFO_OFFSET;
+
+        tag_ie = subelem_ie + IE_HDR_SIZE;
+
+        while (tag_ie < subelem_ie + subelem_len) {
+          tag_len = *(tag_ie + 1) + IE_HDR_SIZE;
+          if (tag_ie + tag_len > subelem_ie + subelem_len) {
+            ELOG_D("Wrong tag IE length %d", tag_len);
+            return MTLK_ERR_UNKNOWN;
+          }
+          if ((*tag_ie == IE_EXTENSION) && (tag_ie[WLAN_EID_EXTENSION_ID_OFFSET] == WLAN_EID_EXT_EHT_MULTI_LINK)) {
+            mtlk_dump(2, tag_ie, tag_len, "ML IE:");
+            /* Find start of Per-STA Profile */
+            ml_ie_tag_len = tag_ie[IE_LENGTH_OFFSET];
+            ml_common_info_len = tag_ie[ML_IE_COMMON_INFO_LEN_OFFSET];
+            ml_common_info_end_offset = IE_HDR_SIZE + WLAN_ELEM_ID_EXTENSION_LEN + 
+                                        ML_IE_CONTROL_LEN + ml_common_info_len;
+            
+            /* Extract and print MLD MAC Address from Common Info */
+            {
+              mld_mac_addr = tag_ie + IE_HDR_SIZE + WLAN_ELEM_ID_EXTENSION_LEN + 
+                                   ML_IE_CONTROL_LEN + 1; /* +1 for Common Info Length field */
+              wave_memcpy(addr.au8Addr, IEEE_ADDR_LEN, mld_mac_addr, IEEE_ADDR_LEN);
+              if(!mtlk_osal_compare_eth_addresses(mld_mac_addr, mbss_cu_info->mld_addr[offset_idx]))
+                handle_ml_ie = TRUE;
+            }
+            
+            if (handle_ml_ie == FALSE) {
+              ILOG0_Y("ML IE of MAC %Y - MLD MAC not matched, skip to next non-TX BSSID Profile", addr.au8Addr);
+              /* Only one ML IE per non-TX BSSID Profile, skip to next profile */
+              break;
+            }
+
+            /* Reset critical update in profile capabilites if needed */
+            if (reset_cu) {
+              if (*capab & (1 << ML_CRTIC_UPDATE_BIT_OFFSET))
+                *capab &= ~(1 << ML_CRTIC_UPDATE_BIT_OFFSET);
+              else
+                WLOG_V("Critical update bit is not set in capabilities, unexpected");
+            }
+
+            /* Check if Link Info field (Per-STA Profiles) is present */
+            if (ml_ie_tag_len > (WLAN_ELEM_ID_EXTENSION_LEN + ML_IE_CONTROL_LEN + ml_common_info_len)) {
+              per_sta_prof_ie = tag_ie + ml_common_info_end_offset;
+              per_sta_prof_len = *(per_sta_prof_ie + 1) + IE_HDR_SIZE;
+
+              if (*per_sta_prof_ie == IEEE80211_MLE_SUBELEM_PER_STA_PROFILE) {
+                /* Find position after Capability Information in first Per-STA Profile */
+                {
+                  per_sta_info_len = per_sta_prof_ie[ML_PER_STA_PROF_HDR_LEN + ML_IE_STA_CONTROL_LEN];
+                  capab_info_end_offset = ML_PER_STA_PROF_HDR_LEN + ML_IE_STA_CONTROL_LEN + per_sta_info_len + ML_IE_STA_PROF_CAPAB_INFO_LEN;
+                  
+                  if (offset_idx >= MIN(mbss_cu_info->num_reporting_mld_links, MBSSID_NON_TX_MLD_REPORTING_LINKS)) {
+                    ELOG_V("Too many offsets to process");
+                    return MTLK_ERR_UNKNOWN;
+                  }
+                  mbss_cu_info->mbssid_sub_part_len[offset_idx++] = per_sta_prof_ie + capab_info_end_offset - offset_pos;
+                  /* Set new offset reference for next iteration */
+                  offset_pos = per_sta_prof_ie + capab_info_end_offset;
+                }
+
+                if ((per_sta_prof_ie + per_sta_prof_len) < (tag_ie + tag_len) &&
+                    *(per_sta_prof_ie + per_sta_prof_len) == IEEE80211_MLE_SUBELEM_PER_STA_PROFILE) {
+                  WLOG_V("Unexpected: Multiple Per-STA Profiles");
+                }
+
+                /* Adjust and compensate length of IEs which added by FW */
+                {
+                  tmp_len = ml_ie_tag_len - WLAN_ELEM_ID_EXTENSION_LEN - ML_IE_CONTROL_LEN - ml_common_info_len;
+                  if (per_sta_prof_len < tmp_len) {
+                    ELOG_D("Unexpected per-STA profle len %d", per_sta_prof_len);
+                    return MTLK_ERR_UNKNOWN;
+                  } else if (per_sta_prof_len > tmp_len) {
+                    fw_added_len = per_sta_prof_len - tmp_len;
+                    ILOG1_D("fw_added_len %d", fw_added_len);
+                  }
+                  tmp_len = 0;
+                  if (fw_added_len) {
+                    if ((tag_ie[IE_LENGTH_OFFSET] + fw_added_len > IE_MAX_LEN) ||
+                        (subelem_ie[IE_LENGTH_OFFSET] + fw_added_len > IE_MAX_LEN) ||
+                        (mbss_ie[IE_LENGTH_OFFSET] + fw_added_len > IE_MAX_LEN)) {
+                      ELOG_D("FW added length %d causes IE length overflow", fw_added_len);
+                      return MTLK_ERR_UNKNOWN;
+                    }
+                    /* Compensate ML IE length for FW added IEs */
+                    tag_ie[IE_LENGTH_OFFSET] += fw_added_len;
+                    /* Compensate non-TX MBSSID Profile for FW added IEs */
+                    subelem_ie[IE_LENGTH_OFFSET] += fw_added_len;
+                    /* Compensate MBSSID IE total length for FW added IEs */
+                    mbss_ie[IE_LENGTH_OFFSET] += fw_added_len;
+                  }
+                  fw_added_len = 0; // Reset for next use
+                }
+              } else {
+                ELOG_YD("Unexpected: ML IE Subelemnt for MAC %Y, sublement ID %d", addr.au8Addr, *per_sta_prof_ie);
+              }
+            }
+          }
+          handle_ml_ie = FALSE;
+          /* Go to next tag IE */
+          tag_ie += tag_len;
+        }
+        /* Go to next MBSSID subelement */
+        subelem_ie += subelem_len;
+      }
+    }
+  }
+
+  if (offset_idx >= MAX_MBSSID_SUB_PARTS) {
+    ELOG_DD("offset_idx (%d) exceeds MAX_MBSSID_SUB_PARTS (%d)", offset_idx, MAX_MBSSID_SUB_PARTS);
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  mbss_cu_info->mbssid_sub_part_len[offset_idx] = end - offset_pos;
+
+  /* Reset before re-using */
+  tmp_len = 0;
+  for (offset_idx = 0; offset_idx < MAX_MBSSID_SUB_PARTS; offset_idx++)
+    tmp_len += mbss_cu_info->mbssid_sub_part_len[offset_idx];
+  if (tmp_len != (uint32)buf_len) {
+    ELOG_DD("MBSSID sub parts total length (%d) does not match buf_len (%d)", tmp_len, buf_len);
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  return MTLK_ERR_OK;
+}
+
+static mtlk_error_t
+_wave_beacon_prepare_mbssid_sub_parts(mtlk_core_t *core, uint8 *mbss_ie, int buf_len,
+                                      struct mxl_vendor_ml_critical_update *ml_critical_update,
+                                      ml_mbss_critical_update_info_t *mbss_cu_info, uint8 **p_mbssid_buf)
+{
+  struct mxl_vendor_ml_mbss_info *mbss_info;
+  mtlk_vap_handle_t ml_vap_handle = MTLK_INVALID_VAP_HANDLE;
+  BOOL reset_cu_bit = FALSE;
+  uint8 i, mld_id;
+  mtlk_error_t res;
+
+  MTLK_ASSERT(ml_critical_update != NULL);
+  MTLK_ASSERT(mbss_cu_info != NULL);
+
+  mbss_info = &ml_critical_update->mbss_info;
+
+  if (!mbss_info->use_mbss_info) {
+    ELOG_D("CID-%04x: MBSS info is not set to be used for critical update", mtlk_vap_get_oid(core->vap_handle));
+    return MTLK_ERR_PARAMS;
+  }
+
+  if (mbss_info->num_reporting_mld_links > MBSSID_NON_TX_MLD_REPORTING_LINKS) {
+    ELOG_DDD("CID-%04x: Number of reporting MLD links (%d) exceeds maximum allowed (%d)", 
+            mtlk_vap_get_oid(core->vap_handle), mbss_info->num_reporting_mld_links, MBSSID_NON_TX_MLD_REPORTING_LINKS);
+    return MTLK_ERR_PARAMS;
+  }
+
+  for (i = 0; i < MBSSID_NON_TX_MLD_REPORTING_LINKS; i++) {
+    mbss_cu_info->reporting_links[i] = MTLK_INVALID_VAP_HANDLE;
+  }
+
+  mbss_cu_info->num_reporting_mld_links = mbss_info->num_reporting_mld_links;
+
+  for (i = 0; i < mbss_info->num_reporting_mld_links; i++) {
+    mld_id = mbss_info->mld_id[i];
+    if (MTLK_ERR_OK != wave_vap_manager_get_vap_handle_by_mld_id(mtlk_vap_get_manager(core->vap_handle), mld_id, &ml_vap_handle)) {
+      ELOG_DD("CID-%04x: Failed to get vap handle for mld_id %d", mtlk_vap_get_oid(core->vap_handle), mld_id);
+      return MTLK_ERR_PARAMS;
+    }
+    mbss_cu_info->reporting_links[i] = ml_vap_handle;
+    MTLK_CORE_PDB_GET_MAC(mtlk_vap_get_core(ml_vap_handle), PARAM_DB_CORE_AP_MLD_MAC, mbss_cu_info->mld_addr[i]);
+  }
+
+  /* In case of non-TX critical update allocate MBSSID double buffer for FW */
+  if (ml_critical_update->flags & NON_TX_BSS_CRITICAL_UPDATE_COMMON) {
+    *p_mbssid_buf = mtlk_osal_mem_alloc(buf_len, MTLK_MEM_TAG_BEACON_DATA);
+    if (NULL == *p_mbssid_buf) {
+      ELOG_D("CID-%04x: unable to alloc memory for MBSSID buffer", mtlk_vap_get_oid(core->vap_handle));
+      return MTLK_ERR_NO_MEM;
+    }
+    wave_memcpy(*p_mbssid_buf, buf_len, mbss_ie, buf_len);
+    /* Reset critical update flag and adjust IEs len to compensate for FW added IEs */
+    res = _wave_beacon_parse_and_calc_mbssid_sub_parts(*p_mbssid_buf, buf_len, mbss_cu_info, FALSE);
+    if (res != MTLK_ERR_OK) {
+        mtlk_osal_mem_free(*p_mbssid_buf);
+        *p_mbssid_buf = NULL;
+        return res;
+    }
+    reset_cu_bit = TRUE;
+  }
+
+  res = _wave_beacon_parse_and_calc_mbssid_sub_parts(mbss_ie, buf_len, mbss_cu_info, reset_cu_bit);
+  if (res != MTLK_ERR_OK) {
+    if (*p_mbssid_buf) {
+      mtlk_osal_mem_free(*p_mbssid_buf);
+      *p_mbssid_buf = NULL;
+    }
+  }
+
+  return res;
+}
+
+static mtlk_error_t
+_wave_alloc_and_map_mbssid_buffer(mtlk_core_t *core, mtlk_hw_t *hw,
+    uint8 *mbssid_src, int mbssid_buf_len,
+    uint8 **pp_mbssid_critical_update, uint32 *p_mbssid_dma_addr)
+{
+  mtlk_error_t res;
+  uint16 oid = mtlk_vap_get_oid(core->vap_handle);
+
+  *pp_mbssid_critical_update = mtlk_osal_mem_alloc(mbssid_buf_len, MTLK_MEM_TAG_BEACON_DATA);
+  if (NULL == *pp_mbssid_critical_update) {
+    ELOG_D("CID-%04x: p_mbssid_critical_update is NULL", oid);
+    return MTLK_ERR_NO_MEM;
+  }
+
+  res = _wave_reset_mbssid_non_tx_critical_update(*pp_mbssid_critical_update, mbssid_src, mbssid_buf_len);
+  if (res != MTLK_ERR_OK) {
+    ELOG_D("CID-%04x: Failed to create p_mbssid_critical_update partition", oid);
+    mtlk_osal_mem_free(*pp_mbssid_critical_update);
+    *pp_mbssid_critical_update = NULL;
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  *p_mbssid_dma_addr = mtlk_osal_map_to_phys_addr(mtlk_ccr_get_dev_ctx(mtlk_hw_mmb_get_ccr(hw)),
+      *pp_mbssid_critical_update, mbssid_buf_len, MTLK_DATA_TO_DEVICE);
+  if (0 == *p_mbssid_dma_addr) {
+    ELOG_D("CID-%04x: Mem map for mbssid critical update data failed", oid);
+    mtlk_osal_mem_free(*pp_mbssid_critical_update);
+    *pp_mbssid_critical_update = NULL;
+    return MTLK_ERR_NO_MEM;
+  }
+
+  return MTLK_ERR_OK;
 }
 #endif
 
@@ -572,8 +932,10 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
   uint8             *p_mbssid_critical_update = NULL;
   uint32            mbssid_dma_addr = 0;
   int               mbssid_start_offset = 0;
-  BOOL              send_mbssid_buf = FALSE;
   int               mbssid_buf_len = 0;
+  struct mxl_vendor_ml_critical_update ml_critical_update = {0};
+  mtlk_pdb_size_t ml_critical_update_len;
+  ml_mbss_critical_update_info_t mbss_info = {0};
   mtlk_error_t      res;
 #endif
   int               part1_len;
@@ -603,39 +965,52 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
     return MTLK_ERR_PARAMS;
   }
 
-
 #ifdef MTLK_WAVE_700
+  /* MAX_MBSSID_SUB_PARTS is sized as MBSSID_NON_TX_MLD_REPORTING_LINKS + 1.
+   * The +1 (MBSSID_TRAILING_SUB_PART) reserves the final slot for the
+   * trailing portion of the MBSSID IE that follows the last per-STA split
+   * point. */
+  MTLK_STATIC_ASSERT((MAX_MBSSID_SUB_PARTS - MBSSID_NON_TX_MLD_REPORTING_LINKS) == MBSSID_TRAILING_SUB_PART);
   if (mtlk_hw_type_is_gen7(hw)) {
-    struct mxl_vendor_ml_critical_update ml_critical_update = {0};
-    mtlk_pdb_size_t ml_critical_update_len = sizeof(ml_critical_update);
-
+    ml_critical_update_len = sizeof(ml_critical_update);
     MTLK_CORE_PDB_GET_BINARY(core, PARAM_DB_CORE_BSS_CRITICAL_UPDATE,
         &ml_critical_update, &ml_critical_update_len);
 
-    if (part5_len && (ml_critical_update.flags & ML_NON_TX_BSS_CRITICAL_UPDATE)) {
+    /* Process only if MBSSID IE exists */
+    if (part5_len) {
       mbssid_buf_len = part5_len;
-
-      p_mbssid_critical_update = mtlk_osal_mem_alloc(mbssid_buf_len, MTLK_MEM_TAG_BEACON_DATA);
-
-      if (NULL == p_mbssid_critical_update) {
-        ELOG_D("CID-%04x: p_mbssid_critical_update is NULL", oid);
-        return MTLK_ERR_NO_MEM;
-      }
-
       mbssid_start_offset = part1_len + part2_len + part3_len + part4_len;
-      res = _wave_reset_mbssid_non_tx_critical_update(p_mbssid_critical_update, tmpl->ptr + mbssid_start_offset, mbssid_buf_len, &send_mbssid_buf);
-      if (res != MTLK_ERR_OK || !send_mbssid_buf) {
-        ELOG_D("CID-%04x: Failed to create p_mbssid_critical_update partition", oid);
-        _wave_check_and_free_mbssid_buffer(hw, &mbssid_dma_addr, &p_mbssid_critical_update, &mbssid_buf_len);
-        return res;
-      }
 
-      mbssid_dma_addr = mtlk_osal_map_to_phys_addr(mtlk_ccr_get_dev_ctx(mtlk_hw_mmb_get_ccr(mtlk_vap_get_hw(core->vap_handle))),
-          p_mbssid_critical_update, mbssid_buf_len, MTLK_DATA_TO_DEVICE);
-      if (0 == mbssid_dma_addr) {
-        ELOG_D("CID-%04x: Mem map for mbssid critical update data failed", oid);
-        _wave_check_and_free_mbssid_buffer(hw, &mbssid_dma_addr, &p_mbssid_critical_update, &mbssid_buf_len);
-        return MTLK_ERR_NO_MEM;
+      /* Non-TX MBSS Critical Update CSA or MCST */
+      if (ml_critical_update.flags & (NON_TX_BSS_CRITICAL_UPDATE_CSA | ML_NON_TX_BSS_PER_STA_PROF_MCST)) {
+        res = _wave_beacon_prepare_mbssid_sub_parts(core, tmpl->ptr + mbssid_start_offset,
+                                                    mbssid_buf_len, &ml_critical_update,
+                                                    &mbss_info, &p_mbssid_critical_update);
+        if (res != MTLK_ERR_OK) {
+          ELOG_D("CID-%04x: Failed to calculate mbssid sub part lengths", oid);
+          _wave_beacon_reset_critical_update_info(core, &ml_critical_update);
+          return res;
+        }
+
+        if (p_mbssid_critical_update) {
+          mbssid_dma_addr = mtlk_osal_map_to_phys_addr(mtlk_ccr_get_dev_ctx(mtlk_hw_mmb_get_ccr(mtlk_vap_get_hw(core->vap_handle))),
+              p_mbssid_critical_update, mbssid_buf_len, MTLK_DATA_TO_DEVICE);
+          if (0 == mbssid_dma_addr) {
+            ELOG_D("CID-%04x: Mem map for mbssid critical update data failed", oid);
+            _wave_beacon_reset_critical_update_info(core, &ml_critical_update);
+            _wave_check_and_free_mbssid_buffer(hw, &mbssid_dma_addr, &p_mbssid_critical_update, &mbssid_buf_len);
+            return MTLK_ERR_NO_MEM;
+          }
+        }
+        /* General Non-TX MBSS Critical Update Common */
+      } else if (ml_critical_update.flags & NON_TX_BSS_CRITICAL_UPDATE_COMMON) {
+        res = _wave_alloc_and_map_mbssid_buffer(core, hw, tmpl->ptr + mbssid_start_offset,
+            mbssid_buf_len, &p_mbssid_critical_update, &mbssid_dma_addr);
+        if (res != MTLK_ERR_OK) {
+          _wave_beacon_reset_critical_update_info(core, &ml_critical_update);
+          _wave_check_and_free_mbssid_buffer(hw, &mbssid_dma_addr, &p_mbssid_critical_update, &mbssid_buf_len);
+          return res;
+        }
       }
     }
 
@@ -701,13 +1076,11 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
 #ifdef MTLK_WAVE_700
   if (mtlk_hw_type_is_gen7(hw)) {
     psUmiBeacon->u16part9Len  = HOST_TO_MAC16(part9_len);
-    _wave_beacon_update_eht_mld_info(core, psUmiBeacon);
     if (mbssid_dma_addr) {
       psUmiBeacon->u32partMbssidAddr = HOST_TO_MAC32(mbssid_dma_addr);
       psUmiBeacon->u16partMbssidLen  = HOST_TO_MAC16(mbssid_buf_len);
-    } else {
-      psUmiBeacon->non_tx_bss_critical_update = FALSE;
     }
+    _wave_beacon_update_eht_mld_info(core, psUmiBeacon, &ml_critical_update, &mbss_info);
   }
 #endif
   psUmiBeacon->bssColorDisable = (MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_HE_BSS_COLOR) & HE_OPERATION_BSS_COLOR_DISABLED_FLAG) ? 1 : 0;

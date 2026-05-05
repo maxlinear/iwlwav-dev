@@ -1858,6 +1858,7 @@ typedef struct {
 typedef struct {
   IEEE_ADDR sta_addr;
   IEEE_ADDR sib_sta_addr;
+  IEEE_ADDR sib2_sta_addr;
   uint32    aid;
   wave_ml_str_sta_tid_spreading_info_t cfg;
 } __MTLK_IDATA wave_ml_str_sta_tid_spread_stat_t;

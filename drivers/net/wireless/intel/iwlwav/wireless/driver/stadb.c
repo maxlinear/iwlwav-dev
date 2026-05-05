@@ -423,6 +423,7 @@ __wave_sta_get_errors_sent_stats_snapshot (const sta_entry* sta) {
 void
 mtlk_sta_get_tr181_peer_stats (const sta_entry* sta, mtlk_wssa_drv_tr181_peer_stats_t *stats)
 {
+  uint32 LastDataUplinkRate;
   MTLK_ASSERT(sta);
 
   stats->StationId          = mtlk_sta_get_sid(sta);
@@ -433,7 +434,9 @@ mtlk_sta_get_tr181_peer_stats (const sta_entry* sta, mtlk_wssa_drv_tr181_peer_st
   stats->ErrorsSent = __wave_sta_get_errors_sent_stats(sta) - __wave_sta_get_errors_sent_stats_snapshot(sta);
 
   stats->LastDataDownlinkRate = __mtlk_sta_get_tx_data_rate_kbps(sta);
-  stats->LastDataUplinkRate   = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
+  /* PHY Limitation - PHY rate mismatch caused by WAV700 metrics format */
+  LastDataUplinkRate = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
+  stats->LastDataUplinkRate   = (LastDataUplinkRate != 865600) ? LastDataUplinkRate : 866700;
 
   stats->SignalStrength = sta->info.stats.max_rssi;
 }
@@ -853,8 +856,10 @@ static void _wave_sta_tid_link_cleanup (sta_entry *sta, BOOL cleanup)
     }
     h = mtlk_hash_enum_next_skb_hash(hash, &e);
   }
-  if (cleanup)
+  if (cleanup) {
     mtlk_hash_cleanup_skb_hash(&sta->skb_hash);
+    sta->skb_hash.nof_buckets = 0;
+  }
   mtlk_osal_lock_release(&sta->lock);
 }
 #endif /* BEST_EFFORT_TID_SPREADING */
@@ -1603,6 +1608,7 @@ void __MTLK_IFUNC
 wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAssociatedDevDiagnostic2_t *dev_diagnostic_stats)
 {
   uint32 band_width;
+  uint32 LastDataUplinkRate;
   int i;
   static const char *operating_standard[] = {"802.11a","802.11b","802.11g","802.11n","802.11ac","802.11ax","802.11be"};
 
@@ -1612,10 +1618,12 @@ wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAs
   band_width = _mtlk_sta_rate_cbw_to_cbw_in_mhz(mtlk_bitrate_params_get_cbw(sta->info.stats.tx_data_rate_params));
 
   memset(dev_diagnostic_stats, 0, sizeof(wifiAssociatedDevDiagnostic2_t));
+  LastDataUplinkRate                                       = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
   dev_diagnostic_stats->MACAddress                         = *mtlk_sta_get_addr(sta);
   dev_diagnostic_stats->AuthenticationState                = true;
   dev_diagnostic_stats->LastDataDownlinkRate               = __mtlk_sta_get_tx_data_rate_kbps(sta);
-  dev_diagnostic_stats->LastDataUplinkRate                 = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
+  /* PHY Limitation - PHY rate mismatch caused by WAV700 metrics format */
+  dev_diagnostic_stats->LastDataUplinkRate                 = (LastDataUplinkRate != 865600) ? LastDataUplinkRate : 866700;
   dev_diagnostic_stats->SignalStrength                     = sta->info.stats.max_rssi;
   dev_diagnostic_stats->Retransmissions                    = 0; /* Not available from FW */
   dev_diagnostic_stats->Active                             = true;
@@ -1713,9 +1721,10 @@ _wave_calculate_str_sta_effective_rates (sta_entry *sta)
   wave_ml_str_sta_tid_spreading_info_t *ml_sta_tid_spread_info;
   uint8 main_channel_load, sibling_channel_load;
   uint32 main_phyrate, sibling_phyrate, main_eff_phy_rate, sibling_eff_phy_rate, agg_eff_phy_rate = 0;
+  uint32 agg_sib_eff_phy_rate = 0;
   mtlk_vap_handle_t high_eff_phy_rate_vap = MTLK_INVALID_VAP_HANDLE;
   uint8 main_eff_rate_percent = 0, sibling_eff_rate_percent = 0;
-  uint8 high_percent, low_percent;
+  uint8 high_percent, low_percent, sib_idx;
   sta_entry *sibling_sta;
 
   main_vap_handle = sta->vap_handle;
@@ -1725,21 +1734,10 @@ _wave_calculate_str_sta_effective_rates (sta_entry *sta)
   if (!(info->active) || (info->tid_spreading_mode != TID_SPREAD_DYNAMIC) || !ml_sta_tid_spread_info)
     return;
 
-  // TODO WLANRTSYS-95778: take only first sibling for now - align TID spreading for 3 band MLD
-  sibling_sta = mtlk_get_sibling_sta(sta, 0);
-  MTLK_ASSERT(sibling_sta != NULL);
-
-  sibling_vap_handle = sibling_sta->vap_handle;
   main_radio = wave_vap_radio_get(main_vap_handle);
-  sibling_radio = wave_vap_radio_get(sibling_vap_handle);
-
-  /* calculate primary 20MHz channel_load of both MLD links */
+  /* calculate primary 20MHz channel_load on main link */
   main_channel_load = wave_radio_channel_load_get(main_radio);
-  sibling_channel_load = wave_radio_channel_load_get(sibling_radio);
-
-  /* calculate current phy rate in each links of MLD sta */
-  main_phyrate = _mtlk_sta_get_tx_data_rate(sta);
-  sibling_phyrate = _mtlk_sta_get_tx_data_rate(sibling_sta);
+  /* calculate current phy rate in each links on main link */
 
   /* ALGORITHM - dynamic tid to link spreading
    * effective phy rate per link will be calculated by multiplying the
@@ -1749,30 +1747,55 @@ _wave_calculate_str_sta_effective_rates (sta_entry *sta)
    * available_airtime(%) = (100(%) - channel_load(%))
    * eff_phy_rate = (current_phy_rate(unit:10Mbps) * (available_airtime)
    */
+  main_phyrate = _mtlk_sta_get_tx_data_rate(sta);
   main_eff_phy_rate = (main_phyrate * (100 - main_channel_load) / 1000);
-  sibling_eff_phy_rate = (sibling_phyrate * (100 - sibling_channel_load) / 1000);
-
   main_eff_phy_rate = (sta->ml_sta_info.prev_eff_phy_rate + main_eff_phy_rate) / 2;
-  sibling_eff_phy_rate = (sibling_sta->ml_sta_info.prev_eff_phy_rate + sibling_eff_phy_rate) / 2;
-
   sta->ml_sta_info.prev_eff_phy_rate = main_eff_phy_rate;
-  sibling_sta->ml_sta_info.prev_eff_phy_rate = sibling_eff_phy_rate;
 
-  agg_eff_phy_rate = main_eff_phy_rate + sibling_eff_phy_rate;
-  if (agg_eff_phy_rate) {
-    main_eff_rate_percent = DIV_ROUND_UP(main_eff_phy_rate * 100, agg_eff_phy_rate);
-    sibling_eff_rate_percent = DIV_ROUND_UP(sibling_eff_phy_rate * 100, agg_eff_phy_rate);
+  for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+    sibling_sta = mtlk_get_sibling_sta(sta, sib_idx);
+    if (!sibling_sta)
+        continue;
+    sibling_vap_handle = sibling_sta->vap_handle;
+    if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE)
+      continue;
+    sibling_radio = wave_vap_radio_get(sibling_vap_handle);
+    sibling_channel_load = wave_radio_channel_load_get(sibling_radio);
+    sibling_phyrate = _mtlk_sta_get_tx_data_rate(sibling_sta);
+    sibling_eff_phy_rate = (sibling_phyrate * (100 - sibling_channel_load) / 1000);
+    sibling_eff_phy_rate = (sibling_sta->ml_sta_info.prev_eff_phy_rate + sibling_eff_phy_rate) / 2;
+    sibling_sta->ml_sta_info.prev_eff_phy_rate = sibling_eff_phy_rate;
+    agg_sib_eff_phy_rate += sibling_eff_phy_rate;
   }
 
-  if (main_eff_phy_rate > sibling_eff_phy_rate) {
+  agg_eff_phy_rate = main_eff_phy_rate + agg_sib_eff_phy_rate;
+  if (agg_eff_phy_rate) {
+    main_eff_rate_percent = DIV_ROUND_UP(main_eff_phy_rate * 100, agg_eff_phy_rate);
+    sibling_eff_rate_percent = DIV_ROUND_UP(agg_sib_eff_phy_rate * 100, agg_eff_phy_rate);
+  }
+
+  if (main_eff_phy_rate > agg_sib_eff_phy_rate) {
     high_eff_phy_rate_vap = main_vap_handle;
     high_percent = main_eff_rate_percent;
     low_percent = sibling_eff_rate_percent;
   } else {
+    sibling_phyrate = 0;
+    for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
+      sibling_sta = mtlk_get_sibling_sta(sta, sib_idx);
+      if (!sibling_sta)
+          continue;
+      if (sibling_sta->ml_sta_info.prev_eff_phy_rate > sibling_phyrate) {
+        sibling_phyrate = sibling_sta->ml_sta_info.prev_eff_phy_rate;
+        sibling_vap_handle = sibling_sta->vap_handle;
+      }
+    }
     high_eff_phy_rate_vap = sibling_vap_handle;
     high_percent = sibling_eff_rate_percent;
     low_percent = main_eff_rate_percent;
   }
+
+  if (high_eff_phy_rate_vap == MTLK_INVALID_VAP_HANDLE)
+    return;
 
   wave_core_set_assigned_tid_to_link(ml_sta_tid_spread_info, high_eff_phy_rate_vap);
   ml_sta_tid_spread_info->high_eff_rate_tid_percent = high_percent;
@@ -1821,7 +1844,7 @@ wave_get_ml_str_sta_tid_spread_stat (sta_db *stadb, mtlk_clpb_t *clpb)
 {
   mtlk_error_t res = MTLK_ERR_OK;
   const sta_entry    *sta;
-  const sta_entry    *sibling_sta;
+  const sta_entry    *sibling_sta = NULL, *sibling_sta2 = NULL;
   struct ieee80211_sta  *mac80211_sta;
   mtlk_stadb_iterator_t iter;
   mtlk_stadb_stat_t     stadb_stat;
@@ -1841,14 +1864,19 @@ wave_get_ml_str_sta_tid_spread_stat (sta_db *stadb, mtlk_clpb_t *clpb)
           sta = mtlk_stadb_iterate_next(&iter);
           continue;
         }
-          // TODO WLANRTSYS-95778: take only first sibling for now - align TID spreading for 3 band MLD
         sibling_sta = mtlk_get_sibling_sta((sta_entry *)sta, 0);
         mac80211_sta = wv_sta_entry_get_mac80211_sta(sta);
         memset(&stadb_stat, 0, sizeof(stadb_stat));
 
         stadb_stat.type = STAT_ID_ML_STR_STA;
         stadb_stat.u.tid_spread_stat.sta_addr = *(mtlk_sta_get_addr(sta));
-        stadb_stat.u.tid_spread_stat.sib_sta_addr = *(mtlk_sta_get_addr(sibling_sta));
+        if (sibling_sta)
+          stadb_stat.u.tid_spread_stat.sib_sta_addr = *(mtlk_sta_get_addr(sibling_sta));
+        if (sta->ml_sta_info.link_type == ML_STA_TYPE_TRI_LINK) {
+          sibling_sta2 = mtlk_get_sibling_sta((sta_entry *)sta, 1);
+          if (sibling_sta2)
+            stadb_stat.u.tid_spread_stat.sib2_sta_addr = *(mtlk_sta_get_addr(sibling_sta2));
+        }
         stadb_stat.u.tid_spread_stat.aid = mac80211_sta->aid;
         wave_memcpy(&stadb_stat.u.tid_spread_stat.cfg, sizeof(wave_ml_str_sta_tid_spreading_info_t),
                     ml_sta_tid_spread_info, sizeof(wave_ml_str_sta_tid_spreading_info_t));

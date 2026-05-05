@@ -5028,6 +5028,10 @@ _mtlk_df_user_iwpriv_get_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_GET_ON_PARAM_MEMBER(PRM_ID_VW_TEST_MODE, WAVE_RADIO_REQ_GET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_cfg, vw_test_mode)
       MTLK_CFG_GET_ITEM(master_cfg, vw_test_mode, *(uint32*)data);
 
+    /* MRU TX power enable */
+    _DF_USER_GET_ON_PARAM(PRM_ID_MRU_TX_POWER_ENABLE, WAVE_CORE_REQ_GET_MRU_TX_POWER_ENABLE, FALSE, wave_mru_tx_power_enable_cfg_t, cfg)
+      MTLK_CFG_GET_ITEM(cfg, mru_tx_power_enable, *(uint32*)data);
+
     /* Fixed rate thermal */
     _DF_USER_GET_ON_PARAM(PRM_ID_FIXED_RATE_THERMAL, WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL, FALSE, wave_thermal_cfg_t, wave_thermal_cfg)
       MTLK_CFG_GET_ITEM_BY_FUNC_VOID(wave_thermal_cfg, thermal_cfg, _mtlk_df_user_get_intvec_by_fixed_rate_thermal,
@@ -5578,6 +5582,10 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     /* Unconnected STA scan time */
     _DF_USER_SET_ON_PARAM(PRM_ID_UNCONNECTED_STA_SCAN_TIME, WAVE_RADIO_REQ_SET_MASTER_CFG, FALSE, mtlk_master_core_cfg_t, master_core_cfg)
       MTLK_CFG_SET_ITEM(master_core_cfg, unconnected_sta_scan_time, *(uint32*)data);
+
+    /* MRU TX power enable */
+    _DF_USER_SET_ON_PARAM(PRM_ID_MRU_TX_POWER_ENABLE, WAVE_CORE_REQ_SET_MRU_TX_POWER_ENABLE, FALSE, wave_mru_tx_power_enable_cfg_t, cfg)
+      MTLK_CFG_SET_ITEM(cfg, mru_tx_power_enable, !!(*(uint32*)data)); /* 0 or 1 */
 
     /* Fixed rate thermal */
     _DF_USER_SET_ON_PARAM(PRM_ID_FIXED_RATE_THERMAL, WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL, FALSE, wave_thermal_cfg_t, wave_thermal_cfg)
@@ -6474,6 +6482,9 @@ static int mtlk_df_ui_tx_power(mtlk_seq_entry_t *s, void *data)
     uint16 pw_per_rate[ARRAY_SIZE(tx_pw_data->power_hw.pw_max_ant)];
     uint16 power_cfg = 0;
 
+    /* Skip uninitialized PSDB entries (memset to 0xFF during allocation) */
+    if (entry->phy_mode == PHY_MODE_INVALID) continue;
+
     /* Skip printing 11b lines for 5GHz (because not supported by 802.11b spec) */
     if ((MTLK_HW_BAND_5_2_GHZ == tx_pw_data->cur_band) && (is_11b)) continue;
 
@@ -6960,6 +6971,7 @@ _wave_df_ui_ml_str_sta_tid_spread_cfg (mtlk_seq_entry_t *s, void *data)
       mtlk_aux_seq_printf(s, "AID                   : %u\n", stadb_stat->u.tid_spread_stat.aid);
       mtlk_aux_seq_printf(s, "link1MAC              : "MAC_PRINTF_FMT"\n", MAC_PRINTF_ARG(stadb_stat->u.tid_spread_stat.sta_addr.au8Addr));
       mtlk_aux_seq_printf(s, "link2MAC              : "MAC_PRINTF_FMT"\n", MAC_PRINTF_ARG(stadb_stat->u.tid_spread_stat.sib_sta_addr.au8Addr));
+      mtlk_aux_seq_printf(s, "link3MAC              : "MAC_PRINTF_FMT"\n", MAC_PRINTF_ARG(stadb_stat->u.tid_spread_stat.sib2_sta_addr.au8Addr));
       mtlk_aux_seq_printf(s, "high_rate_tid         : %u\n", stadb_stat->u.tid_spread_stat.cfg.high_rate_tid);
       mtlk_aux_seq_printf(s, "low_rate_tid          : %u\n", stadb_stat->u.tid_spread_stat.cfg.low_rate_tid);
       mtlk_aux_seq_printf(s, "high_eff_rate_percent : %u\n", stadb_stat->u.tid_spread_stat.cfg.high_eff_rate_tid_percent);
@@ -7556,7 +7568,11 @@ _mtlk_df_ui_reset_stats_proc (struct file *file, const char __user *buffer,
   uint32 reset_radar_cnt = FALSE;
   mtlk_df_t *df = mtlk_df_proc_entry_get_df(data);
 
-  conf = kmalloc(count, GFP_KERNEL);
+  /* Validate count to avoid using unbounded user-supplied size */
+  if (count == 0 || count > PAGE_SIZE)
+    return -EINVAL;
+
+  conf = kmalloc(count + 1, GFP_KERNEL);
 
   if (!conf) {
     ELOG_D("Unable to allocate %lu bytes", count);
@@ -7564,9 +7580,11 @@ _mtlk_df_ui_reset_stats_proc (struct file *file, const char __user *buffer,
   }
 
   if (0 != (copy_from_user(conf, buffer, count))) {
+    memset(conf, 0, count + 1); /* Sanitize tainted data before freeing */
     kfree(conf);
     return -EFAULT;
   }
+  conf[count] = '\0'; /* Null-terminate to sanitize tainted data */
 
   /* Reset Radar Counter */
   if (count == 4 && conf[0] == 'r' && conf[1] == 'r' && conf[2] == 'c')
@@ -7574,106 +7592,9 @@ _mtlk_df_ui_reset_stats_proc (struct file *file, const char __user *buffer,
 
   mtlk_df_ui_reset_stats(df, reset_radar_cnt);
 
+  memset(conf, 0, count + 1); /* Sanitize tainted data before freeing */
   kfree(conf);
   return count;
-}
-
-static int mtlk_df_ui_he_mu_dump(mtlk_seq_entry_t *s, void *data)
-{
-  mtlk_clpb_t *clpb = NULL;
-  mtlk_stadb_stat_t *stadb_stat;
-  mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
-  mtlk_core_ui_get_stadb_status_req_t get_stadb_status_req = {0};
-  uint32 i, j;
-  mtlk_error_t res = MTLK_ERR_OK;
-  uint32 size;
-  uint16 sid;
-  uint8 vapid;
-  BOOL found;
-
-  UMI_DBG_HE_MU_GROUP_STATS UmiDbgMuGroupStats[HE_MU_MAX_NUM_OF_GROUPS] = {0};
-  UMI_DBG_HE_MU_GROUP_STATS *group_stats_clpb = NULL;
-
-  vapid = mtlk_vap_get_id_fw(mtlk_df_get_vap_handle(df));
-  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_master_df(mtlk_df_get_user(df)),
-                                  WAVE_RADIO_REQ_GET_MU_GROUP_PLAN, &clpb, NULL, 0);
-  res = _mtlk_df_user_process_core_retval(res, clpb, WAVE_RADIO_REQ_GET_MU_GROUP_PLAN, FALSE);
-  if (MTLK_ERR_OK != res)
-    goto err_ret;
-
-  group_stats_clpb = mtlk_clpb_enum_get_next(clpb, &size);
-  MTLK_CLPB_TRY_EX(group_stats_clpb, size, sizeof(UmiDbgMuGroupStats))
-    wave_memcpy(&UmiDbgMuGroupStats[0], sizeof(UmiDbgMuGroupStats), group_stats_clpb, size);
-  MTLK_CLPB_FINALLY(res)
-    mtlk_clpb_delete(clpb);
-  MTLK_CLPB_END
-
-  clpb = NULL;
-  size = 0;
-  get_stadb_status_req.get_hostdb = FALSE;
-  get_stadb_status_req.use_cipher = FALSE;
-#ifdef BEST_EFFORT_TID_SPREADING
-  get_stadb_status_req.get_str_sta_tid_spread_cfg = FALSE;
-#endif
-
-  res = _mtlk_df_user_invoke_core(df, WAVE_CORE_REQ_GET_STADB_STATUS, &clpb,
-                                  &get_stadb_status_req, sizeof(get_stadb_status_req));
-  res = _mtlk_df_user_process_core_retval_void(res, clpb, WAVE_CORE_REQ_GET_STADB_STATUS, FALSE);
-  if (MTLK_ERR_OK != res)
-    goto err_ret;
-
-  for(i = 0; i < HE_MU_MAX_NUM_OF_GROUPS; i++) {
-    if (UmiDbgMuGroupStats[i].vapId != vapid)
-      continue;
-
-    if(HE_MU_GROUP_SET == UmiDbgMuGroupStats[i].setReset) {
-                mtlk_aux_seq_printf(s,"groupId:%u planType:%u vapId:%u setReset:%u\n",
-                UmiDbgMuGroupStats[i].groupId, UmiDbgMuGroupStats[i].planType,
-                UmiDbgMuGroupStats[i].vapId, UmiDbgMuGroupStats[i].setReset);
-
-      for(j = 0; j < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; j++) {
-        sid = UmiDbgMuGroupStats[i].stationId[j];
-
-        if(INVALID_SID_FOR_HE_GROUP == sid) {
-          continue;
-        }
-
-        found = FALSE;
-
-        /* Enumerate the STA DB to find the current SIDs MAC address */
-        mtlk_clpb_enum_rewind(clpb);
-        while(NULL != (stadb_stat = mtlk_clpb_enum_get_next(clpb, &size))) {
-          if (sizeof(*stadb_stat) != size) {
-            res = MTLK_ERR_UNKNOWN;
-            goto delete_clpb;
-          }
-
-          if ((STAT_ID_STADB == stadb_stat->type) || (STAT_ID_HSTDB == stadb_stat->type)) {
-            if(sid == stadb_stat->u.general_stat.sta_sid)
-            {
-              mtlk_aux_seq_printf(s, "\tstationId: %d - " MAC_PRINTF_FMT "\n", sid, MAC_PRINTF_ARG(stadb_stat->u.general_stat.addr.au8Addr));
-              found = TRUE;
-            }
-          } else {
-            res = MTLK_ERR_UNKNOWN;
-            goto delete_clpb;
-          }
-        }
-
-        if(!found) {
-          mtlk_aux_seq_printf(s, "\tstationId: %d - (MAC ADDRESS NOT FOUND)\n", sid);
-        }
-
-      }
-    }
-  }
-
-delete_clpb:
-  if(NULL != clpb) {
-      mtlk_clpb_delete(clpb);
-  }
-err_ret:
-  return _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
 static int mtlk_df_ui_serializer_dump(mtlk_seq_entry_t *s, void *data)
@@ -7789,6 +7710,104 @@ static int df_ui_wds_dbg(mtlk_seq_entry_t *s, void *v)
 }
 
 #endif /* CONFIG_WAVE_DEBUG */
+
+static int mtlk_df_ui_he_mu_dump(mtlk_seq_entry_t *s, void *data)
+{
+  mtlk_clpb_t *clpb = NULL;
+  mtlk_stadb_stat_t *stadb_stat;
+  mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
+  mtlk_core_ui_get_stadb_status_req_t get_stadb_status_req = {0};
+  uint32 i, j;
+  mtlk_error_t res = MTLK_ERR_OK;
+  uint32 size;
+  uint16 sid;
+  uint8 vapid;
+  BOOL found;
+
+  UMI_DBG_HE_MU_GROUP_STATS UmiDbgMuGroupStats[HE_MU_MAX_NUM_OF_GROUPS] = {0};
+  UMI_DBG_HE_MU_GROUP_STATS *group_stats_clpb = NULL;
+
+  vapid = mtlk_vap_get_id_fw(mtlk_df_get_vap_handle(df));
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_master_df(mtlk_df_get_user(df)),
+                                  WAVE_RADIO_REQ_GET_MU_GROUP_PLAN, &clpb, NULL, 0);
+  res = _mtlk_df_user_process_core_retval(res, clpb, WAVE_RADIO_REQ_GET_MU_GROUP_PLAN, FALSE);
+  if (MTLK_ERR_OK != res)
+    goto err_ret;
+
+  group_stats_clpb = mtlk_clpb_enum_get_next(clpb, &size);
+  MTLK_CLPB_TRY_EX(group_stats_clpb, size, sizeof(UmiDbgMuGroupStats))
+    wave_memcpy(&UmiDbgMuGroupStats[0], sizeof(UmiDbgMuGroupStats), group_stats_clpb, size);
+  MTLK_CLPB_FINALLY(res)
+    mtlk_clpb_delete(clpb);
+  MTLK_CLPB_END
+
+  clpb = NULL;
+  size = 0;
+  get_stadb_status_req.get_hostdb = FALSE;
+  get_stadb_status_req.use_cipher = FALSE;
+#ifdef BEST_EFFORT_TID_SPREADING
+  get_stadb_status_req.get_str_sta_tid_spread_cfg = FALSE;
+#endif
+
+  res = _mtlk_df_user_invoke_core(df, WAVE_CORE_REQ_GET_STADB_STATUS, &clpb,
+                                  &get_stadb_status_req, sizeof(get_stadb_status_req));
+  res = _mtlk_df_user_process_core_retval_void(res, clpb, WAVE_CORE_REQ_GET_STADB_STATUS, FALSE);
+  if (MTLK_ERR_OK != res)
+    goto err_ret;
+
+  for(i = 0; i < HE_MU_MAX_NUM_OF_GROUPS; i++) {
+    if (UmiDbgMuGroupStats[i].vapId != vapid)
+      continue;
+
+    if(HE_MU_GROUP_SET == UmiDbgMuGroupStats[i].setReset) {
+                mtlk_aux_seq_printf(s,"groupId:%u planType:%u vapId:%u setReset:%u\n",
+                UmiDbgMuGroupStats[i].groupId, UmiDbgMuGroupStats[i].planType,
+                UmiDbgMuGroupStats[i].vapId, UmiDbgMuGroupStats[i].setReset);
+
+      for(j = 0; j < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; j++) {
+        sid = UmiDbgMuGroupStats[i].stationId[j];
+
+        if(INVALID_SID_FOR_HE_GROUP == sid) {
+          continue;
+        }
+
+        found = FALSE;
+
+        /* Enumerate the STA DB to find the current SIDs MAC address */
+        mtlk_clpb_enum_rewind(clpb);
+        while(NULL != (stadb_stat = mtlk_clpb_enum_get_next(clpb, &size))) {
+          if (sizeof(*stadb_stat) != size) {
+            res = MTLK_ERR_UNKNOWN;
+            goto delete_clpb;
+          }
+
+          if ((STAT_ID_STADB == stadb_stat->type) || (STAT_ID_HSTDB == stadb_stat->type)) {
+            if(sid == stadb_stat->u.general_stat.sta_sid)
+            {
+              mtlk_aux_seq_printf(s, "\tstationId: %d - " MAC_PRINTF_FMT "\n", sid, MAC_PRINTF_ARG(stadb_stat->u.general_stat.addr.au8Addr));
+              found = TRUE;
+            }
+          } else {
+            res = MTLK_ERR_UNKNOWN;
+            goto delete_clpb;
+          }
+        }
+
+        if(!found) {
+          mtlk_aux_seq_printf(s, "\tstationId: %d - (MAC ADDRESS NOT FOUND)\n", sid);
+        }
+
+      }
+    }
+  }
+
+delete_clpb:
+  if(NULL != clpb) {
+      mtlk_clpb_delete(clpb);
+  }
+err_ret:
+  return _mtlk_df_mtlk_to_linux_error_code(res);
+}
 
 static int _mtlk_df_version_dump(mtlk_seq_entry_t *s, void *v)
 {
@@ -7919,6 +7938,14 @@ static int __wave_df_ui_mgmt_tx (struct file *file, const char __user *buffer,
 
   if (count <= 1) /* only '\n' or empty string */
     return (int)count;
+
+  /* Validate count to avoid using unbounded user-supplied size */
+  if (count > PAGE_SIZE) {
+    ELOG_DD("CID-%04x: count %lu exceeds maximum allowed size",
+      mtlk_vap_get_oid(vap_handle), count);
+    return -EINVAL;
+  }
+
   /* Note: this info could have been changing while we copied it and
    * we won't necessarily catch it with the is_channel_certain() trick.
    */
@@ -7931,7 +7958,7 @@ static int __wave_df_ui_mgmt_tx (struct file *file, const char __user *buffer,
     goto end;
   }
 
-  input = kmalloc(count, GFP_KERNEL);
+  input = kmalloc(count + 1, GFP_KERNEL);
   if (!input) {
     ELOG_DD("CID-%04x: unable to allocate %lu bytes",
       mtlk_vap_get_oid(vap_handle), count);
@@ -7951,6 +7978,7 @@ static int __wave_df_ui_mgmt_tx (struct file *file, const char __user *buffer,
     res = MTLK_ERR_UNKNOWN;
     goto end;
   }
+  input[count] = '\0'; /* Null-terminate to sanitize tainted data */
   /* if the last character is \n, replace by 0 */
   if (input[count - 1] == '\n')
     input[count - 1] = '\0';
@@ -7995,8 +8023,12 @@ static int __wave_df_ui_mgmt_tx (struct file *file, const char __user *buffer,
   }
 
 end:
-  kfree(input);
-  kfree(pkt);
+  if (input) {
+    memset(input, 0, count + 1); /* Sanitize tainted data before freeing */
+    kfree(input);
+  }
+  if (pkt)
+    kfree(pkt);
   return (res == MTLK_ERR_OK) ? (int)count : _mtlk_df_mtlk_to_linux_error_code(res);
 }
 
@@ -8335,6 +8367,7 @@ static struct _proc_file_info _proc_files_list[] =
   { "ml_vap_str_tid_spread_cfg", _DEBUG_, _wave_df_ui_ml_vap_str_tid_spread_cfg, NULL },
   { "ml_str_sta_tid_spread_cfg", _DEBUG_, _wave_df_ui_ml_str_sta_tid_spread_cfg, NULL },
 #endif
+  { "he_mu_groups",       _NODBG_,  mtlk_df_ui_he_mu_dump         , NULL },
 #ifdef CONFIG_WAVE_DEBUG
   { "calibration",        _DEBUG_, _mtlk_df_ui_calibration_read   , NULL },
   { "hdk_config",         _DEBUG_, _mtlk_df_ui_hdkconfig_read     , NULL },
@@ -8348,7 +8381,6 @@ static struct _proc_file_info _proc_files_list[] =
   { "scan_support",       _DEBUG_, _mtlk_df_ui_scansupport_read   , NULL },
   { "surveys",            _DEBUG_, _mtlk_df_ui_survey_read        , NULL },
   { "trace_buffer",       _DEBUG_, _mtlk_df_ui_trace_buffer_read  , NULL },
-  { "he_mu_groups",       _DEBUG_,  mtlk_df_ui_he_mu_dump         , NULL },
   { "serializer_dump",    _DEBUG_,  mtlk_df_ui_serializer_dump    , NULL },
   { "wds_dbg",            _DEBUG_,  df_ui_wds_dbg                 , NULL },
 

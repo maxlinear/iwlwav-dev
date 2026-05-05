@@ -2560,7 +2560,10 @@ _mtlk_hw_check_and_convert_endianess (mtlk_hw_t *hw)
   MTLK_CONVERT_ENDIANESS_ARRAY_32(hw_stats->stats_data, generalStats.debugStatistics, chip_id);
   MTLK_CONVERT_ENDIANESS_ARRAY_32(hw_stats->stats_data, generalStats.exceedsETSIMaxSizeUnicast, chip_id);
   MTLK_CONVERT_ENDIANESS_ARRAY_32(hw_stats->stats_data, generalStats.exceedsETSIMaxSizeMulticast, chip_id);
-
+  if (_chipid_is_gen7(chip_id)) {
+    MTLK_CONVERT_ENDIANESS_G7(hw_stats->stats_data, generalStats.freePdCount);
+    MTLK_CONVERT_ENDIANESS_G7(hw_stats->stats_data, generalStats.freeRdCount);
+  }
   MTLK_CONVERT_ENDIANESS_ARRAY_32(hw_stats->stats_data, dynamicBwStats.dynamicBW20MHz, chip_id);
   MTLK_CONVERT_ENDIANESS_ARRAY_32(hw_stats->stats_data, dynamicBwStats.dynamicBW40MHz, chip_id);
   MTLK_CONVERT_ENDIANESS_ARRAY_32(hw_stats->stats_data, dynamicBwStats.dynamicBW80MHz, chip_id);
@@ -4601,6 +4604,10 @@ wave_core_get_general_stats (mtlk_core_t *core, mtlk_wssa_drv_general_stats_t *s
   stats->debugStatistics = MTLK_DIFF_STATS(hw_stats->stats_data, hw_stats->stats_snapshot, generalStats.debugStatistics[radio_idx], chip_id);
   stats->exceedsETSIMaxSizeUnicast = MTLK_DIFF_STATS(hw_stats->stats_data, hw_stats->stats_snapshot, generalStats.exceedsETSIMaxSizeUnicast[radio_idx], chip_id);
   stats->exceedsETSIMaxSizeMulticast = MTLK_DIFF_STATS(hw_stats->stats_data, hw_stats->stats_snapshot, generalStats.exceedsETSIMaxSizeMulticast[radio_idx], chip_id);
+  if (_chipid_is_gen7(chip_id)) {
+    stats->freePdCount = MTLK_DIFF_STATS_G7(hw_stats->stats_data, hw_stats->stats_snapshot, generalStats.freePdCount);
+    stats->freeRdCount = MTLK_DIFF_STATS_G7(hw_stats->stats_data, hw_stats->stats_snapshot, generalStats.freeRdCount);
+  }
   mtlk_osal_lock_release(&hw_stats->lock);
 }
 

@@ -255,6 +255,7 @@ typedef enum {
 } man_frame_t;
 
 /* Definitions as per IEEE 802.11 - 2016 std - chapter 9.4.2 for frame validation */
+#define IE_MAX_LEN 255
 #define IE_EXT_SUPP_RATES_MIN_LEN 1
 #define IE_EXT_SUPP_RATES_MAX_LEN 255
 #define IE_SUPP_RATES_MIN_LEN 1

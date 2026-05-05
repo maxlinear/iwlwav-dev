@@ -447,6 +447,7 @@ typedef struct tpcAntParams
 #define TPC_LOOP_TYPE_MAX  1
 
 #define MAXIMUM_BANDWIDTHS_11N 2
+#define NUM_OF_MRU_INDEX (45)  /* Number of MRU power limit entries for Wave700 */
 typedef struct tpcConfig
 {
 	int16		regulationLimit[BANDWIDTH_MAX];	/* 11AC */
@@ -456,6 +457,7 @@ typedef struct tpcConfig
 	int16		regulationLimitAX[BANDWIDTH_MAX];
 	int16		regulationLimitBF_BE[BANDWIDTH_MAX];	
 	int16		regulationLimitBE[BANDWIDTH_MAX];
+	int16		regulationLimitMRU[NUM_OF_MRU_INDEX];  /* 45 MRU power limits for Wave700*/
 	int16		regulationLimitN[MAXIMUM_BANDWIDTHS_11N];
 	int16		regulationLimitAG;
 	int16		powerLimit11b;
@@ -464,7 +466,7 @@ typedef struct tpcConfig
 	uint8		fixedGain;
  	uint8		getSetOperation;
 	uint8		Status;
-	uint8		Reserved[1];
+	uint8		Reserved[3]; /* Padding for 4-byte alignment */
 } __MTLK_PACKED tpcConfig_t;
 
 

@@ -1957,6 +1957,19 @@ mtlk_core_ap_add_sta_req (struct nic *nic, struct ieee80211_sta *mac80211_sta)
 
   mtlk_core_find_max_sta_rate(nic, sta, mac80211_sta);
 
+  if (mac80211_sta->ml_sta_info.is_ml) {
+    if (!mac80211_sta->deflink.he_cap.has_he ||
+        !mac80211_sta->deflink.eht_cap.has_eht) {
+         ELOG_DYSS("CID-%04x: Reject adding STA %Y - ML capability is set but missing capabilities: %s%s",
+          mtlk_vap_get_oid(nic->vap_handle),
+          mac80211_sta->addr,
+          !mac80211_sta->deflink.he_cap.has_he ? "HE " : "",
+          !mac80211_sta->deflink.eht_cap.has_eht ? "EHT" : "");
+        res = MTLK_ERR_PARAMS;
+        goto FINISH;
+    }
+  }
+
   man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
   if (!man_entry) {
     ELOG_D("CID-%04x: Can't send STA_ADD request to MAC due to the lack of MAN_MSG",
@@ -3641,6 +3654,53 @@ _wave_core_is_tid_spread_init_allowed(wave_ml_sta_info_t *ml_sta_info)
            (ml_sta_info->link_type == ML_STA_TYPE_TRI_LINK)));
 }
 
+static mtlk_error_t
+_wave_core_check_sta_ml_capable(sta_entry *sta, const char *label)
+{
+  if (sta == NULL) {
+    ELOG_S("Invalid input: %s is NULL", label);
+    return MTLK_ERR_UNKNOWN;
+  }
+  if (!wave_is_mld_sta(sta)) {
+    ELOG_SY("Invalid input: %s %Y is not MLD capable", label, mtlk_sta_get_addr(sta)->au8Addr);
+    return MTLK_ERR_PARAMS;
+  }
+  return MTLK_ERR_OK;
+}
+
+static mtlk_error_t
+_wave_core_check_linked_stas(sta_entry *sta, sta_entry *linked_sta,
+              sta_entry *linked_sta2, ml_sta_link_type_e link_type)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+
+  switch (link_type) {
+    case ML_STA_TYPE_SINGLE_LINK:
+      res = _wave_core_check_sta_ml_capable(sta, "main STA");
+      break;
+    case ML_STA_TYPE_DUAL_LINK:
+      res = _wave_core_check_sta_ml_capable(linked_sta, "linked STA");
+      if (res != MTLK_ERR_OK)
+        break;
+      res = _wave_core_check_sta_ml_capable(sta, "main STA");
+      break;
+    case ML_STA_TYPE_TRI_LINK:
+      res = _wave_core_check_sta_ml_capable(linked_sta2, "linked STA2");
+      if (res != MTLK_ERR_OK)
+        break;
+      res = _wave_core_check_sta_ml_capable(linked_sta, "linked STA");
+      if (res != MTLK_ERR_OK)
+        break;
+      res = _wave_core_check_sta_ml_capable(sta, "main STA");
+      break;
+    default:
+      res = MTLK_ERR_PARAMS;
+      break;
+  }
+
+  return res;
+}
+
 mtlk_error_t __MTLK_IFUNC
 wave_core_internal_ml_sta_add(mtlk_core_t *nic,
             struct mxl_ml_sta_add_param *ml_sta_add_params, u8 *main_link_id)
@@ -3748,10 +3808,9 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
                                           LINK_BIT_6G_IS_SET;
     bitmap &= ~link_mask;
   }
-  if (((link_type == ML_STA_TYPE_SINGLE_LINK) && (sta == NULL)) ||
-      ((link_type == ML_STA_TYPE_DUAL_LINK) && (sta == NULL) && (linked_sta == NULL)) ||
-      ((link_type == ML_STA_TYPE_TRI_LINK) && (sta == NULL) && (linked_sta == NULL) && (linked_sta2 == NULL))) {
-      ELOG_DD("CID-%04x: Linked STAs not found for link_type=%d", mtlk_vap_get_oid(nic->vap_handle), link_type);
+
+  if (MTLK_ERR_OK != _wave_core_check_linked_stas(sta, linked_sta, linked_sta2, link_type)) {
+      ELOG_DD("CID-%04x: Linked STAs check failed for link_type %d", mtlk_vap_get_oid(nic->vap_handle), link_type);
       res = MTLK_ERR_UNKNOWN;
       goto FINISH;
   }
@@ -3805,11 +3864,10 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
     ml_vap_tid_spread_info = wave_vap_manager_get_str_tid_spreading_info(nic->vap_handle);
     MTLK_ASSERT(NULL != ml_vap_tid_spread_info);
     /* disable tid spreading when tid_to_link_bitmap config is invalid - or in triband STR (for now) */
-    ml_vap_tid_spread_info->active = (link_type == ML_STA_TYPE_TRI_LINK ? FALSE :
-                                    (((sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID0_BIT)) &&
+    ml_vap_tid_spread_info->active = (((sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID0_BIT)) &&
                                      ((sta_tid_map & TID3_BIT) ^ (linked_sta_tid_map & TID3_BIT)) &&
                                      ((sta_tid_map & TID0_BIT) ^ (sta_tid_map & TID3_BIT)) &&
-                                     ((linked_sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID3_BIT))));
+                                     ((linked_sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID3_BIT)));
     ml_sta_tid_spread_info = mtlk_osal_mem_alloc(sizeof(wave_ml_str_sta_tid_spreading_info_t), WAVE_MEM_TAG_TID_LINK_SPREADING);
     if (ml_sta_tid_spread_info == NULL) {
       ELOG_D("CID-%04x: Can't allocate memory for ml_sta_tid_spread_info", mtlk_vap_get_oid(nic->vap_handle));
@@ -3821,6 +3879,8 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
                 dl_tid_to_link_bitmap, sizeof(dl_tid_to_link_bitmap));
     wave_core_set_assigned_tid_to_link(ml_sta_tid_spread_info, ml_vap_tid_spread_info->high_bw_vap);
     ml_sta_info.sta_tid_spread_info = ml_sta_tid_spread_info;
+    ILOG1_DSY("CID-%04x: TID spreading [%s] for MLD %Y", mtlk_vap_get_oid(nic->vap_handle),
+        ml_vap_tid_spread_info->active ? "ENABLED" : "DISABLED", ml_sta_add_params->mld_mac_addr);
   }
 #endif
   ml_sta_info.remove_sta_mld = NULL;
