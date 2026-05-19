@@ -7600,6 +7600,126 @@ static void _wv_ieee80211_wake_tx_queue(struct ieee80211_hw *hw, struct ieee8021
 	ieee80211_handle_wake_tx_queue(hw,txq);
 }
 
+#ifdef MTLK_WAVE_700
+static mtlk_error_t 
+_wv_ieee80211_fill_mlo_link_info(mtlk_vap_handle_t vap_handle,
+                                 struct cfg80211_mlo_link_info *link)
+{
+  mtlk_core_t *core = mtlk_vap_get_core(vap_handle);
+  wave_radio_t *radio = wave_vap_radio_get(vap_handle);
+  struct ieee80211_hw *hw;
+  struct mtlk_chan_def *ccd;
+  struct ieee80211_channel *c;
+  IEEE_ADDR mac_addr;
+
+  if (!core || !radio)
+    return MTLK_ERR_PARAMS;
+
+  hw = wave_radio_ieee80211_hw_get(radio);
+  if (!hw)
+    return MTLK_ERR_PARAMS;
+
+  link->link_id = wave_convert_radio_band_to_link_id(wave_radio_band_get(radio));
+
+  MTLK_CORE_PDB_GET_MAC(core, PARAM_DB_CORE_MAC_ADDR, &mac_addr);
+  mtlk_osal_copy_eth_addresses(link->addr, mac_addr.au8Addr);
+
+  ccd = wave_radio_chandef_get(radio);
+  if (ccd && ccd->chan.center_freq) {
+    c = ieee80211_get_channel(hw->wiphy, ccd->chan.center_freq);
+    if (c) {
+      link->chandef.chan = c;
+      link->chandef.width = mtlkcw2nlcw(ccd->width, ccd->is_noht);
+      link->chandef.center_freq1 = ccd->center_freq1;
+      link->chandef.center_freq2 = ccd->center_freq2;
+    }
+  }
+
+  link->tx_power_dbm = POWER_TO_DBM(
+    WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_TX_POWER_CFG) -
+    WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_TX_POWER_LIMIT_OFFSET));
+  link->tx_power_valid = true;
+
+  return MTLK_ERR_OK;
+}
+#endif /* MTLK_WAVE_700 */
+
+static int _wv_ieee80211_get_mlo_links_info(struct ieee80211_hw *hw,
+                                            struct ieee80211_vif *vif,
+                                            struct cfg80211_mlo_link_info *links,
+                                            int *n_links)
+{
+#ifdef MTLK_WAVE_700
+  mtlk_df_user_t *df_user;
+  mtlk_vap_handle_t vap_handle;
+  mtlk_ml_vap_info_t *ml_info;
+  mtlk_error_t res = MTLK_ERR_OK;
+  int sib_idx;
+
+  *n_links = 0;
+
+  df_user = wv_ieee80211_vif_to_dfuser(vif);
+  if (!df_user) {
+    res = MTLK_ERR_OK;
+    goto end;
+  }
+
+  vap_handle = mtlk_df_get_vap_handle(mtlk_df_user_get_df(df_user));
+
+  if (!mtlk_vap_ml_configured(vap_handle)) {
+    res = MTLK_ERR_OK;
+    goto end;
+  }
+
+  /* Protect against concurrent MLD teardown invalidating sibling handles */
+  mtlk_vap_ml_lock_acquire(vap_handle);
+
+  if (!mtlk_vap_ml_configured(vap_handle) || mtlk_vap_ml_teardown_inprogress(vap_handle)) {
+    res = MTLK_ERR_OK;
+    goto out_locked;
+  }
+
+  /* Fill self link */
+  if (*n_links >= MAX_NUM_OF_LINKS)
+    goto out_locked;
+  memset(&links[*n_links], 0, sizeof(struct cfg80211_mlo_link_info));
+  res = _wv_ieee80211_fill_mlo_link_info(vap_handle, &links[*n_links]);
+  if (res)
+    goto out_locked;
+
+  (*n_links)++;
+
+  /* Fill sibling links */
+  ml_info = wave_vap_manager_get_ml_vap_info(vap_handle);
+  for (sib_idx = 0; sib_idx < ml_info->num_of_sibling_vaps; sib_idx++) {
+    mtlk_vap_handle_t sib_vap = wave_vap_get_sibling_vap_handle(vap_handle, sib_idx);
+
+    if (sib_vap == MTLK_INVALID_VAP_HANDLE)
+      continue;
+    if (*n_links >= MAX_NUM_OF_LINKS)
+      break;
+    memset(&links[*n_links], 0, sizeof(struct cfg80211_mlo_link_info));
+    res = _wv_ieee80211_fill_mlo_link_info(sib_vap, &links[*n_links]);
+    if (res)
+      goto out_locked;
+
+    (*n_links)++;
+  }
+
+out_locked:
+  mtlk_vap_ml_lock_release(vap_handle);
+
+end:
+  return _mtlk_df_mtlk_to_linux_error_code(res);
+#else
+  (void)hw;
+  (void)vif;
+  (void)links;
+  *n_links = 0;
+  return 0;
+#endif /* MTLK_WAVE_700 */
+}
+
 const struct ieee80211_ops wv_ieee80211_ops = {
   .start_ap                 = _wv_ieee80211_op_start_ap,
   .stop_ap                  = _wv_ieee80211_op_stop_ap,
@@ -7654,6 +7774,7 @@ const struct ieee80211_ops wv_ieee80211_ops = {
   .set_mac_acl              = _wv_ieee80211_set_mac_acl,
   .set_radar_background     = _wv_ieee80211_start_background_radar_detection,
   .wake_tx_queue            = _wv_ieee80211_wake_tx_queue,
+  .get_mlo_links_info       = _wv_ieee80211_get_mlo_links_info,
 };
 
 /* Not all VIFs did CSA in time, report which did, this

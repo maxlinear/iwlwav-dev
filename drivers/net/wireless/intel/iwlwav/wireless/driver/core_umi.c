@@ -3902,11 +3902,17 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
     *main_link_id = _wave_core_get_link_id(nic->vap_handle);
   } else {
     ml_vap_info = wave_vap_manager_get_ml_vap_info(nic->vap_handle);
-    for (sib_idx = 0; sib_idx < ml_vap_info->num_of_sibling_vaps; sib_idx++) {
-      sib_vap_handle = wave_vap_get_sibling_vap_handle(nic->vap_handle, sib_idx);
-      if (psUmiStaAdd->u8MainVapId == mtlk_vap_get_id_fw(sib_vap_handle))
-        *main_link_id = _wave_core_get_link_id(sib_vap_handle);
+    mtlk_vap_ml_lock_acquire(nic->vap_handle);
+    if (!mtlk_vap_ml_configured(nic->vap_handle) || mtlk_vap_ml_teardown_inprogress(nic->vap_handle)) {
+      res = MTLK_ERR_PROHIB;
+    } else {
+      for (sib_idx = 0; sib_idx < ml_vap_info->num_of_sibling_vaps; sib_idx++) {
+        sib_vap_handle = wave_vap_get_sibling_vap_handle(nic->vap_handle, sib_idx);
+        if (psUmiStaAdd->u8MainVapId == mtlk_vap_get_id_fw(sib_vap_handle))
+          *main_link_id = _wave_core_get_link_id(sib_vap_handle);
+      }
     }
+    mtlk_vap_ml_lock_release(nic->vap_handle);
   }
 
 FINISH:

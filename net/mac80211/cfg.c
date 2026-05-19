@@ -5193,6 +5193,61 @@ static int ieee80211_set_mac_acl(struct wiphy *wiphy, struct net_device *dev,
         return drv_set_mac_acl(sdata->local, sdata, params);
 }
 
+static int ieee80211_get_mlo_links_info(struct wiphy *wiphy,
+					struct wireless_dev *wdev,
+					struct sk_buff *msg)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_WDEV_TO_SUB_IF(wdev);
+	struct ieee80211_local *local = sdata->local;
+	struct cfg80211_mlo_link_info mlo_links[CFG80211_MLO_MAX_LINKS] = {0};
+	struct nlattr *links;
+	int ret, i, n_links = 0;
+
+	if (!local->ops->get_mlo_links_info)
+		return 0;
+
+	ret = local->ops->get_mlo_links_info(&local->hw, &sdata->vif,
+						 mlo_links, &n_links);
+
+	/* Dont fail interface info dump if MLO links info is invalid */
+	if (ret || (n_links <= 0) || (n_links > CFG80211_MLO_MAX_LINKS))
+		return 0;
+
+	links = nla_nest_start(msg, NL80211_ATTR_MLO_LINKS);
+	if (!links)
+		return -ENOBUFS;
+
+	for (i = 0; i < n_links; i++) {
+		struct nlattr *link = nla_nest_start(msg, i + 1);
+
+		if (!link)
+			goto nla_put_failure;
+
+		if (nla_put_u8(msg, NL80211_ATTR_MLO_LINK_ID,
+			       mlo_links[i].link_id))
+			goto nla_put_failure;
+		if (nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN,
+			    mlo_links[i].addr))
+			goto nla_put_failure;
+		if (mlo_links[i].chandef.chan &&
+		    nl80211_send_chandef(msg, &mlo_links[i].chandef))
+			goto nla_put_failure;
+		if (mlo_links[i].tx_power_valid &&
+		    nla_put_u32(msg, NL80211_ATTR_WIPHY_TX_POWER_LEVEL,
+				DBM_TO_MBM(mlo_links[i].tx_power_dbm)))
+			goto nla_put_failure;
+
+		nla_nest_end(msg, link);
+	}
+
+	nla_nest_end(msg, links);
+	return 0;
+
+nla_put_failure:
+	nla_nest_cancel(msg, links);
+	return -ENOBUFS;
+}
+
 const struct cfg80211_ops mac80211_config_ops = {
 	.add_virtual_intf = ieee80211_add_iface,
 	.del_virtual_intf = ieee80211_del_iface,
@@ -5307,4 +5362,5 @@ const struct cfg80211_ops mac80211_config_ops = {
 	.del_link_station = ieee80211_del_link_station,
 	.set_hw_timestamp = ieee80211_set_hw_timestamp,
 	.set_mac_acl = ieee80211_set_mac_acl,
+	.get_mlo_links_info = ieee80211_get_mlo_links_info,
 };

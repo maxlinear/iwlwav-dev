@@ -4738,6 +4738,10 @@ struct ieee80211_ops {
 	int (*set_mac_acl)(struct ieee80211_hw *hw,
 			   struct ieee80211_vif *vif,
 			   const struct cfg80211_acl_data *params);
+	int (*get_mlo_links_info)(struct ieee80211_hw *hw,
+			    struct ieee80211_vif *vif,
+			    struct cfg80211_mlo_link_info *links,
+			    int *n_links);
 };
 
 /**

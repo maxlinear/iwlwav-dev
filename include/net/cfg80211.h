@@ -4502,7 +4502,31 @@ struct mgmt_frame_regs {
  * @del_link_station: Remove a link of a station.
  *
  * @set_hw_timestamp: Enable/disable HW timestamping of TM/FTM frames.
+ *
+ * @get_mlo_links_info: Get MLO link info for all affiliated links of a VAP
+ *	that is part of an MLD but does not use valid_links. Returns the number
+ *	of links filled (>0) on success, -ENODATA if not an MLD VAP, or
+ *	negative errno on error.
  */
+
+#define CFG80211_MLO_MAX_LINKS 3
+
+/**
+ * struct cfg80211_mlo_link_info - MLO per-link information
+ * @link_id: MLO link ID
+ * @addr: link MAC address
+ * @chandef: channel definition for this link
+ * @tx_power_dbm: TX power in dBm, filled by driver
+ * @tx_power_valid: set to true when tx_power_dbm is filled
+ */
+struct cfg80211_mlo_link_info {
+	u8 link_id;
+	u8 addr[ETH_ALEN];
+	struct cfg80211_chan_def chandef;
+	s32 tx_power_dbm;
+	bool tx_power_valid;
+};
+
 struct cfg80211_ops {
 	int	(*suspend)(struct wiphy *wiphy, struct cfg80211_wowlan *wow);
 	int	(*resume)(struct wiphy *wiphy);
@@ -4864,6 +4888,9 @@ struct cfg80211_ops {
 				    struct link_station_del_parameters *params);
 	int	(*set_hw_timestamp)(struct wiphy *wiphy, struct net_device *dev,
 				    struct cfg80211_set_hw_timestamp *hwts);
+	int	(*get_mlo_links_info)(struct wiphy *wiphy,
+				    struct wireless_dev *wdev,
+				    struct sk_buff *msg);
 };
 
 /*

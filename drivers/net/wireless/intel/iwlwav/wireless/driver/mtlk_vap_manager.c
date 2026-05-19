@@ -568,20 +568,36 @@ mtlk_vap_get_sibling_vap_handle_by_link_id(mtlk_vap_handle_t ref_vap_handle,
   mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)ref_vap_handle;
   mtlk_vap_handle_t sibling_vap_handle;
   uint8 sibling_link_id;
+  mtlk_error_t res = MTLK_ERR_UNKNOWN;
   int sib_idx;
 
   MTLK_ASSERT(NULL != _info);
   MTLK_ASSERT(NULL != vap_handle);
 
+  if (!mtlk_vap_ml_configured(ref_vap_handle))
+    goto end;
+
+  /* Protect against concurrent MLD teardown invalidating sibling handles */
+  mtlk_vap_ml_lock_acquire(ref_vap_handle);
+
+  if (!mtlk_vap_ml_configured(ref_vap_handle) || mtlk_vap_ml_teardown_inprogress(ref_vap_handle))
+    goto unlock;
+
+  res = MTLK_ERR_NO_ENTRY;
   for (sib_idx = 0; sib_idx < _info->ml_vap_info.num_of_sibling_vaps; sib_idx++) {
     sibling_vap_handle = wave_vap_get_sibling_vap_handle(ref_vap_handle, sib_idx);
     sibling_link_id = wave_convert_radio_band_to_link_id(wave_radio_band_get(wave_vap_radio_get(sibling_vap_handle)));
     if (sibling_link_id == link_id) {
       *vap_handle = sibling_vap_handle;
-      return MTLK_ERR_OK;
+      res = MTLK_ERR_OK;
+      break;
     }
   }
-  return MTLK_ERR_NO_ENTRY;
+
+unlock:
+  mtlk_vap_ml_lock_release(ref_vap_handle);
+end:
+  return res;
 }
 
 mtlk_error_t __MTLK_IFUNC
@@ -627,13 +643,11 @@ wave_vap_manager_update_ml_vap_info (mtlk_vap_handle_t vap_handle,
 
     /* update the vap_handle's sibling vap info */
     _info->ml_vap_info.sibling_handles[idx] = ml_vap_info.sibling_handles[sib_idx];
-    _info->ml_vap_info.ml_configured = TRUE;
     _info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
     idx++;
 
     /* update the sibling vap_handle's 1st sibling vap info */
     _sibling_info->ml_vap_info.sibling_handles[0] = vap_handle;
-    _sibling_info->ml_vap_info.ml_configured = TRUE;
     _sibling_info->ml_vap_info.ml_vap_rem_sync_lock = ml_vap_info.ml_vap_rem_sync_lock;
     _sibling_info->ml_vap_info.num_of_sibling_vaps = ml_vap_info.num_of_sibling_vaps;
 #ifdef BEST_EFFORT_TID_SPREADING
@@ -812,6 +826,7 @@ mtlk_ml_vap_info_init(mtlk_vap_handle_t vap_handle)
   mtlk_osal_event_init(&_info->ml_vap_info.ml_sta_teardown_completed);
   mtlk_osal_event_init(&_info->ml_vap_info.ml_teardown_completed);
   mtlk_osal_lock_init(&_info->ml_vap_info.ml_vap_sta_teardown_sync_lock);
+  mtlk_osal_atomic_set(&_info->ml_vap_info.ml_configured, 0);
   return MTLK_ERR_OK;
 }
 

@@ -57,7 +57,7 @@ struct _mtlk_mmb_drv_t;
 typedef struct _mtlk_ml_vap_info_t
 {
   mtlk_vap_handle_t sibling_handles[NUM_OF_SIBLING_LINKS];
-  BOOL              ml_configured;
+  mtlk_atomic_t     ml_configured;
   mtlk_atomic_t     ml_teardown_initiated;
   mtlk_osal_event_t ml_teardown_completed;
   mtlk_atomic_t     ml_sta_teardown_in_progress; /* Used to sync between VAP and STA removal */
@@ -622,38 +622,62 @@ static __INLINE void
 wave_ml_vap_info_cleanup (mtlk_vap_handle_t vap_handle)
 {
   mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
-  mtlk_vap_info_internal_t *_sibling_info = NULL;
-  int sib_idx;
+  mtlk_vap_info_internal_t *_sibling_info;
+  mtlk_osal_spinlock_t *lock_to_free;
+  int sib_idx, back_idx;
+#ifdef BEST_EFFORT_TID_SPREADING
+  wave_ml_vap_str_tid_spreading_info_t *tid_to_free;
+#endif
 
   MTLK_ASSERT(NULL != _info);
 
-  for (sib_idx = 0; sib_idx < NUM_OF_SIBLING_LINKS; sib_idx++) {
-    if (MTLK_INVALID_VAP_HANDLE !=_info->ml_vap_info.sibling_handles[sib_idx]) {
-      _sibling_info = (mtlk_vap_info_internal_t *)_info->ml_vap_info.sibling_handles[sib_idx];
-    }
-    if (_info->ml_vap_info.ml_vap_rem_sync_lock) {
-      mtlk_osal_lock_cleanup(_info->ml_vap_info.ml_vap_rem_sync_lock);
-      mtlk_osal_mem_free(_info->ml_vap_info.ml_vap_rem_sync_lock);
-    }
-    _info->ml_vap_info.sibling_handles[sib_idx] = MTLK_INVALID_VAP_HANDLE;
-    _info->ml_vap_info.ml_configured = FALSE;
-    _info->ml_vap_info.ml_vap_rem_sync_lock = NULL;
-    if (_sibling_info) {
-      _sibling_info->ml_vap_info.sibling_handles[sib_idx] = MTLK_INVALID_VAP_HANDLE;
-      _sibling_info->ml_vap_info.ml_configured = FALSE;
-      _sibling_info->ml_vap_info.ml_vap_rem_sync_lock = NULL;
-    }
-
+  /* Save shared resource pointers for deferred free */
+  lock_to_free = _info->ml_vap_info.ml_vap_rem_sync_lock;
 #ifdef BEST_EFFORT_TID_SPREADING
-    if (_info->ml_vap_info.tid_spread_info) {
-      mtlk_osal_mem_free(_info->ml_vap_info.tid_spread_info);
-      _info->ml_vap_info.tid_spread_info = NULL;
-      if (_sibling_info) {
-        _sibling_info->ml_vap_info.tid_spread_info = NULL;
-      }
-    }
+  tid_to_free = _info->ml_vap_info.tid_spread_info;
 #endif
+
+  /* Clear self first — prevents new entrants via ml_configured check */
+  mtlk_osal_atomic_set(&_info->ml_vap_info.ml_configured, 0);
+  _info->ml_vap_info.ml_vap_rem_sync_lock = NULL;
+  _info->ml_vap_info.num_of_sibling_vaps = 0;
+#ifdef BEST_EFFORT_TID_SPREADING
+  _info->ml_vap_info.tid_spread_info = NULL;
+#endif
+
+  for (sib_idx = 0; sib_idx < NUM_OF_SIBLING_LINKS; sib_idx++) {
+    _sibling_info = NULL;
+
+    if (MTLK_INVALID_VAP_HANDLE != _info->ml_vap_info.sibling_handles[sib_idx])
+      _sibling_info = (mtlk_vap_info_internal_t *)_info->ml_vap_info.sibling_handles[sib_idx];
+
+    _info->ml_vap_info.sibling_handles[sib_idx] = MTLK_INVALID_VAP_HANDLE;
+
+    if (_sibling_info) {
+      /* Clear ml_configured first to stop new entrants, then remaining fields */
+      mtlk_osal_atomic_set(&_sibling_info->ml_vap_info.ml_configured, 0);
+      _sibling_info->ml_vap_info.ml_vap_rem_sync_lock = NULL;
+      for (back_idx = 0; back_idx < NUM_OF_SIBLING_LINKS; back_idx++)
+        _sibling_info->ml_vap_info.sibling_handles[back_idx] = MTLK_INVALID_VAP_HANDLE;
+      _sibling_info->ml_vap_info.num_of_sibling_vaps = 0;
+#ifdef BEST_EFFORT_TID_SPREADING
+      _sibling_info->ml_vap_info.tid_spread_info = NULL;
+#endif
+    }
   }
+
+  /* Free shared resources last — all VAP pointers already NULLed,
+   * so any in-flight reader that passed ml_configured/lock_available
+   * checks will find valid lock memory, acquire it, see
+   * teardown_inprogress, and bail safely */
+  if (lock_to_free) {
+    mtlk_osal_lock_cleanup(lock_to_free);
+    mtlk_osal_mem_free(lock_to_free);
+  }
+#ifdef BEST_EFFORT_TID_SPREADING
+  if (tid_to_free)
+    mtlk_osal_mem_free(tid_to_free);
+#endif
 }
 
 static __INLINE BOOL
@@ -662,7 +686,7 @@ mtlk_vap_ml_configured(mtlk_vap_handle_t vap_handle)
   mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
 
   MTLK_ASSERT(NULL != _info);
-  return _info->ml_vap_info.ml_configured;
+  return mtlk_osal_atomic_get(&_info->ml_vap_info.ml_configured) ? TRUE : FALSE;
 }
 
 static __INLINE mtlk_vap_handle_t

@@ -9278,6 +9278,24 @@ _wave_core_create_vap_tid_spread_info(mtlk_core_t *core, mtlk_ml_vap_info_t *ml_
 #endif
 
 static void
+_wave_core_set_ml_configured(mtlk_core_t *core)
+{
+  mtlk_vap_handle_t vap_handle = core->vap_handle;
+  mtlk_ml_vap_info_t *ml_info;
+  int sib_idx;
+
+  mtlk_vap_ml_lock_acquire(vap_handle);
+  ml_info = wave_vap_manager_get_ml_vap_info(vap_handle);
+  mtlk_osal_atomic_set(&ml_info->ml_configured, 1);
+  for (sib_idx = 0; sib_idx < ml_info->num_of_sibling_vaps; sib_idx++) {
+    mtlk_vap_handle_t sib_vap = wave_vap_get_sibling_vap_handle(vap_handle, sib_idx);
+    ml_info = wave_vap_manager_get_ml_vap_info(sib_vap);
+    mtlk_osal_atomic_set(&ml_info->ml_configured, 1);
+  }
+  mtlk_vap_ml_lock_release(vap_handle);
+}
+
+static void
 _wave_core_update_ml_vap_info (mtlk_core_t *core,  struct _mxl_vendor_mld_info *ml_info)
 {
   int radio_id, sib_id, sib_vap_id, result;
@@ -9343,6 +9361,8 @@ _wave_core_update_ml_vap_info (mtlk_core_t *core,  struct _mxl_vendor_mld_info *
   }
 
   wave_vap_manager_update_ml_vap_info(core->vap_handle, ml_vap_info);
+
+  _wave_core_set_ml_configured(core);
 }
 
 mtlk_error_t __MTLK_IFUNC
@@ -10149,7 +10169,6 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
   struct _mxl_vendor_mld_info ml_info;
   mtlk_pdb_size_t ml_info_len = sizeof(ml_info);
   u8 ssid[MAX_SSID_LEN + 1];
-  mtlk_vap_info_internal_t *vap_handle_internal;
   mtlk_pdb_size_t ssid_len = sizeof(ssid);
   bool ssid_found = FALSE;
 
@@ -10188,14 +10207,27 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
           if (ml_info.mld_id == MTLK_PARAM_DB_INVALID_UINT8)
             continue;
 
+          if (!mtlk_vap_ml_configured(vap_handle)) {
+            ml_vap_cnt--;
+            continue;
+          }
+
+          mtlk_vap_ml_lock_acquire(vap_handle);
+          if (!mtlk_vap_ml_configured(vap_handle) || mtlk_vap_ml_teardown_inprogress(vap_handle)) {
+            mtlk_vap_ml_lock_release(vap_handle);
+            ml_vap_cnt--;
+            continue;
+          }
+
           ssid_found = FALSE;
           tmp_list->mld_id = ml_info.mld_id;
-          vap_handle_internal = (mtlk_vap_info_internal_t *)vap_handle;
           if (MTLK_ERR_OK == MTLK_CORE_PDB_GET_BINARY(tmp_core, PARAM_DB_CORE_ESSID, ssid, &ssid_len)) {
             ssid_found = TRUE;
           } else {
             for(sib_id = 0; sib_id < ml_info.num_of_sibling_vaps; sib_id++) {
-              sibling_vap_handle = vap_handle_internal->ml_vap_info.sibling_handles[sib_id];
+              sibling_vap_handle = wave_vap_get_sibling_vap_handle(vap_handle, sib_id);
+              if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE)
+                continue;
               tmp_core = mtlk_vap_get_core(sibling_vap_handle);
               if (MTLK_ERR_OK == MTLK_CORE_PDB_GET_BINARY(tmp_core, PARAM_DB_CORE_ESSID, ssid, &ssid_len)) {
                 ssid_found = TRUE;
@@ -10204,6 +10236,7 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
             }
           }
           if (!ssid_found) {
+            mtlk_vap_ml_lock_release(vap_handle);
             ml_vap_cnt--;
             continue;
           }
@@ -10212,13 +10245,14 @@ wave_core_get_ml_vap_list (mtlk_handle_t hcore, const void *data, uint32 data_si
                        sizeof(tmp_list->ifname[MLD_MAIN_LINK]));
           ieee_addr_set(&tmp_list->mld_addr, ml_info.ap_mld_mac);
           for (sib_id = 0; sib_id < ml_info.num_of_sibling_vaps; sib_id++) {
-            sibling_vap_handle = vap_handle_internal->ml_vap_info.sibling_handles[sib_id];
+            sibling_vap_handle = wave_vap_get_sibling_vap_handle(vap_handle, sib_id);
             if (sibling_vap_handle == MTLK_INVALID_VAP_HANDLE)
               continue;
             tmp_core = mtlk_vap_get_core(sibling_vap_handle);
             wave_strcopy(tmp_list->ifname[sib_id + 1], mtlk_df_get_name(mtlk_vap_get_df(sibling_vap_handle)),
                        sizeof(tmp_list->ifname[sib_id + 1]));
           }
+          mtlk_vap_ml_lock_release(vap_handle);
           tmp_list++;
         }
       }

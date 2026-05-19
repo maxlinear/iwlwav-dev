@@ -3859,6 +3859,16 @@ int nl80211_send_chandef(struct sk_buff *msg, const struct cfg80211_chan_def *ch
 }
 EXPORT_SYMBOL(nl80211_send_chandef);
 
+static int
+rdev_get_mlo_links_info(struct cfg80211_registered_device *rdev,
+		       struct wireless_dev *wdev, struct sk_buff *msg)
+{
+	if (!rdev->ops->get_mlo_links_info)
+		return 0;
+
+	return rdev->ops->get_mlo_links_info(&rdev->wiphy, wdev, msg);
+}
+
 static int nl80211_send_iface(struct sk_buff *msg, u32 portid, u32 seq, int flags,
 			      struct cfg80211_registered_device *rdev,
 			      struct wireless_dev *wdev,
@@ -3977,6 +3987,10 @@ static int nl80211_send_iface(struct sk_buff *msg, u32 portid, u32 seq, int flag
 		}
 
 		nla_nest_end(msg, links);
+	}
+	/* MXL proprietary: fill MLO link info for VAPs that are part of an MLD */
+	else if (rdev_get_mlo_links_info(rdev, wdev, msg)) {
+		goto nla_put_failure;
 	}
 
 	genlmsg_end(msg, hdr);

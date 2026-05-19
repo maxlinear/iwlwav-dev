@@ -74,7 +74,7 @@
 #define HE_OPERATION_BSS_COLOR_MASK             0x3F /* Mask for BSS color value */
 #ifdef MTLK_WAVE_700
 #define IE_EHT_PHY_6GHZ_320MHZ_SUPPORT_OFFSET (WLAN_EID_EXTENSION_ID_OFFSET + 3) /* EHT PHY CAP0 */
-#define EHT_PHY_6GHZ_320MHZ_SUPPORT_MSK       2
+#define EHT_PHY_6GHZ_320MHZ_SUPPORT_BIT_OFFSET  1
 #define EHT_MCS_NSS_320MHZ_LEN   9
 #define EHT_MCS_NSS_160MHZ_LEN   6
 #define EHT_MCS_NSS_80MHZ_LEN    3
@@ -1545,7 +1545,7 @@ _wave_beacon_template_parsing_ies(mtlk_core_t *core, mtlk_beacon_data_t *beacon_
         set_bss_flags |= MTLK_BFIELD_VALUE(VAP_ADD_FLAGS_EHT, 1, uint8);
         
         if ((band == MTLK_HW_BAND_6_GHZ) && 
-            MTLK_U_BITS_GET(eht_cap_ie[IE_EHT_PHY_6GHZ_320MHZ_SUPPORT_OFFSET], EHT_PHY_6GHZ_320MHZ_SUPPORT_MSK, 1)) {
+            MTLK_U_BITS_GET(eht_cap_ie[IE_EHT_PHY_6GHZ_320MHZ_SUPPORT_OFFSET], EHT_PHY_6GHZ_320MHZ_SUPPORT_BIT_OFFSET, 1)) {
           eht_mcs_nss_len = EHT_MCS_NSS_320MHZ_LEN;
         } else if (is_he_160mhz_supported) {
           eht_mcs_nss_len = EHT_MCS_NSS_160MHZ_LEN;
@@ -1554,7 +1554,7 @@ _wave_beacon_template_parsing_ies(mtlk_core_t *core, mtlk_beacon_data_t *beacon_
         }
         wave_pdb_set_binary(param_db_core, PARAM_DB_CORE_EHT_MCS_NSS, eht_cap_ie + IE_EHT_MCS_NSS_OFFSET, eht_mcs_nss_len);
         ILOG1_DD("EHT MCS NSS Supported: band %d, length %u", band, eht_mcs_nss_len);
-        mtlk_dump(1, &eht_cap_ie[IE_EHT_MCS_NSS_OFFSET], eht_mcs_nss_len, "dump of 320MHz EHT_MCS_NSS:");
+        mtlk_dump(1, &eht_cap_ie[IE_EHT_MCS_NSS_OFFSET], eht_mcs_nss_len, "dump of EHT_MCS_NSS:");
     } else {
       ILOG1_V("WAVE700: No EHT Capabilities IE found in the Beacon!!!");
     }
