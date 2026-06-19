@@ -1045,6 +1045,31 @@ ieee80211_set_unsol_bcast_probe_resp(struct ieee80211_sub_if_data *sdata,
 	return 0;
 }
 
+static void ieee80211_reset_unsol_bcast_fils_frames(struct ieee80211_sub_if_data *sdata,
+					       struct ieee80211_link_data *link,
+					       struct ieee80211_bss_conf *link_conf)
+{
+	struct fils_discovery_data *old_fils;
+	struct unsol_bcast_probe_resp_data *old_unsol;
+
+	/* Clear FILS Discovery in-memory state */
+	link_conf->fils_discovery.min_interval = 0;
+	link_conf->fils_discovery.max_interval = 0;
+
+	old_fils = sdata_dereference(link->u.ap.fils_discovery, sdata);
+	RCU_INIT_POINTER(link->u.ap.fils_discovery, NULL);
+	if (old_fils)
+		kfree_rcu(old_fils, rcu_head);
+
+	/* Clear Unsolicited Probe Response in-memory state */
+	link_conf->unsol_bcast_probe_resp_interval = 0;
+
+	old_unsol = sdata_dereference(link->u.ap.unsol_bcast_probe_resp, sdata);
+	RCU_INIT_POINTER(link->u.ap.unsol_bcast_probe_resp, NULL);
+	if (old_unsol)
+		kfree_rcu(old_unsol, rcu_head);
+}
+
 static int ieee80211_set_ftm_responder_params(
 				struct ieee80211_sub_if_data *sdata,
 				const u8 *lci, size_t lci_len,
@@ -1472,6 +1497,8 @@ static int ieee80211_start_ap(struct wiphy *wiphy, struct net_device *dev,
 				      &changed);
 	if (err < 0)
 		goto error;
+
+	ieee80211_reset_unsol_bcast_fils_frames(sdata, link, link_conf);
 
 	if (params->fils_discovery.max_interval) {
 		err = ieee80211_set_fils_discovery(sdata,
