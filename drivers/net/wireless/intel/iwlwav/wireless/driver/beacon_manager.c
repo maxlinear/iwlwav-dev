@@ -1592,6 +1592,33 @@ _wave_beacon_template_parsing_ies(mtlk_core_t *core, mtlk_beacon_data_t *beacon_
       ILOG1_DS("CID-%04x: dgaf_disabled: %s", mtlk_vap_get_oid(core->vap_handle), core->dgaf_disabled ? "true" : "false");
     }
 
+  /*
+   * Remove BSS Load IE from beacon tail.
+   * FW may add this IE based on addBssLoadIe flag (UM_MAN_SET_BEACON_TEMPLATE_REQ).
+   */
+  {
+    const u8 *bss_load_ie = cfg80211_find_ie(IE_BSS_LOAD,
+                                             beacon_data->tail,
+                                             beacon_data->tail_len);
+
+    if (bss_load_ie) {
+      const u8 *tail_end = beacon_data->tail + beacon_data->tail_len;
+      size_t ie_total_len = bss_load_ie[IE_LENGTH_OFFSET] + IE_HDR_SIZE;
+      u8 *next_ie_pos = (u8 *)bss_load_ie + ie_total_len;
+
+      if ((bss_load_ie[IE_LENGTH_OFFSET] != 5) || (next_ie_pos > tail_end)) {
+        ELOG_D("Wrong BSS Load IE length %u", bss_load_ie[IE_LENGTH_OFFSET]);
+      } else {
+        if (next_ie_pos < tail_end) {
+          memmove((u8 *)bss_load_ie, next_ie_pos, tail_end - next_ie_pos);
+        }
+
+        beacon_data->tail_len -= ie_total_len;
+        ILOG2_D("CID-%04x: BSS LOAD IE removed from beacon tail", mtlk_vap_get_oid(core->vap_handle));
+      }
+    }
+  }
+
 #ifdef WAVE_DCDP_DGAF_SUPPORTED
     if (core->dgaf_disabled != core->dgaf_disabled_update) {
       /* Update DC DP DGAF flag accordingly with core->dgaf_disabled */
