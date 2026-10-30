@@ -69,6 +69,7 @@
 #include "mtlk_rtlog.h"
 #include "ieee80211_crc32.h"  /* for IEEE80211 32-bit CRC computation */
 #include "hw_mmb.h"
+#include "mtlk_mmb_drv.h"
 
 #define LOG_LOCAL_GID   GID_CORE
 #define LOG_LOCAL_FID   4
@@ -985,6 +986,19 @@ _mtlk_core_ap_disconnect_sta_blocked(struct nic *nic, struct ieee80211_sta * mac
 
   df = mtlk_vap_get_secondary_df(nic->vap_handle, sta->secondary_vap_id);
   MTLK_ASSERT(NULL != df);
+  if (__UNLIKELY(NULL == df)) {
+    /* Secondary VAP was torn down concurrently (e.g. by a sibling) - there
+     * is nothing left to clean up on the df side, but the driver STA entry
+     * itself (stadb/hstdb) is NOT cleaned up by the VAP teardown path, so
+     * we must still fall through to driver_sta_cleanup below rather than
+     * skip it - otherwise this STA is leaked in stadb forever. Treat this
+     * as success (not an error) so callers that iterate all STAs (e.g.
+     * core_ap_disconnect_all()) don't abort the rest of the sweep on it. */
+    ELOG_D("CID-%04x: Secondary df is gone, proceeding with driver STA cleanup only", mtlk_vap_get_oid(nic->vap_handle));
+    res = MTLK_ERR_OK;
+    sid = mtlk_sta_get_sid(sta);
+    goto driver_sta_cleanup;
+  }
 
   ieee_addr_set(&addr, mac80211_sta->addr);
   /* Check is STA is a peer AP */
@@ -1075,8 +1089,11 @@ driver_sta_cleanup:
     mtlk_vap_unbind_backhaul_sta(nic->vap_handle, sta);
   }
 
-  /* Notify ARP proxy if enabled */
-  if (MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_ARP_PROXY)) {
+  /* Notify ARP proxy if enabled. df may be NULL here (secondary VAP torn
+   * down concurrently, see the check above) - mtlk_df_get_name() is not
+   * NULL-safe, so guard explicitly rather than crash on the very path this
+   * function exists to make safe. */
+  if (df && MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_ARP_PROXY)) {
     mtlk_parp_notify_disconnect((char*) mtlk_df_get_name(df), (char *) mac80211_sta->addr);
   }
 
@@ -1284,6 +1301,12 @@ mtlk_core_handle_tx_data (mtlk_vap_handle_t vap_handle, mtlk_nbuf_t *nbuf)
   MTLK_ASSERT(NULL != nic);
   stadb = &nic->slow_ctx->stadb;
   CPU_STAT_BEGIN_TRACK(CPU_STAT_ID_TX_OS);
+
+  /* A queued/deferred TX (e.g. bridge STP timer) can still fire after the VAP is marked stopped but before its state is freed - drop instead of walking stale state. */
+  if (__UNLIKELY(mtlk_vap_manager_vap_is_not_ready(
+        mtlk_vap_get_manager(vap_handle), mtlk_vap_get_id(vap_handle)))) {
+    goto tx_error;
+  }
 
   /* Transmit only if connected to someone */
   if (__UNLIKELY(!_mtlk_core_has_connections(nic))) {
@@ -1795,7 +1818,12 @@ mtlk_core_analyze_and_send_up (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_
     if (net_state != NET_STATE_CONNECTED) {
       mtlk_df_nbuf_free(nbuf);
       if (net_state != NET_STATE_DEACTIVATING) {
+#if 0
         WLOG_DD("CID-%04x: Data rx in not connected state (current state is %d), dropped", mtlk_vap_get_oid(nic->vap_handle), net_state);
+#else
+        /* todo: implement "ratelimit" approach for extensive logs */
+        ILOG3_DD("CID-%04x: Data rx in not connected state (current state is %d), dropped", mtlk_vap_get_oid(nic->vap_handle), net_state);
+#endif
       }
       return;
     }
@@ -1842,8 +1870,23 @@ mtlk_core_analyze_and_send_up (mtlk_core_t* nic, mtlk_core_handle_tx_data_t *tx_
     mtlk_sta_on_packet_indicated(src_sta, nbuf, nbuf_flags);
 
     CPU_STAT_END_TRACK(CPU_STAT_ID_RX_HW);
-    mtlk_df_ui_indicate_rx_data(mtlk_vap_get_secondary_df(nic->vap_handle,
-                                                          src_sta->secondary_vap_id), nbuf);
+    {
+      /* This runs off the RX interrupt/softirq path, genuinely concurrent
+       * with control-plane secondary-VAP teardown - use the refcounted
+       * accessor, not mtlk_vap_get_secondary_df(), so the df can't be
+       * freed out from under us between the get and the indicate call. */
+      mtlk_df_t *secondary_df = mtlk_vap_get_secondary_df_ref(nic->vap_handle,
+                                                               src_sta->secondary_vap_id);
+      if (__UNLIKELY(NULL == secondary_df)) {
+        /* Secondary VAP was torn down concurrently - drop instead of
+           dereferencing a gone df/df_user */
+        WLOG_D("CID-%04x: Secondary df is gone, dropping rx packet", mtlk_vap_get_oid(nic->vap_handle));
+        mtlk_df_nbuf_free(nbuf);
+        return;
+      }
+      mtlk_df_ui_indicate_rx_data(secondary_df, nbuf);
+      mtlk_df_decref(secondary_df);
+    }
   }
 }
 
@@ -2505,6 +2548,10 @@ _core_change_bss_by_params(mtlk_core_t *master_core, struct mtlk_bss_parameters 
     /* Update ht_protection value if it was changed earlier by iwpriv */
     if (MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_IWPRIV_FORCED) & PARAM_DB_CORE_IWPRIV_FORCED_HT_PROTECTION_FLAG) {
         params->use_cts_prot = MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_HT_PROTECTION);
+    } else {
+      if (params->use_cts_prot != -1) {
+        params->use_cts_prot = (params->use_cts_prot ? PROTECTION_MODE_FORCE_CTS_TO_SELF : PROTECTION_MODE_NO_PROTECTION);
+      }
     }
   } else {
     wave_pdb_set_int(param_db_core, PARAM_DB_CORE_AP_FORWARDING, FALSE);
@@ -2770,6 +2817,9 @@ CORE_HALTED:
 #endif
   res = mtlk_core_send_vap_remove(nic);
   mtlk_vap_set_stopped(nic->vap_handle);
+
+  /* Wait for any running tasklet to finish before we free VAP data. */
+  mtlk_mmb_drv_drain_tasklets(mtlk_vap_get_hw(nic->vap_handle));
 
 FINISH:
   finish_and_prevent_fw_set_chan(running_core, FALSE);
@@ -3468,6 +3518,12 @@ int mtlk_handle_eapol(mtlk_vap_handle_t vap_handle, void *data, int data_len)
   wave_radio_t                  *sibling_radio;
   uint8 sib_idx;
 
+  /* Drop the frame if the VAP is already stopped. */
+  if (__UNLIKELY(mtlk_vap_manager_vap_is_not_ready(
+        mtlk_vap_get_manager(vap_handle), mtlk_vap_get_id(vap_handle)))) {
+    return MTLK_ERR_OK;
+  }
+
   CAPWAP1(mtlk_hw_mmb_get_card_idx(mtlk_vap_get_hw(vap_handle)), data, data_len, 0, 0);
 
   sta = mtlk_stadb_find_sta(&nic->slow_ctx->stadb, ether_header->h_source);
@@ -3753,7 +3809,7 @@ _mtlk_core_set_mac_assert (mtlk_handle_t hcore, const void* data, uint32 data_si
 
     switch (assert_type) {
       case MTLK_CORE_UI_ASSERT_TYPE_ALL_MACS:
-        wave_rcvry_type_forced_set(mtlk_vap_get_hw(nic->vap_handle), MTLK_CORE_UI_RCVRY_TYPE_NONE);
+        wave_rcvry_type_forced_set(mtlk_vap_get_hw(nic->vap_handle), (wave_rcvry_type_e)MTLK_CORE_UI_RCVRY_TYPE_NONE);
         (void)mtlk_hw_set_prop(mtlk_vap_get_hwapi(nic->vap_handle), MTLK_HW_DBG_ASSERT_ALL_MACS, NULL, 0);
         res = MTLK_ERR_OK;
         break;
@@ -3769,7 +3825,7 @@ _mtlk_core_set_mac_assert (mtlk_handle_t hcore, const void* data, uint32 data_si
           ELOG_DD("CID-%04x: Invalid assert type %d", mtlk_vap_get_oid(nic->vap_handle), assert_type);
           break;
         }
-        wave_rcvry_type_forced_set(mtlk_vap_get_hw(nic->vap_handle), MTLK_CORE_UI_RCVRY_TYPE_NONE);
+        wave_rcvry_type_forced_set(mtlk_vap_get_hw(nic->vap_handle), (wave_rcvry_type_e)MTLK_CORE_UI_RCVRY_TYPE_NONE);
         res = mtlk_hw_set_prop(mtlk_vap_get_hwapi(nic->vap_handle), MTLK_HW_DBG_ASSERT_FW, &mips_no, sizeof(mips_no));
         if (res != MTLK_ERR_OK) {
           ELOG_DDD("CID-%04x: Can't assert FW MIPS#%d (res=%d)", mtlk_vap_get_oid(nic->vap_handle), mips_no, res);
@@ -3819,6 +3875,54 @@ _wave_radio_fixed_pwr_params_get (wave_radio_t *radio, FIXED_POWER *fixed_pwr_pa
   if (MTLK_ERR_OK != WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_FIXED_PWR, fixed_pwr_params, &fixed_pwr_cfg_size)) {
     ELOG_V("Failed to get Fixed TX management power parameters");
   }
+}
+
+static int __MTLK_IFUNC
+wave_dbg_static_plan_mu_group_stats_ind_handle(mtlk_handle_t object, const void *data, uint32 data_size)
+{
+  int i;
+  int group_id;
+  mtlk_core_t *master_core;
+  wave_radio_t *radio;
+  UMI_DBG_HE_MU_GROUP_STATS *UmiDbgMuGroup = (UMI_DBG_HE_MU_GROUP_STATS *) data;
+  UMI_DBG_HE_MU_GROUP_STATS HeMuGroups[HE_MU_MAX_NUM_OF_GROUPS];
+  mtlk_pdb_size_t UmiDbgMuGroupStatsSize = sizeof(HeMuGroups);
+
+  MTLK_ASSERT(sizeof(*UmiDbgMuGroup) == data_size);
+
+  group_id = UmiDbgMuGroup->groupId;
+
+  if(group_id >= HE_MU_MAX_NUM_OF_GROUPS) {
+    ELOG_D("Wrong HE MU Group ID (%d) !", group_id);
+    return MTLK_ERR_PARAMS;
+  }
+
+  master_core = HANDLE_T_PTR(mtlk_core_t, object);
+  radio = wave_vap_radio_get(master_core->vap_handle);
+
+  mtlk_dump(4, UmiDbgMuGroup, sizeof(*UmiDbgMuGroup), "dump of the UMI_MAN_HE_MU_DBG_IND");
+
+  /* Read current MU group stats */
+  if (MTLK_ERR_OK != WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_PLAN_MU_GROUP_STATS, &HeMuGroups[0], &UmiDbgMuGroupStatsSize)) {
+    ELOG_D("CID-%04x: Can't read PLAN_MU_GROUP_STATS from PDB", mtlk_vap_get_oid(master_core->vap_handle));
+    return MTLK_ERR_PARAMS;
+  }
+
+  /* Update the stats for particular group */
+  HeMuGroups[group_id].groupId  = group_id;
+  HeMuGroups[group_id].planType = UmiDbgMuGroup->planType;
+  HeMuGroups[group_id].vapId = UmiDbgMuGroup->vapId;
+  HeMuGroups[group_id].setReset = UmiDbgMuGroup->setReset;
+  for(i = 0; i < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; i++) {
+    HeMuGroups[group_id].stationId[i] = MAC_TO_HOST16(UmiDbgMuGroup->stationId[i]);
+  }
+
+  if (MTLK_ERR_OK != WAVE_RADIO_PDB_SET_BINARY(radio, PARAM_DB_RADIO_PLAN_MU_GROUP_STATS, &HeMuGroups[0], UmiDbgMuGroupStatsSize)) {
+    ELOG_D("CID-%04x: Can't set PLAN_MU_GROUP_STATS to PDB", mtlk_vap_get_oid(master_core->vap_handle));
+    return MTLK_ERR_PARAMS;
+  }
+
+  return MTLK_ERR_OK;
 }
 
 /********** DEBUG FUNCTIONS **********/
@@ -3882,54 +3986,6 @@ _mtlk_core_get_serializer_info (mtlk_handle_t hcore,
   mtlk_serializer_enum_commands(&nic->slow_ctx->serializer, __mtlk_core_get_serializer_info_enum_clb, HANDLE_T(&ctx));
 
   return ctx.res;
-}
-
-static int __MTLK_IFUNC
-wave_dbg_static_plan_mu_group_stats_ind_handle(mtlk_handle_t object, const void *data, uint32 data_size)
-{
-  int i;
-  int group_id;
-  mtlk_core_t *master_core;
-  wave_radio_t *radio;
-  UMI_DBG_HE_MU_GROUP_STATS *UmiDbgMuGroup = (UMI_DBG_HE_MU_GROUP_STATS *) data;
-  UMI_DBG_HE_MU_GROUP_STATS HeMuGroups[HE_MU_MAX_NUM_OF_GROUPS];
-  mtlk_pdb_size_t UmiDbgMuGroupStatsSize = sizeof(HeMuGroups);
-
-  MTLK_ASSERT(sizeof(*UmiDbgMuGroup) == data_size);
-
-  group_id = UmiDbgMuGroup->groupId;
-
-  if(group_id >= HE_MU_MAX_NUM_OF_GROUPS) {
-    ELOG_D("Wrong HE MU Group ID (%d) !", group_id);
-    return MTLK_ERR_PARAMS;
-  }
-
-  master_core = HANDLE_T_PTR(mtlk_core_t, object);
-  radio = wave_vap_radio_get(master_core->vap_handle);
-
-  mtlk_dump(4, UmiDbgMuGroup, sizeof(*UmiDbgMuGroup), "dump of the UMI_MAN_HE_MU_DBG_IND");
-
-  /* Read current MU group stats */
-  if (MTLK_ERR_OK != WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_PLAN_MU_GROUP_STATS, &HeMuGroups[0], &UmiDbgMuGroupStatsSize)) {
-    ELOG_D("CID-%04x: Can't read PLAN_MU_GROUP_STATS from PDB", mtlk_vap_get_oid(master_core->vap_handle));
-    return MTLK_ERR_PARAMS;
-  }
-
-  /* Update the stats for particular group */
-  HeMuGroups[group_id].groupId  = group_id;
-  HeMuGroups[group_id].planType = UmiDbgMuGroup->planType;
-  HeMuGroups[group_id].vapId = UmiDbgMuGroup->vapId;
-  HeMuGroups[group_id].setReset = UmiDbgMuGroup->setReset;
-  for(i = 0; i < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; i++) {
-    HeMuGroups[group_id].stationId[i] = MAC_TO_HOST16(UmiDbgMuGroup->stationId[i]);
-  }
-
-  if (MTLK_ERR_OK != WAVE_RADIO_PDB_SET_BINARY(radio, PARAM_DB_RADIO_PLAN_MU_GROUP_STATS, &HeMuGroups[0], UmiDbgMuGroupStatsSize)) {
-    ELOG_D("CID-%04x: Can't set PLAN_MU_GROUP_STATS to PDB", mtlk_vap_get_oid(master_core->vap_handle));
-    return MTLK_ERR_PARAMS;
-  }
-
-  return MTLK_ERR_OK;
 }
 
 static int
@@ -5810,6 +5866,17 @@ _mtlk_core_set_auto_params (mtlk_core_t *core, mtlk_coc_auto_cfg_t *auto_params)
   return res;
 }
 
+static int
+_wave_core_set_coc_decision (mtlk_core_t *core, mtlk_coc_antenna_cfg_t *hal_decision_cfg)
+{
+  mtlk_coc_t *coc_mgmt = __wave_core_coc_mgmt_get(core);
+  ILOG1_DDD("CID-%04x: COC HAL decision received from HAL: TX%dxRX%d",
+           mtlk_vap_get_oid(core->vap_handle), hal_decision_cfg->num_tx_antennas,
+           hal_decision_cfg->num_rx_antennas);
+  return wave_coc_set_decision(coc_mgmt, hal_decision_cfg->num_tx_antennas,
+                                hal_decision_cfg->num_rx_antennas);
+}
+
 static mtlk_error_t
 _mtlk_core_set_coc_cfg (mtlk_handle_t hcore, const void* data, uint32 data_size)
 {
@@ -5828,6 +5895,8 @@ _mtlk_core_set_coc_cfg (mtlk_handle_t hcore, const void* data, uint32 data_size)
                                    (core, &coc_cfg->auto_params), res);
       MTLK_CFG_CHECK_ITEM_AND_CALL(coc_cfg, power_params, wave_core_set_coc_power_params,
                                    (core, &coc_cfg->power_params), res);
+      MTLK_CFG_CHECK_ITEM_AND_CALL(coc_cfg, coc_decision_cfg, _wave_core_set_coc_decision,
+                                   (core, &coc_cfg->coc_decision_cfg), res);
     MTLK_CFG_END_CHEK_ITEM_AND_CALL()
   MTLK_CLPB_FINALLY(res)
     return mtlk_clpb_push_res(clpb, res);
@@ -6253,13 +6322,72 @@ _mtlk_core_get_tx_power (mtlk_handle_t hcore, const void* data, uint32 data_size
     mtlk_core_t *core = (mtlk_core_t*)hcore;
     wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
     mtlk_clpb_t *clpb = *(mtlk_clpb_t **) data;
+  int tx_power_dbm;
+  struct wireless_dev *wdev;
+  mtlk_hw_band_e band;
+  int channel;
+  uint8 cfg_width;
+  uint8 oper_power_mode;
+  uint16 center_freq;
+  uint16 freq_l = 0, freq_u = 0;
+  wave_chan_bonding_t chan_bonding;
+#ifdef MTLK_WAVE_700
+  wave_chan_bonding_320mhz_t chan_bonding_320mhz;
+#endif
 
     MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
 
     /* read tx power and convert it from power units to dBm */
-    MTLK_CFG_SET_ITEM(&tx_power_cfg, tx_power,
-      POWER_TO_DBM(WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_TX_POWER_CFG) -
-                   WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_TX_POWER_LIMIT_OFFSET)));
+    tx_power_dbm = POWER_TO_DBM(WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_TX_POWER_CFG) -
+                                WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_TX_POWER_LIMIT_OFFSET));
+
+    /*
+     * Keep iw dev txpower aligned with AFC for current operating BW/channel,
+     * but only for 6 GHz SP/ISP modes (not LPI).
+     */
+    band = wave_radio_band_get(radio);
+    oper_power_mode = WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_6GHZ_OPER_POWER_MODE);
+    if (band == MTLK_HW_BAND_6_GHZ &&
+        (oper_power_mode == IEEE80211_6GHZ_CTRL_REG_SP_AP ||
+         oper_power_mode == IEEE80211_6GHZ_CTRL_REG_ISP_AP)) {
+      channel = _mtlk_core_get_channel(core);
+      cfg_width = _mtlk_core_get_spectrum_mode(core);
+      center_freq = channel_to_frequency(channel, band);
+
+      if (center_freq) {
+        memset(&chan_bonding, 0, sizeof(chan_bonding));
+        wave_scan_support_fill_chan_bonding_by_freq(&chan_bonding, center_freq, center_freq);
+
+        if (cfg_width <= CW_160 && cfg_width < ARRAY_SIZE(chan_bonding.lower_chan) &&
+            chan_bonding.lower_chan[cfg_width] && chan_bonding.upper_chan[cfg_width]) {
+          freq_l = channel_to_frequency(chan_bonding.lower_chan[cfg_width], band);
+          freq_u = channel_to_frequency(chan_bonding.upper_chan[cfg_width], band);
+        }
+#ifdef MTLK_WAVE_700
+        else if (cfg_width == CW_320 && wave_radio_is_320mhz_supported(radio)) {
+          memset(&chan_bonding_320mhz, 0, sizeof(chan_bonding_320mhz));
+          wave_scan_support_fill_chan_bonding_320mhz(&chan_bonding_320mhz, center_freq, center_freq);
+          if (chan_bonding_320mhz.lower_chan && chan_bonding_320mhz.upper_chan) {
+            freq_l = channel_to_frequency(chan_bonding_320mhz.lower_chan, band);
+            freq_u = channel_to_frequency(chan_bonding_320mhz.upper_chan, band);
+          }
+        }
+#endif
+
+        if (freq_l && freq_u) {
+          unsigned reg_pw_lim;
+
+          wdev = mtlk_core_get_wdev(core->vap_handle);
+          if (wdev) {
+            reg_pw_lim = wv_cfg80211_regulatory_limit_get(wdev, freq_l, freq_u);
+            if (reg_pw_lim)
+              tx_power_dbm = POWER_TO_DBM(reg_pw_lim);
+          }
+        }
+      }
+    }
+
+    MTLK_CFG_SET_ITEM(&tx_power_cfg, tx_power, tx_power_dbm);
 
     /* push result and config to clipboard*/
     res = mtlk_clpb_push(clpb, &res, sizeof(res));
@@ -8359,6 +8487,7 @@ int __MTLK_IFUNC
 core_ap_disconnect_all (mtlk_core_t *core)
 {
   mtlk_error_t          res = MTLK_ERR_OK;
+  mtlk_error_t          sta_res;
   const sta_entry      *sta = NULL;
   /* int                   net_state = mtlk_core_get_net_state(nic); */
   mtlk_stadb_iterator_t iter;
@@ -8384,14 +8513,19 @@ core_ap_disconnect_all (mtlk_core_t *core)
   if (sta) {
     do {
       /*uint16 sid = mtlk_sta_get_sid(sta);*/
-      res = _mtlk_core_ap_disconnect_sta_blocked(core,
+      sta_res = _mtlk_core_ap_disconnect_sta_blocked(core,
               wv_sta_entry_get_mac80211_sta(sta));
 
-      if (res != MTLK_ERR_OK) {
+      if (sta_res != MTLK_ERR_OK) {
         ELOG_DYD("CID-%04x: Station %Y disconnection failed (%d)",
                 mtlk_vap_get_oid(core->vap_handle),
-                mtlk_sta_get_addr(sta), res);
-        break;
+                mtlk_sta_get_addr(sta), sta_res);
+        /* Remember that at least one STA failed, but do NOT abort the
+         * sweep - each STA's disconnect is independent, and a single
+         * failure (e.g. a concurrently torn-down secondary VAP) must not
+         * leave every subsequent STA still connected on an interface
+         * that's going down. */
+        res = sta_res;
       }
 
       /* all SIDs will be removed by commands from hostapd */
@@ -8477,7 +8611,7 @@ uint32 mtlk_core_get_max_tx_ampdu_density (struct nic* nic, uint32 sta_ampdu_den
 int current_chandef_init(mtlk_core_t *core, struct mtlk_chan_def *ccd)
 {
   UMI_HDK_CONFIG *chc = __wave_core_hdkconfig_get(core);
-  uint32 dma_addr;
+  dma_addr_t dma_addr;
   mtlk_eeprom_data_t *eeprom = mtlk_core_get_eeprom(core);
 
   if (MTLK_ERR_OK != mtlk_eeprom_is_valid(eeprom)) {
@@ -9958,6 +10092,14 @@ _mtlk_core_handle_rx_ctrl (mtlk_vap_handle_t   vap_handle,
 
   MTLK_ASSERT(NULL != nic);
 
+  /* Skip if the VAP is already stopped. Some of the ids below are handled
+   * SYNCHRONOUS (run right here, in tasklet context) and touch per-VAP
+   * state directly. */
+  if (__UNLIKELY(mtlk_vap_manager_vap_is_not_ready(
+        mtlk_vap_get_manager(vap_handle), mtlk_vap_get_id(vap_handle)))) {
+    return;
+  }
+
   master_nic = mtlk_core_get_master(nic->vap_handle);
   MTLK_ASSERT(NULL != master_nic);
 
@@ -10002,10 +10144,8 @@ _mtlk_core_handle_rx_ctrl (mtlk_vap_handle_t   vap_handle,
                            HANDLE_T(nic), payload, sizeof(UMI_FRAME_CLASS_ERROR_ENTRY));
     break;
   case MC_MAN_HE_MU_DBG_IND: {
-#ifdef CONFIG_WAVE_DEBUG
     _mtlk_process_hw_task(master_nic, SERIALIZABLE, wave_dbg_static_plan_mu_group_stats_ind_handle,
                           HANDLE_T(master_nic), payload, sizeof(UMI_DBG_HE_MU_GROUP_STATS));
-#endif
     break;
   }
   case MC_MAN_WARNING_DETECTED_IND:
@@ -10419,6 +10559,8 @@ mtlk_core_handle_tx_ctrl (mtlk_vap_handle_t    vap_handle,
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,    wave_core_get_fixed_rate_thermal);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_MRU_TX_POWER_ENABLE,   wave_core_set_mru_tx_power_enable);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_MRU_TX_POWER_ENABLE,   wave_core_get_mru_tx_power_enable);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_SET_ZWDFS_NOISE_SUPPRESS,  wave_core_set_zwdfs_noise_suppress);
+    _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_GET_ZWDFS_NOISE_SUPPRESS,  wave_core_get_zwdfs_noise_suppress);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_MSCS_ADD,                   wave_core_mscs_add_req);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_CORE_REQ_MSCS_REM,                   wave_core_mscs_rem_req);
     _MTLK_CORE_HANDLE_REQ_SERIALIZABLE(WAVE_RADIO_REQ_GET_MU_GROUP_PLAN,         wave_core_get_mu_group_plan);
@@ -11195,8 +11337,8 @@ _mtlk_core_get_status (mtlk_handle_t hcore, const void* data, uint32 data_size)
      * prevents both scan and stats context accessing the common stats buffer */
     if (_chipid_is_gen7(chip_id)) {
       if ((wave_radio_is_first(radio) ||
-         (wave_hw_master_vap_net_state_is_not_connected(hw, WAVE_RADIO_ID_FIRST) && ((radio_idx == WAVE_RADIO_ID_SECOND) ||
-         ((radio_idx == WAVE_RADIO_ID_THIRD) && wave_hw_master_vap_net_state_is_not_connected(hw, WAVE_RADIO_ID_SECOND)))))
+         (wave_hw_master_vap_stats_inactive(hw, WAVE_RADIO_ID_FIRST) && ((radio_idx == WAVE_RADIO_ID_SECOND) ||
+         ((radio_idx == WAVE_RADIO_ID_THIRD) && wave_hw_master_vap_stats_inactive(hw, WAVE_RADIO_ID_SECOND)))))
          && (mtlk_hw_stats_scan_allow(hw))) {
           res = mtlk_core_get_statistics(nic, hw);
           if (MTLK_ERR_OK != res)
@@ -11204,7 +11346,7 @@ _mtlk_core_get_status (mtlk_handle_t hcore, const void* data, uint32 data_size)
       }
     } else {
       if ((wave_radio_is_first(radio) || (wave_hw_is_cdb(hw) &&
-         wave_hw_master_vap_net_state_is_not_connected(hw, WAVE_RADIO_ID_FIRST)))
+         wave_hw_master_vap_stats_inactive(hw, WAVE_RADIO_ID_FIRST)))
          && (mtlk_hw_stats_scan_allow(hw))) {
           res = mtlk_core_get_statistics(nic, hw);
           if (MTLK_ERR_OK != res)
@@ -11487,9 +11629,7 @@ core_on_rcvry_restore (mtlk_core_t *core, uint32 rcvry_type)
     wave_radio_on_rcvry_restore(radio);
 #endif
     /* Reset MU GROUP Statistics */
-#ifdef CONFIG_WAVE_DEBUG
     wave_radio_on_rcvry_reset_mu_group_stats(radio);
-#endif /* CONFIG_WAVE_DEBUG */
 
     /* Reset Statistics */
     wave_hw_stats_lock(mtlk_vap_get_hw(core->vap_handle), TRUE);
@@ -12189,6 +12329,10 @@ static int _core_on_rcvry_configure (mtlk_core_t *core, uint32 target_net_state)
 
     RECOVERY_INFO("set MRU TX power enable", core_oid);
     res = wave_core_recover_mru_tx_power_enable(core);
+    if (res != MTLK_ERR_OK) { goto ERR_END; }
+
+    RECOVERY_INFO("set ZWDFS noise suppress", core_oid);
+    res = wave_core_recover_zwdfs_noise_suppress(core);
     if (res != MTLK_ERR_OK) { goto ERR_END; }
   }
 

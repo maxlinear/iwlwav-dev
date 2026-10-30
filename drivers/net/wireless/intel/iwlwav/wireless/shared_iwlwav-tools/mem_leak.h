@@ -33,10 +33,15 @@
  *
  ***************************************************************************/
 
+#ifdef MTLK_TOPAZ_PLATFORM
+/* TODO: instead of static define, derive on runtime for TOPAZ */
+#define MTLK_MEM_ALLOC_ALIGN  (64)
+#else
 #define MTLK_MEM_ALLOC_ALIGN  (32)       /* Under MIPS must be equal to L1 cache size. Otherwise we can lose
                                           * data when passing ownership of a memory area from CPU to PCIe device
                                           * and backwards. Under x86 this isn't important. In any case, must be
                                           * bigger than sizeof(struct mem_obj) in mem_leak.c */
+#endif
 #define MTLK_ALIGN_SIZE(sz)   (((sz) + MTLK_MEM_ALLOC_ALIGN - 1) & ~(MTLK_MEM_ALLOC_ALIGN - 1))
 
 void * __MTLK_IFUNC

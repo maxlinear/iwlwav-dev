@@ -95,6 +95,8 @@ extern int logger_fifo_cfg;
 #ifdef MTLK_DEBUG
 extern int jtag_debugging;
 #endif
+
+extern int coc_mode; /* 0 - HAL controlled, 1 - Driver controlled */
 /**************************************************************
  *  Export global interfaces                                  *
  **************************************************************/
@@ -108,6 +110,13 @@ mtlk_mmb_drv_get_disable_11d_hint_param(void);
 uint32 __MTLK_IFUNC
 mtlk_mmb_drv_get_disable_zwdfs(void);
 
+uint32 __MTLK_IFUNC
+mtlk_mmb_drv_get_disable_l4s_param(void);
+
 struct pci_dev * __MTLK_IFUNC
 mtlk_mmb_drv_get_pci_dev(struct _mtlk_mmb_drv_t *mmb_drv);
+
+/* Wait for card tasklets to finish. Call after mtlk_vap_set_stopped(). */
+void __MTLK_IFUNC
+mtlk_mmb_drv_drain_tasklets(mtlk_hw_t *hw);
 #endif /* __MTLK_MMB_DRV_H_INCLUDED__ */

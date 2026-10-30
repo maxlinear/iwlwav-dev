@@ -61,12 +61,21 @@
 #ifdef MTLK_DEBUG
     /* A semicolon ';' at the end of line is required for proper LOG macro generation */
     /* Format string is also required, even an empty one at the end of the 1st param */
+#ifdef MTLK_TOPAZ_PLATFORM_FPGA
+    #define TRACE_PARAM_NOTE(str)       do { ILOG0_V(str ""); } while (0)
+    #define TRACE_PARAM_INT(value)      do { ILOG0_SD("%s: 0x%08X", #value, (uint32)(value));                } while (0)
+    #define TRACE_PARAM_PTR(value)      do { ILOG0_SP("%s: 0x%p",   #value, (value));                        } while (0)
+    #define TRACE_PARAM_STR(value)      do { ILOG0_SS("%s: %s",     #value, (value));                        } while (0)
+    #define TRACE_PARAM_MAC16(value)    do { ILOG0_SD("%s: 0x%04X", #value, MAC_TO_HOST16((uint16)(value))); } while (0)
+    #define TRACE_PARAM_MAC32(value)    do { ILOG0_SD("%s: 0x%08X", #value, MAC_TO_HOST32((uint32)(value))); } while (0)
+#else
     #define TRACE_PARAM_NOTE(str)       do { ILOG1_V(str ""); } while (0)
     #define TRACE_PARAM_INT(value)      do { ILOG1_SD("%s: 0x%08X", #value, (uint32)(value));                } while (0)
     #define TRACE_PARAM_PTR(value)      do { ILOG1_SP("%s: 0x%p",   #value, (value));                        } while (0)
     #define TRACE_PARAM_STR(value)      do { ILOG1_SS("%s: %s",     #value, (value));                        } while (0)
     #define TRACE_PARAM_MAC16(value)    do { ILOG1_SD("%s: 0x%04X", #value, MAC_TO_HOST16((uint16)(value))); } while (0)
     #define TRACE_PARAM_MAC32(value)    do { ILOG1_SD("%s: 0x%08X", #value, MAC_TO_HOST32((uint32)(value))); } while (0)
+#endif /* MTLK_TOPAZ_PLATFORM_FPGA */
 #else
     #define TRACE_PARAM_NOTE(str)
     #define TRACE_PARAM_INT(value)
@@ -213,6 +222,17 @@ typedef struct _mtlk_tracer_t {
 #define WAVE_HW_GEN7_6G_IDX                    0x02
 #endif
 
+#ifdef MTLK_TOPAZ_PLATFORM
+/* TOPAZ ARM cache line size is 64 bytes and HOST_DSC size is 20 bytes.
+ * The smallest descriptor batch that fully aligns with cache-line boundaries is:
+ *   lcm(64, 20) / 20 = 16 descriptors
+ * Therefore, processing 16 HDs at a time covers exactly 5 cache lines
+ * (16 * 20 = 320 bytes = 5 * 64 bytes), avoiding partial cache-line updates.
+ * 
+ * TODO: Update maybe on runtime based on actual cache line size and HOST_DSC size.
+ */
+#define TOPAZ_HD_BATCH_SIZE 16
+#endif /* MTLK_TOPAZ_PLATFORM */
 
 /******************************************************************************
  *   WSS counters for HW card statistics
@@ -312,7 +332,7 @@ typedef struct
     mtlk_nbuf_t        *nbuf;   /* Network buffer (in SW path) */
     void*              *data;   /* In FastPath mode */
   };
-  uint32               dma_addr;/* DMA mapped address */
+  dma_addr_t           dma_addr;/* DMA mapped address */
   uint32               size;    /* Data buffer size */
   uint8                que_idx; /* Rx Queue Index */
   mtlk_lslist_entry_t  pend_l;  /* Pending list entry */
@@ -326,7 +346,7 @@ typedef struct
 {
   mtlk_hw_mirror_hdr_t hdr;         /* Header */
   void*                virt_addr;   /* data buffer virtual address    */
-  uint32               dma_addr;    /* data buffer DMA mapped address */
+  dma_addr_t           dma_addr;    /* data buffer DMA mapped address */
   uint16               bufsize;
 } mtlk_hw_log_ind_mirror_t;
 /*****************************************************/
@@ -396,7 +416,7 @@ struct mtlk_hw_bss_req_mirror
   mtlk_hw_mirror_hdr_t hdr; /* index and doubly linked list ptrs */
   uint64 cookie;
   uint8 *virt_addr; /* mgmt frame */
-  uint32 dma_addr;
+  dma_addr_t dma_addr;
   uint32 size;      /* size of the valid data in the buffer, not the buffer size */
   uint32 extra_processing;
   uint8  vap_id;
@@ -415,7 +435,7 @@ struct mtlk_hw_bss_req_mirror
 struct mtlk_hw_bss_ind_mirror
 {
   mtlk_hw_mirror_hdr_t  hdr;        /* index, etc. */
-  uint32                dma_addr;
+  dma_addr_t            dma_addr;
   uint8                 *virt_addr; /* mgmt frame */
 #ifdef RX_MGMT_BUF_PTR_ALIGN
   uint8                 *virt_addr_prealign; /* virtual addr before alignment */
@@ -448,6 +468,9 @@ typedef struct
   uint32                  write_ptr;     /* ring write pointer */
   HOST_DSC               *base_addr;     /* pointer to ring buffer for access*/
   dma_addr_t              dma_addr;      /* physical address of ring buffer */
+#ifdef MTLK_TOPAZ_PLATFORM
+  uint32                  cache_align_offset; /* Offset added to align the ring buffer to cache line */
+#endif
   mtlk_ring_regs          regs;          /* registers in shared mem and their local copies */
 } mtlk_ring_buffer;
 
@@ -483,6 +506,14 @@ typedef struct
   void*  data;
 } mtlk_bss_rx_eapol;
 
+#ifdef MTLK_TOPAZ_PLATFORM
+typedef struct
+{
+  HOST_DSC hd[TOPAZ_HD_BATCH_SIZE];
+  uint32 num_hds;
+} mtlk_hd_stack_t;
+#endif
+
 struct mtlk_bss_management
 {
   mtlk_mmb_advanced_bdr_t tx_bdr;  /* Tx BSS control */
@@ -495,6 +526,9 @@ struct mtlk_bss_management
   uint32                  tx_res_bdr_max_used_bds; /* Maximal number of used reserved REQ BD descriptors */
   uint64                  cookie_counter;
   mtlk_bss_rx_eapol       rx_eapol; /* Struct for defragmentation of EAPOL frames */
+#ifdef MTLK_TOPAZ_PLATFORM
+  mtlk_hd_stack_t         hd_ret;
+#endif
 #ifdef BD_DBG
   volatile unsigned long *used_bd_map;   /* bitmap of BD buffers, currently being processed within FW, one per BD */
 #endif
@@ -523,6 +557,9 @@ struct mtlk_rx
   mtlk_ring_buffer        ring;          /* TX ring data */
   mtlk_nbuf_t            *first_fragment;/* fragments received and not yet sent up */
   mtlk_nbuf_t            *last_fragment; /* fragments received and not yet sent up */
+#ifdef MTLK_TOPAZ_PLATFORM
+  mtlk_hd_stack_t         hd_ret;
+#endif
 #ifdef MTLK_DEBUG
   uint32                  max_received_pckts;       /* max received packets within one tasklet */
   uint64                  max_int_tasklet_time;     /* time between interrupt to tasklet */
@@ -647,7 +684,7 @@ struct _mtlk_hw_t
   VECTOR_AREA            chi_area;
 
   void                   *calibr_buffer;  /* Calibration Extension related */
-  uint32                 calibr_dma_addr;
+  dma_addr_t             calibr_dma_addr;
 
   uint8                  fw_log_is_supported;    /* FW Logger Extension related */
   uint8                  fw_log_is_supported_ex;
@@ -704,9 +741,11 @@ struct _mtlk_hw_t
 #ifdef MTLK_WAVE_700
     wave_vap_id_t         in_use[WAVE_MAX_SID_GEN7]; /* filled with vap_id_fw unique per HW */
     uint16                aids[WAVE_MAX_SID_GEN7];   /* filled with AIDs for SID */
+    IEEE_ADDR             mac[WAVE_MAX_SID_GEN7];    /* MAC address associated with each SID */
 #else
     wave_vap_id_t         in_use[WAVE_MAX_SID]; /* filled with vap_id_fw unique per HW */
     uint16                aids[WAVE_MAX_SID];   /* filled with AIDs for SID */
+    IEEE_ADDR             mac[WAVE_MAX_SID];    /* MAC address associated with each SID */
 #endif
   } sids;
 
@@ -791,6 +830,7 @@ struct _mtlk_hw_t
 #ifdef MTLK_DEBUG
   int jtag_debugging;
 #endif
+  int coc_mode;
 
   mtlk_osal_spinlock_t   whm_lock;
   BOOL                   whm_enable;
@@ -941,9 +981,9 @@ __mtlk_mmb_dcdp_path_available(mtlk_hw_t *hw)
 }
 
 static __INLINE BOOL
-__wave_mmb_dcdp_4umt_cntr_mode(mtlk_hw_t *hw)
+__wave_mmb_dcdp_4umt_lgm_cntr_mode(mtlk_hw_t *hw)
 {
-#ifdef WAVE_DCDP_4UMT_SUPPORTED
+#if defined(WAVE_DCDP_4UMT_SUPPORTED) && !defined(WAVE_DCDP_TOPAZ_SUPPORTED)
   return (hw->dp_dev.dp_cap.fastpath.hw_dcmode == DC_DP_MODE_TYPE_1_EXT) &&
          (hw->dp_dev.dp_cap.fastpath.hw_cmode.soc2dev_write &
           DC_DP_F_DCCNTR_MODE_4MSG_MODE) &&
@@ -951,38 +991,46 @@ __wave_mmb_dcdp_4umt_cntr_mode(mtlk_hw_t *hw)
           DC_DP_F_DCCNTR_MODE_INCREMENTAL);
 #else
   return FALSE;
-#endif /* WAVE_DCDP_4UMT_SUPPORTED */
+#endif /*WAVE_DCDP_4UMT_SUPPORTED && !WAVE_DCDP_TOPAZ_SUPPORTED */
 }
 
 static __INLINE BOOL
-__wave_mmb_dcdp_topaz_available(mtlk_hw_t *hw)
+__wave_mmb_dcdp_4umt_topaz(mtlk_hw_t *hw)
 {
-#if defined (MTLK_TOPAZ_PLATFORM) && defined (WAVE_DCDP_TOPAZ_SUPPORTED)
-  return TRUE; // Use platform defininition as currently no clear way to detect DCDP on TOPAZ
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+  return ((hw->dp_dev.dp_cap.fastpath.hw_dcmode == DC_DP_MODE_TYPE_1_EXT) &&
+         (hw->dp_dev.dp_cap.fastpath.hw_cmode.soc2dev_write &
+          DC_DP_F_DCCNTR_MODE_4MSG_MODE) &&
+         (hw->dp_dev.dp_cap.fastpath.hw_cmode.soc2dev_write &
+          DC_DP_F_DCCNTR_MODE_INCREMENTAL) &&
+         (hw->dp_dev.dp_cap.fastpath.hw_cmode.dev2soc_write &
+          DC_DP_F_DCCNTR_MODE_4MSG_MODE) &&
+         (hw->dp_dev.dp_cap.fastpath.hw_cmode.dev2soc_write &
+          DC_DP_F_DCCNTR_MODE_INCREMENTAL));
 #else
   return FALSE;
-#endif /* MTLK_TOPAZ_PLATFORM && WAVE_DCDP_TOPAZ_SUPPORTED */
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
 }
 
 static __INLINE BOOL
-__wave_mmb_dcdp_topaz_l4s_available(mtlk_hw_t *hw)
+__wave_mmb_dcdp_topaz_l4s_capable(mtlk_hw_t *hw)
 {
-#if defined (MTLK_TOPAZ_PLATFORM) && defined (WAVE_DCDP_TOPAZ_SUPPORTED)
-  //return (__wave_mmb_dcdp_topaz_available(hw) &&
-  //        (hw->dp_dev.dp_cap.fastpath.hw_cap & DC_DP_F_HOST_CAP_L4S));
-  return FALSE; // Update when L4S flag and registration is ready
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+  return !!(hw->dp_dev.dp_cap.fastpath.hw_cap & DC_DP_F_HOST_CAP_L4S);
 #else
   return FALSE;
-#endif /* MTLK_TOPAZ_PLATFORM && WAVE_DCDP_TOPAZ_SUPPORTED */
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
 }
+
+
 #else /* MTLK_USE_DIRECTCONNECT_DP_API */
 
 #define __mtlk_mmb_fastpath_supported(hw)       (FALSE)
 #define __mtlk_mmb_fastpath_available(hw)       (FALSE)
 #define __mtlk_mmb_dcdp_path_available(hw)      (FALSE)
-#define __wave_mmb_dcdp_4umt_cntr_mode(hw)      (FALSE)
-#define __wave_mmb_dcdp_topaz_available(hw)     (FALSE)
-#define __wave_mmb_dcdp_topaz_l4s_available(hw) (FALSE)
+#define __wave_mmb_dcdp_4umt_lgm_cntr_mode(hw)  (FALSE)
+#define __wave_mmb_dcdp_4umt_topaz(hw)          (FALSE)
+#define __wave_mmb_dcdp_topaz_l4s_capable(hw) (FALSE)
 /* mtlk_mmb_fastpath_available() and mtlk_mmb_fastpath_available() are defined in hw_mmb.h */
 
 #endif /* MTLK_USE_DIRECTCONNECT_DP_API */

@@ -297,6 +297,18 @@ static const char * _mtlk_tracer_idtostring(mtlk_tracer_id id)
 #endif /* IWLWAV_RTLOG_MAX_DLEVEL */
 #endif /* #if CPTCFG_IWLWAV_TRACER_HISTORY_LENGTH */
 
+#ifdef MTLK_TOPAZ_PLATFORM
+static __INLINE void
+_mtlk_adjust_ring_size(mtlk_hw_t *hw, uint32 *ring_size, const char* ring_name)
+{
+  uint32 size = *ring_size;
+  if (*ring_size & (TOPAZ_HD_BATCH_SIZE - 1)) {
+    *ring_size &= ~(TOPAZ_HD_BATCH_SIZE - 1);
+    ILOG0_SDD("[%s] Size adjusted from %u to %u", ring_name, size, *ring_size);
+  }
+}
+#endif
+
 /*****************************************************/
 
 mtlk_vap_handle_t __MTLK_IFUNC
@@ -824,22 +836,23 @@ mtlk_mmb_dcdp_frag_wa_enabled(mtlk_hw_t *hw)
     return hw->dp_dev.dp_frag_wa_enable;
 }
 
+/* 4UMT counter mode only relevant for LGM platform */
 BOOL __MTLK_IFUNC
-wave_mmb_dcdp_4umt_cntr_mode(mtlk_hw_t *hw)
+wave_mmb_dcdp_4umt_lgm_cntr_mode(mtlk_hw_t *hw)
 {
-    return __wave_mmb_dcdp_4umt_cntr_mode(hw);
+    return __wave_mmb_dcdp_4umt_lgm_cntr_mode(hw);
 }
 
 BOOL __MTLK_IFUNC
-wave_mmb_dcdp_topaz_available(mtlk_hw_t *hw)
+wave_mmb_dcdp_4umt_topaz(mtlk_hw_t *hw)
 {
-    return __wave_mmb_dcdp_topaz_available(hw);
+    return __wave_mmb_dcdp_4umt_topaz(hw);
 }
 
 BOOL __MTLK_IFUNC
-wave_mmb_dcdp_topaz_l4s_available(mtlk_hw_t *hw)
+wave_mmb_dcdp_topaz_l4s_capable(mtlk_hw_t *hw)
 {
-    return __wave_mmb_dcdp_topaz_l4s_available(hw);
+    return __wave_mmb_dcdp_topaz_l4s_capable(hw);
 }
 #endif /* MTLK_USE_DIRECTCONNECT_DP_API */
 
@@ -1171,6 +1184,55 @@ _mtlk_mmb_rx_free_all_fragments(mtlk_hw_t *hw)
   hw->rx.last_fragment = NULL;
 }
 
+#ifdef MTLK_TOPAZ_PLATFORM
+#define MTLK_HD_FLUSH       (TRUE)
+#define MTLK_HD_NO_FLUSH    (FALSE)
+static __INLINE BOOL
+_mtlk_mmb_hd_stack_push (mtlk_hd_stack_t *stack, mtlk_ring_buffer *ring, const HOST_DSC *pHD)
+{
+  uint32 end;
+  MTLK_ASSERT(stack->num_hds < TOPAZ_HD_BATCH_SIZE);
+
+  stack->hd[stack->num_hds++] = *pHD;
+  end = ring->write_ptr + stack->num_hds;
+
+  /* Flush only on a batch boundary (whole cache lines) or at ring end (no wrap inside a flush) */
+  return ((end % TOPAZ_HD_BATCH_SIZE) == 0) || (end >= ring->size);
+}
+
+/* Emtpy the HD stack by returning all HDs to the ring */
+static void
+_mtlk_mmb_hd_stack_flush (mtlk_hw_t *hw, mtlk_ring_buffer *ring, mtlk_hd_stack_t *stack)
+{
+  HOST_DSC *pHD;
+  mtlk_handle_t lock_val;
+  uint32 i, sync_start, hds_to_return;
+
+  sync_start = ring->write_ptr;
+  hds_to_return = stack->num_hds;
+
+  if (hds_to_return == 0)
+    return;
+
+  for (i = 0; i < stack->num_hds; i++) {
+    pHD = &stack->hd[i];
+    _mtlk_mmb_put_hd_to_ring_lite(hw, (HOST_DSC *)pHD, ring);
+  }
+
+  wave_osal_mem_dma_sync_for_device(mtlk_ccr_get_dev_ctx(hw->ccr),
+                              ring->dma_addr + (sync_start * sizeof(*pHD)),
+                              hds_to_return * sizeof(*pHD), DMA_BIDIRECTIONAL);
+
+  dma_wmb();
+
+  lock_val = mtlk_osal_lock_acquire_irq(&hw->reg_lock);
+  mtlk_ccr_ring_initiate_bulk_doorbell_interrupt(hw->ccr, &ring->regs, hds_to_return);
+  mtlk_osal_lock_release_irq(&hw->reg_lock, lock_val);
+
+  stack->num_hds = 0;
+}
+#endif /* MTLK_TOPAZ_PLATFORM */
+
 static __INLINE int _mtlk_mmb_handle_dat_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
 {
   int                        res = MTLK_ERR_UNKNOWN;
@@ -1196,6 +1258,15 @@ static __INLINE int _mtlk_mmb_handle_dat_ind (mtlk_hw_t *hw, volatile HOST_DSC *
     int i = __hw_mmb_card_is_asic(hw) ? OWN_ITER_CNTR : OWN_ITER_CNTR_EMUL;
     /* Loop some time in case HD is not written yet */
     do {
+#ifdef MTLK_TOPAZ_PLATFORM
+      /* Non-coherent DRAM: the OWN bit is updated by the FW via DMA. Re-invalidate
+       * the descriptor cache line on every retry so the CPU can actually observe
+       * the FW write; otherwise the loop keeps reading a stale cached copy. */
+      wave_osal_mem_dma_sync_for_cpu(mtlk_ccr_get_dev_ctx(hw->ccr),
+                                     hw->rx.ring.dma_addr +
+                                     (hw->rx.ring.read_ptr * sizeof(HOST_DSC)),
+                                     sizeof(HOST_DSC), DMA_FROM_DEVICE);
+#endif
       u32frameInfo3 = LE32_TO_CPU(pHD->u32frameInfo3);
       if (MTLK_OWNER_FW != MTLK_BFIELD_GET(u32frameInfo3, TX_DATA_INFO_OWN_BIT))
         break;
@@ -1440,8 +1511,19 @@ buf_return:
   }
 
   /* Set new payload buffer address */
+#ifdef MTLK_TOPAZ_PLATFORM
+  /* We work on hd copy to avoid writing directly into the ring cache lines shared with FW-owned HDs.
+     For partly covered lines, arm64 cleans and invalidates rather than just invalidating.
+     Writing directly to HD in cache will mark cache lines as dirty
+     and will cause a clean and invalidate on next sync to CPU which will overwrite the next HD in DRAM */
+  hd_copy.u32HostPayloadAddr = CPU_TO_LE32(data_ind->dma_addr);
+  if (MTLK_HD_FLUSH == _mtlk_mmb_hd_stack_push(&hw->rx.hd_ret, &hw->rx.ring, &hd_copy)) {
+    _mtlk_mmb_hd_stack_flush(hw, &hw->rx.ring, &hw->rx.hd_ret);
+  }
+#else
   pHD->u32HostPayloadAddr = CPU_TO_LE32(data_ind->dma_addr);
   _mtlk_mmb_put_hd_to_ring_lite(hw, (HOST_DSC *)pHD, &hw->rx.ring);
+#endif
 
   return res;
 
@@ -1477,7 +1559,7 @@ wave_rtlog_packet_is_csi(struct sk_buff *skb, uint32 *udp_data_len)
 #if MTLK_USE_DIRECTCONNECT_DP_API
 /* helper function for DataPath driver RX callback  */
 int __MTLK_IFUNC
-mtlk_mmb_dcdp_rx (struct net_device *rxif, struct dp_subif *rx_subif, struct sk_buff *skb, int32_t len)
+mtlk_mmb_dcdp_rx (struct net_device *rxif, mtlk_dp_subif_t *rx_subif, struct sk_buff *skb, int32_t len)
 {
   int                        res           = DC_DP_SUCCESS;
   mtlk_vap_handle_t          vap_handle    = NULL;
@@ -1532,6 +1614,13 @@ mtlk_mmb_dcdp_rx (struct net_device *rxif, struct dp_subif *rx_subif, struct sk_
   if (vap_handle)
   {
     mtlk_core_t *nic = mtlk_vap_get_core(vap_handle);
+
+    /* Drop the packet if the VAP is already stopped. */
+    if (__UNLIKELY(_mtlk_mmb_get_vap_is_not_ready(hw, wave_vap_radio_id_get(vap_handle),
+                                                   mtlk_vap_get_id(vap_handle)))) {
+      res = DC_DP_SUCCESS;
+      goto finish;
+    }
 
     if ((unsigned)len != skb->len) {
       ELOG_DDD("CID-%04x: len %d not equal to skb len %u", mtlk_vap_get_oid(vap_handle), len, skb->len);
@@ -1947,6 +2036,11 @@ _mtlk_mmb_data_txout_process (mtlk_irq_handler_data *ihd)
        process each HD - TX confirmation
     ****************************************************/
     for (cur_hd = 0; cur_hd < hds_to_process; cur_hd++) {
+#ifdef MTLK_TOPAZ_PLATFORM
+      wave_osal_mem_dma_sync_for_cpu(mtlk_ccr_get_dev_ctx(hw->ccr),
+                                     hw->tx.ring.dma_addr + (hw->tx.ring.read_ptr * sizeof(HOST_DSC)),
+                                     sizeof(HOST_DSC), DMA_BIDIRECTIONAL);
+#endif
       CPU_STAT_BEGIN_TRACK(CPU_STAT_ID_TX_CFM);
       _mtlk_mmb_handle_dat_cfm(hw, hw->tx.ring.base_addr + hw->tx.ring.read_ptr);
       INC_WRAP_IDX(hw->tx.ring.read_ptr, hw->tx.ring.size); /* wrap around */
@@ -1985,7 +2079,9 @@ _mtlk_mmb_data_rx_process (mtlk_irq_handler_data *ihd)
   mtlk_hw_t *hw = ihd->hw;
   uint32 cur_hd, hds_to_process, hds_to_return = 0;
   int dat_handle_res;
+#ifndef MTLK_TOPAZ_PLATFORM
   mtlk_handle_t lock_val;
+#endif
 
   MTLK_ASSERT(NULL != hw->ccr);
 
@@ -2013,6 +2109,11 @@ _mtlk_mmb_data_rx_process (mtlk_irq_handler_data *ihd)
   ILOG5_DD("handling DATA IND interrupt, to process %d HDs, IRQ status is %08X", hds_to_process, hw->last_irq_status);
 
   for (cur_hd = 0; cur_hd < hds_to_process; cur_hd++) {
+#ifdef MTLK_TOPAZ_PLATFORM
+    wave_osal_mem_dma_sync_for_cpu(mtlk_ccr_get_dev_ctx(hw->ccr),
+                                   hw->rx.ring.dma_addr + (hw->rx.ring.read_ptr * sizeof(HOST_DSC)),
+                                   sizeof(HOST_DSC), DMA_FROM_DEVICE);
+#endif
     CPU_STAT_BEGIN_TRACK(CPU_STAT_ID_RX_DAT);
     CPU_STAT_BEGIN_TRACK(CPU_STAT_ID_RX_HW);
     if (__LIKELY(!hw->mac_events_stopped)) {
@@ -2022,18 +2123,27 @@ _mtlk_mmb_data_rx_process (mtlk_irq_handler_data *ihd)
       }
     } else {
       /* must confirm w/o processing */
+#ifdef MTLK_TOPAZ_PLATFORM
+      HOST_DSC hd = *(hw->rx.ring.base_addr + hw->rx.ring.read_ptr);
+      if (MTLK_HD_FLUSH == _mtlk_mmb_hd_stack_push(&hw->rx.hd_ret, &hw->rx.ring, &hd))
+        _mtlk_mmb_hd_stack_flush(hw, &hw->rx.ring, &hw->rx.hd_ret);
+#else
       _mtlk_mmb_put_hd_to_ring(hw, hw->rx.ring.base_addr + hw->rx.ring.read_ptr, &hw->rx.ring);
+#endif
     }
     INC_WRAP_IDX(hw->rx.ring.read_ptr, hw->rx.ring.size);
     CPU_STAT_END_TRACK(CPU_STAT_ID_RX_DAT);
     CPU_STAT_END_TRACK(CPU_STAT_ID_RX_HW);
   }
 
+#ifndef MTLK_TOPAZ_PLATFORM
   if (__LIKELY(hds_to_return > 0)) {
     lock_val = mtlk_osal_lock_acquire_irq(&hw->reg_lock);
     mtlk_ccr_ring_initiate_bulk_doorbell_interrupt(hw->ccr, &(hw->rx.ring.regs), hds_to_return);
     mtlk_osal_lock_release_irq(&hw->reg_lock, lock_val);
   }
+  /* HDs are returned (with doorbell) by _mtlk_mmb_hd_stack_flush() for TOPAZ */
+#endif
 
 #ifdef MTLK_DEBUG
   /* update max packet statistic */
@@ -2113,6 +2223,12 @@ bss_cfm_process (mtlk_irq_handler_data *ihd)
     ILOG5_DD("handling BSS CFM interrupt, to process %d HDs, IRQ status is %08X", hds_to_process, hw->last_irq_status);
 
     for (cur_hd = 0; cur_hd < hds_to_process; cur_hd++) {
+#ifdef MTLK_TOPAZ_PLATFORM
+      wave_osal_mem_dma_sync_for_cpu(mtlk_ccr_get_dev_ctx(hw->ccr),
+                                     hw->bss_mgmt.tx_ring.dma_addr +
+                                     (hw->bss_mgmt.tx_ring.read_ptr * sizeof(HOST_DSC)),
+                                     sizeof(HOST_DSC), DMA_BIDIRECTIONAL);
+#endif
       _mtlk_mmb_handle_bss_cfm(hw, hw->bss_mgmt.tx_ring.base_addr + hw->bss_mgmt.tx_ring.read_ptr);
       INC_WRAP_IDX(hw->bss_mgmt.tx_ring.read_ptr, hw->bss_mgmt.tx_ring.size);
     }
@@ -2162,6 +2278,11 @@ bss_rx_process (mtlk_irq_handler_data *ihd)
     ILOG5_DD("handling BSS IND interrupt, to process %d HDs, IRQ status is %08X", hds_to_process, hw->last_irq_status);
 
     for (cur_hd = 0; cur_hd < hds_to_process; cur_hd++) {
+#ifdef MTLK_TOPAZ_PLATFORM
+      wave_osal_mem_dma_sync_for_cpu(mtlk_ccr_get_dev_ctx(hw->ccr),
+                     hw->bss_mgmt.rx_ring.dma_addr + (hw->bss_mgmt.rx_ring.read_ptr * sizeof(HOST_DSC)),
+                     sizeof(HOST_DSC), DMA_FROM_DEVICE);
+#endif
       CPU_STAT_BEGIN_TRACK_SET(bss_ids, ARRAY_SIZE(bss_ids), &ts_handle_bss);
       CPU_STAT_SPECIFY_TRACK(CPU_STAT_ID_RX_BSS);
       res = _mtlk_mmb_handle_bss_ind(hw, hw->bss_mgmt.rx_ring.base_addr + hw->bss_mgmt.rx_ring.read_ptr);
@@ -2492,7 +2613,7 @@ _mtlk_mmb_process_bcl(mtlk_hw_t *hw, UMI_BCL_REQUEST* preq, int get_req)
 
 #if MTLK_USE_DIRECTCONNECT_DP_API
 static void
-_mtlk_mmb_set_rdpool_entry (mtlk_hw_t *hw, uint32 dma_addr, uint32 idx)
+_mtlk_mmb_set_rdpool_entry (mtlk_hw_t *hw, dma_addr_t dma_addr, uint32 idx)
 {
   uint32 poolElemSize = hw->chi_area.sBasic.sRdPOOL.u32RdSizeInBytes;
   uint32 poolPayloadOffset = hw->chi_area.sBasic.sRdPOOL.u32PayloadAddressOffsetInRd;
@@ -2529,7 +2650,7 @@ _mtlk_mmb_set_rdpool_entry (mtlk_hw_t *hw, uint32 dma_addr, uint32 idx)
 #endif /* MTLK_USE_DIRECTCONNECT_DP_API */
 
 static void
-_mtlk_mmb_set_mgmt_pool_entry (mtlk_hw_t *hw, uint32 dma_addr, uint32 idx)
+_mtlk_mmb_set_mgmt_pool_entry (mtlk_hw_t *hw, dma_addr_t dma_addr, uint32 idx)
 {
   uint32 poolElemSize = hw->chi_area.sBasic.sRdPOOL.u32RdSizeInBytes;
   uint32 poolPayloadOffset = hw->chi_area.sBasic.sRdPOOL.u32PayloadAddressOffsetInRd;
@@ -2596,7 +2717,7 @@ wave_mmb_build_pdpool_return_list (mtlk_hw_t *hw, uint32 FirstFreePdOffset, wave
 
   uint8 *pdPoolStart, *pdPoolElemAddr;
   uint32 pool_elem_idx, NextFreePdOffset;
-  uint32 dma_addr;
+  dma_addr_t dma_addr;
   mtlk_error_t res = MTLK_ERR_OK;
 
   unsigned idx, num;
@@ -2746,7 +2867,6 @@ _mtlk_mmb_prealloc_and_set_rx_data_buffer (mtlk_hw_t                 *hw,
     ILOG2_D("WARNING: failed to allocate buffer of %u bytes", data_ind->size);
     return MTLK_ERR_NO_MEM;
   }
-
   data_ind->dma_addr = mtlk_df_nbuf_map_to_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr),
                                                      data_ind->nbuf,
                                                      data_ind->size,
@@ -4139,15 +4259,37 @@ _mtlk_mmb_cleanup_dbg_ind_bdr (mtlk_hw_t *hw)
   }
 }
 
+#ifdef MTLK_TOPAZ_PLATFORM
+static __INLINE void
+_mtlk_mmb_ring_size_cache_align (uint32 *ring_size_in_bytes)
+{
+  /*  Add extra cache size in bytes to ring - so we can align the allocated ring
+      start if needed */
+  uint32 dma_cache_align = (uint32)dma_get_cache_alignment();
+  MTLK_ASSERT(dma_cache_align != 0);
+  *ring_size_in_bytes += dma_cache_align - 1;
+}
+#endif
+
 static void
 _mtlk_mmb_free_hd_ring (mtlk_hw_t *hw, mtlk_ring_buffer *ring)
 {
     uint32 ring_size_in_bytes = ring->size * sizeof(HOST_DSC);
-
+#ifdef MTLK_TOPAZ_PLATFORM
+  /* Adjust back to original address to free */
+  _mtlk_mmb_ring_size_cache_align(&ring_size_in_bytes);
+  if (ring->cache_align_offset > 0) {
+    ring->base_addr = (HOST_DSC *)((uint8_t *)ring->base_addr - ring->cache_align_offset);
+    ring->dma_addr -= ring->cache_align_offset;
+  }
+#endif /* MTLK_TOPAZ_PLATFORM */
 #ifdef CPTCFG_IWLWAV_X86_PUMA7_WAVE600_NOSNOOP
     mtlk_osal_unmap_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr), ring->dma_addr, ring_size_in_bytes, MTLK_DATA_FROM_DEVICE);
     mtlk_osal_mem_ddr_dma_pages_set_uncacheable(ring->base_addr, ring_size_in_bytes, FALSE);
     mtlk_osal_mem_ddr_dma_pages_free(ring->base_addr, ring_size_in_bytes);
+#elif defined(MTLK_TOPAZ_PLATFORM)
+    wave_osal_mem_dma_free_noncoherent(mtlk_ccr_get_dev_ctx(hw->ccr),
+        ring_size_in_bytes, ring->base_addr, ring->dma_addr, DMA_BIDIRECTIONAL);
 #elif defined(CONFIG_DMA_MIXCOHERENT)
     wave_osal_mem_dma_free_noncoherent(mtlk_ccr_get_dev_ctx(hw->ccr),
         ring_size_in_bytes, ring->base_addr, ring->dma_addr);
@@ -4386,6 +4528,15 @@ _mtlk_mmb_prepare_ring_counters(mtlk_hw_t *hw, mtlk_ring_buffer *ring, CHI_MEM_R
   ring->regs.IN_copy = 0;
 }
 
+#ifdef MTLK_TOPAZ_PLATFORM
+static __INLINE void
+_mtlk_mmb_reset_hd_ret_stack(mtlk_hd_stack_t *hd_ret)
+{
+  memset(hd_ret, 0, sizeof(*hd_ret));
+  hd_ret->num_hds = 0;
+}
+#endif
+
 static int
 _mtlk_mmb_recover_ring_buffer (mtlk_hw_t *hw, mtlk_ring_buffer *ring, CHI_MEM_RING *chi_ring, uint32 ring_size, const char* ring_name)
 {
@@ -4406,6 +4557,28 @@ _mtlk_mmb_recover_ring_buffer (mtlk_hw_t *hw, mtlk_ring_buffer *ring, CHI_MEM_RI
   return MTLK_ERR_OK;
 }
 
+#ifdef MTLK_TOPAZ_PLATFORM
+static void
+_mtlk_mmb_cache_align_ring (mtlk_ring_buffer *ring, const char* ring_name)
+{
+  int dma_cache_align = dma_get_cache_alignment();
+  uintptr_t offset = 0;
+
+  ring->cache_align_offset = 0;
+
+  offset = ALIGN((uintptr_t)ring->base_addr, dma_cache_align) - (uintptr_t)ring->base_addr;
+  MTLK_ASSERT(offset < dma_cache_align);
+
+  if (offset > 0) {
+    ring->base_addr = (HOST_DSC *)((uint8_t *)ring->base_addr + offset);
+    ring->dma_addr += offset;
+    ring->cache_align_offset = (uint32)offset;
+    ILOG0_SPPD("[%s Ring] cache align dma_addr:0x%p, base_addr:0x%p offest=%u",ring_name,
+          (void*)ring->dma_addr, ring->base_addr, ring->cache_align_offset);
+  }
+}
+#endif
+
 static int
 _mtlk_mmb_prepare_ring_buffer (mtlk_hw_t *hw, mtlk_ring_buffer *ring, CHI_MEM_RING *chi_ring, uint32 ring_size, const char* ring_name)
 {
@@ -4415,6 +4588,10 @@ _mtlk_mmb_prepare_ring_buffer (mtlk_hw_t *hw, mtlk_ring_buffer *ring, CHI_MEM_RI
   MTLK_ASSERT(hw->ccr);
 
   ring->size = ring_size;
+#ifdef MTLK_TOPAZ_PLATFORM
+  /* Allocate 64 bytes in case we need to shift for cache alignment */
+  _mtlk_mmb_ring_size_cache_align(&ring_size_in_bytes);
+#endif
   ILOG0_SDD("[%s Ring] ring_size:%u, ring_size_in_bytes:%u", ring_name, ring_size, ring_size_in_bytes);
 
 #ifdef CPTCFG_IWLWAV_X86_PUMA7_WAVE600_NOSNOOP
@@ -4437,7 +4614,10 @@ _mtlk_mmb_prepare_ring_buffer (mtlk_hw_t *hw, mtlk_ring_buffer *ring, CHI_MEM_RI
   }
 
 #else
-#ifdef CONFIG_DMA_MIXCOHERENT
+#if defined(MTLK_TOPAZ_PLATFORM)
+  ring->base_addr = wave_osal_mem_dma_alloc_noncoherent(
+      mtlk_ccr_get_dev_ctx(hw->ccr), ring_size_in_bytes, &ring->dma_addr, DMA_BIDIRECTIONAL);
+#elif defined(CONFIG_DMA_MIXCOHERENT)
   ring->base_addr = wave_osal_mem_dma_alloc_noncoherent(
       mtlk_ccr_get_dev_ctx(hw->ccr), ring_size_in_bytes, &ring->dma_addr);
 #else
@@ -4454,7 +4634,9 @@ _mtlk_mmb_prepare_ring_buffer (mtlk_hw_t *hw, mtlk_ring_buffer *ring, CHI_MEM_RI
   memset(ring->base_addr, 0, ring_size_in_bytes);
   ring->read_ptr  = 0;
   ring->write_ptr = 0;
-
+#ifdef MTLK_TOPAZ_PLATFORM
+  _mtlk_mmb_cache_align_ring(ring, ring_name);
+#endif
   /* initialize shared counter addresses */
   _mtlk_mmb_prepare_ring_counters(hw, ring, chi_ring, ring_name);
   return MTLK_ERR_OK;
@@ -4543,6 +4725,10 @@ _mtlk_get_mgmt_rx_ring_size(mtlk_hw_t *hw)
                                                                        ring_size, pool_size);
       ring_size = pool_size;
     }
+#ifdef MTLK_TOPAZ
+    /* Adjust size if needed for a write-back ring */
+    _mtlk_adjust_ring_size(hw, &ring_size, "RxMgmt");
+#endif
     return ring_size;
 }
 
@@ -4652,6 +4838,10 @@ _mtlk_mmb_recover_data_ind_bdr(mtlk_hw_t *hw)
     }
   }
 
+#ifdef MTLK_TOPAZ_PLATFORM
+  _mtlk_mmb_reset_hd_ret_stack(&hw->rx.hd_ret);
+#endif
+
   return res;
 }
 
@@ -4674,6 +4864,10 @@ _mtlk_mmb_prepare_data_ind_bdr(mtlk_hw_t *hw)
       return res;
     }
   }
+
+#ifdef MTLK_TOPAZ_PLATFORM
+  _mtlk_mmb_reset_hd_ret_stack(&hw->rx.hd_ret);
+#endif
 
   /* Data Indications BD initialization */
   pool_size = hw->chi_area.sBasic.sRdPOOL.u32NumRdsInPool;
@@ -5018,7 +5212,7 @@ static int _mtlk_mmb_allocate_calibration_buffers (mtlk_hw_t *hw)
   }
 
   ILOG0_DPD("Calibration buffer: dma_addr 0x%08X, virt_addr 0x%p, size %u",
-            hw->calibr_dma_addr, hw->calibr_buffer, hw->chi_area.sCalibr.sData.u32BufferRequestedSize);
+            (uint32)hw->calibr_dma_addr, hw->calibr_buffer, hw->chi_area.sCalibr.sData.u32BufferRequestedSize);
   return MTLK_ERR_OK;
 }
 
@@ -5370,15 +5564,22 @@ mtlk_hw_mmb_stop_card_finalize(mtlk_hw_t *hw)
   uint32 mac_soft_reset_enable = 0;
   int exception = mtlk_hw_is_halted(hw->state);
   mtlk_handle_t lock_val;
+  mtlk_vap_handle_t master_vap_handle;
 
   MTLK_ASSERT(NULL != hw->ccr);
 
   hw->state = MTLK_HW_STATE_UNLOADING;
 
   /* WAVE600: TODO: do it for the first radio now, but rework later! */
-  res = mtlk_hw_get_prop(wave_radio_descr_hw_api_get(hw->radio_descr, 0), MTLK_CORE_PROP_MAC_SW_RESET_ENABLED, &mac_soft_reset_enable, sizeof(mac_soft_reset_enable));
-  if (res != MTLK_ERR_OK) {
-    mac_soft_reset_enable = 0;
+  res = mtlk_vap_manager_get_master_vap(wave_radio_descr_vap_manager_get(hw->radio_descr, 0), &master_vap_handle);
+  if (MTLK_ERR_OK == res)
+  {
+    res = mtlk_vap_get_core_vft(master_vap_handle)->get_prop(master_vap_handle, MTLK_CORE_PROP_MAC_SW_RESET_ENABLED,
+                                                             &mac_soft_reset_enable, sizeof(mac_soft_reset_enable));
+    if (res != MTLK_ERR_OK) {
+      mac_soft_reset_enable = 0;
+    }
+
   }
 
   /* Free whm fw log buffer */
@@ -5597,6 +5798,13 @@ mtlk_hw_mmb_init_card(mtlk_hw_t *hw, mtlk_ccr_t *ccr, unsigned char *mmb_base, u
     hw->logger_fifo_mux_cfg = (uint8)logger_fifo_cfg;
   }
 #endif
+  if (coc_mode == COC_MODE_HAL_CONTROLLED || coc_mode == COC_MODE_DRIVER_CONTROLLED) {
+    ILOG0_D("COC mode: %d", coc_mode);
+    hw->coc_mode = coc_mode;
+  } else {
+    ELOG_D("Invalid COC mode: %d", coc_mode);
+    return MTLK_ERR_PARAMS;
+  }
 
   fast_path_supported = __mtlk_mmb_fastpath_supported(hw);
   hw->fast_path_is_available = (fast_path_supported && (fast_path == FASTPATH_ENABLED));
@@ -6068,7 +6276,7 @@ _mtlk_mmb_data_path_register (mtlk_hw_t* hw /*, BOOL is_recovery*/)
       dp_init.dccntr[0].dev2soc_deq_phys_base     = (void *)(hw->mmb_base_phy + hw->chi_area.sBasic.sRxRING.u32OutCounterAddress);
       dp_init.dccntr[0].dev2soc_deq_base          = (void *)(hw->mmb_base     + hw->chi_area.sBasic.sRxRING.u32OutCounterAddress);
 
-      if (__wave_mmb_dcdp_4umt_cntr_mode(hw)) {
+      if (__wave_mmb_dcdp_4umt_lgm_cntr_mode(hw)) {
         dp_init.dccntr[1].soc2dev_enq_phys_base     = (void *)(hw->mmb_base_phy + hw->chi_area.sFlowContolFor4Umt.sData.txInHdsCountSubAddress);
         dp_init.dccntr[1].soc2dev_enq_base          = (void *)(hw->mmb_base + hw->chi_area.sFlowContolFor4Umt.sData.txInHdsCountSubAddress);
         dp_init.dccntr[1].dev2soc_ret_enq_phys_base = (void *)(hw->mmb_base_phy + hw->chi_area.sFlowContolFor4Umt.sData.rxInHdsCountSubAddress);
@@ -6119,10 +6327,16 @@ static void _mtlk_assert_dma(void *ptr, mtlk_slid_t slid)
 
 static __INLINE uint32 ___check_dma_addr (void *ptr, mtlk_slid_t slid)
 {
-    if ((((uint64)ptr) >> 32) != 0) {
-        _mtlk_assert_dma(ptr, slid);
-    }
-    return (uint32)(uint64)(ptr);
+  uint64 dma_addr = (uint64)ptr;
+
+#ifdef MTLK_TOPAZ_PLATFORM
+  if ((dma_addr >> 36) != 0) {
+#else
+  if ((dma_addr >> 32) != 0) {
+#endif
+     _mtlk_assert_dma(ptr, slid);
+  }
+  return (uint32)dma_addr;
 }
 #else
 #define check_dma_addr(ptr) (uint32)(ptr)
@@ -6166,7 +6380,7 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
 
 
   /* Setup buffers only if DCDP path is available */
-  if (mtlk_mmb_dcdp_path_available(hw) /* && !skip_datapath_init*/)
+  if (mtlk_mmb_dcdp_path_available(hw))
   {
       struct dc_dp_buf_pool  *entry;
       unsigned idx, num_bufpools;
@@ -6201,7 +6415,7 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
 
         for (idx = 0, entry=dp_dev->dp_resources.buflist; idx < num_bufpools; idx++, entry++)
         {
-          uint32 dma_addr;
+          dma_addr_t dma_addr;
           mtlk_hw_data_ind_mirror_t *data_ind;
           data_ind = _mtlk_basic_bdr_get_mirror_bd(&hw->rx.bdr_data, idx, mtlk_hw_data_ind_mirror_t);
           data_ind->dma_addr = check_dma_addr(entry->phys_pool);
@@ -6283,6 +6497,24 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
         }
     }
 
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+    /* Prepare host counters for WAV host interface */
+    if (__wave_mmb_dcdp_4umt_topaz(hw) && (DC_DP_RING_HW_MODE1_EXT == dp_dev->dp_devspec[0].dc_tx_ring_used)) {
+      if ((dp_dev->dp_resources.dccntr[0].dev2soc_enq_dccntr_len != MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH) ||
+          (dp_dev->dp_resources.dccntr[0].soc2dev_ret_enq_dccntr_len != MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH) ||
+          (dp_dev->dp_resources.dccntr[0].dev2soc_ret_deq_dccntr_len != MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH) ||
+          (dp_dev->dp_resources.dccntr[0].soc2dev_deq_dccntr_len != MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH)) {
+        ELOG_V("Failed to init 4UMT host addresses for TOPAZ");
+        res = MTLK_ERR_UNKNOWN;
+        goto finish;
+      }
+      umi_params->rxOutHostAddress = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].dev2soc_enq_phys_base));
+      umi_params->txOutHostAddress = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].soc2dev_ret_enq_phys_base));
+      umi_params->rxInHostAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].dev2soc_ret_deq_phys_base));
+      umi_params->txInHostAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.dccntr[0].soc2dev_deq_phys_base));
+    }
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
+
     switch (dp_dev->dp_devspec[0].dc_tx_ring_used) {
       case DC_DP_RING_HW_MODE0:
         /* In GRX350/550 mode only 3 rings */
@@ -6332,9 +6564,9 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
         umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_3; /* FLM */
         break;
 #endif /* WAVE_DCDP_LGM_FLM_SUPPORTED */
-#if defined (WAVE_DCDP_LGM_FLM_SUPPORTED) || defined (WAVE_DCDP_TOPAZ_SUPPORTED)
+#ifdef WAVE_DCDP_LGM_FLM_SUPPORTED
       case DC_DP_RING_HW_MODE1_EXT:
-        /* LGM */
+        /* LGM/TOPAZ */
         ILOG0_V("DCDP: setup HW_MODE1_EXT rings");
         umi_params->rxInRingStartAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.rings.dev2soc_ret.phys_base));
         umi_params->rxInRingSizeBytes     = HOST_TO_MAC32(dp_dev->dp_resources.rings.dev2soc_ret.size * dp_dev->dp_resources.rings.dev2soc_ret.desc_dwsz * sizeof(uint32));
@@ -6350,17 +6582,19 @@ _mtlk_mmb_data_path_init (mtlk_hw_t* hw, BOOL is_recovery)
 #endif
         umi_params->txOutDw1FixedValues   = HOST_TO_MAC32(dp_dev->dp_resources.rings.txout_temp_dw3);
 #ifdef WAVE_DCDP_TOPAZ_SUPPORTED
-        if (__wave_mmb_dcdp_topaz_available(hw))
+        if (dp_dev->fw_datapath_mode == DATA_PATH_MODE_DC_MODE_6 &&
+            (dp_dev->dp_devspec[0].dc_cap & DC_DP_F_HOST_CAP_L4S))
+          umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_6; /* TOPAZ L4S */
+        else if (__wave_mmb_dcdp_4umt_topaz(hw))
           umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_5; /* TOPAZ NON-L4S */
-        else if (__wave_mmb_dcdp_4umt_cntr_mode(hw))
 #else
-        if (__wave_mmb_dcdp_4umt_cntr_mode(hw))  
-#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
+        if (__wave_mmb_dcdp_4umt_lgm_cntr_mode(hw))
           umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_4; /* LGM 4UMT */
         else
           umi_params->dataPathMode = DATA_PATH_MODE_DC_MODE_2; /* LGM */
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED*/
         break;
-#endif /* WAVE_DCDP_LGM_FLM_SUPPORTED || WAVE_DCDP_TOPAZ_SUPPORTED*/
+#endif /* WAVE_DCDP_LGM_FLM_SUPPORTED */
       case DC_DP_RING_SW_MODE1:      /* SWPath only, LitePath + SWPath */
         ILOG0_V("DCDP: setup SW_MODE1 rings");
         umi_params->rxInRingStartAddress  = HOST_TO_MAC32(check_dma_addr(dp_dev->dp_resources.rings.dev2soc_ret.phys_base));
@@ -6972,6 +7206,12 @@ _mtlk_mmb_put_hd_to_ring(mtlk_hw_t *hw, HOST_DSC *pHD, mtlk_ring_buffer *ring)
   /* copy descriptor into ring */
   *(ring->base_addr + ring->write_ptr) = *pHD;
 
+#ifdef MTLK_TOPAZ_PLATFORM
+  wave_osal_mem_dma_sync_for_device(mtlk_ccr_get_dev_ctx(hw->ccr),
+                                    ring->dma_addr + ring->write_ptr * sizeof(*pHD),
+                                    sizeof(*pHD), DMA_BIDIRECTIONAL);
+#endif
+
   dma_wmb();
 
   INC_WRAP_IDX(ring->write_ptr, ring->size);
@@ -6995,6 +7235,10 @@ _mtlk_mmb_put_hd_to_ring_lite(mtlk_hw_t *hw, HOST_DSC *pHD, mtlk_ring_buffer *ri
 
   /* copy descriptor into ring */
   *(ring->base_addr + ring->write_ptr) = *pHD;
+
+  /* Currently used only for SW Data RX path.
+     For TOPAZ - cache sync to device is happening outside this function
+     IMPORTANT - if used elsewhere make sure to include a sync to device */
 
   dma_wmb();
 
@@ -8206,7 +8450,7 @@ _mtlk_hw_mmb_interrupt_recover_mon (mtlk_osal_timer_t *timer, mtlk_handle_t usr_
     /* PCIE bus stuck is detected. Do not reschedule timer */
     bus_stuck = TRUE;
     period = 0;
-  } else if (irq_status && hw->irq_mode == MTLK_IRQ_MODE_LEGACY) {
+  } else if ((irq_status & MTLK_IRQ_LEGACY) && hw->irq_mode == MTLK_IRQ_MODE_LEGACY) {
     /* Possible Interrupts stuck is detected */
     if (hw->need_legacy_int_recovery) {
       /* Interrupts stuck is detected, try to recover */
@@ -8227,7 +8471,7 @@ _mtlk_hw_mmb_interrupt_recover_mon (mtlk_osal_timer_t *timer, mtlk_handle_t usr_
   }
 
   if (recovered) {
-    ILOG0_D("CID-%02x: Recovered from lost interrupt", hw->card_idx);
+    ILOG0_DD("CID-%02x: Recovered from lost interrupt 0x%08X", hw->card_idx, irq_status);
   }
 
   return period;
@@ -9032,6 +9276,9 @@ int _mtlk_mmb_recover_bss_mgmt(mtlk_hw_t *hw)
   if (MTLK_ERR_OK != res) {
     return res;
   }
+#ifdef MTLK_TOPAZ_PLATFORM
+  _mtlk_mmb_reset_hd_ret_stack(&hw->bss_mgmt.hd_ret);
+#endif
 
   /* BSS TX ring */
   _mtlk_free_used_list(&hw->bss_mgmt.tx_bdr);
@@ -9064,6 +9311,9 @@ int _mtlk_mmb_bss_mgmt_init(mtlk_hw_t *hw)
   if (MTLK_ERR_OK != res) {
     return res;
   }
+#ifdef MTLK_TOPAZ_PLATFORM
+  _mtlk_mmb_reset_hd_ret_stack(&hw->bss_mgmt.hd_ret);
+#endif
 
   res = mtlk_mmb_prepare_bss_ind_bdr(hw, ring_size);
 
@@ -9429,7 +9679,7 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
   uint32                        u32frameInfo0;
   uint32                        u32frameInfo1;
   uint32                        u32frameInfo3;
-  uint32                        hostpayload;
+  dma_addr_t                    hostpayload;
   uint32                        offset;
   uint32                        size;
   uint8                         vap_id;
@@ -9443,7 +9693,10 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
   mtlk_core_handle_rx_bss_t     data;
   mtlk_phy_info_t              *phy_info = &data.phy_info;
   uint8                         frag_type;
-  uint32                        dma_addr;
+  dma_addr_t                    dma_addr;
+#ifdef MTLK_TOPAZ_PLATFORM
+  struct mtlk_hw_bss_ind_mirror *bss_ind_topaz;
+#endif
   uint8                         subtype;
 
   u32frameInfo3 = LE32_TO_CPU(pHD->u32frameInfo3);
@@ -9451,6 +9704,15 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
     int i = __hw_mmb_card_is_asic(hw) ? OWN_ITER_CNTR : OWN_ITER_CNTR_EMUL;
     /* Loop some time in case HD is not written yet */
     do {
+#ifdef MTLK_TOPAZ_PLATFORM
+      /* Non-coherent DRAM: the OWN bit is updated by the FW via DMA. Re-invalidate
+       * the descriptor cache line on every retry so the CPU can actually observe
+       * the FW write; otherwise the loop keeps reading a stale cached copy. */
+      wave_osal_mem_dma_sync_for_cpu(mtlk_ccr_get_dev_ctx(hw->ccr),
+                                     hw->bss_mgmt.rx_ring.dma_addr +
+                                     (hw->bss_mgmt.rx_ring.read_ptr * sizeof(HOST_DSC)),
+                                     sizeof(HOST_DSC), DMA_FROM_DEVICE);
+#endif
       u32frameInfo3 = LE32_TO_CPU(pHD->u32frameInfo3);
       if (MTLK_OWNER_FW != MTLK_BFIELD_GET(u32frameInfo3, TX_DATA_INFO_OWN_BIT))
         break;
@@ -9486,6 +9748,12 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
   vap_handle = _mtlk_mmb_get_vap_handle_from_vap_id(hw, radio_id, vap_id);
   if (__UNLIKELY(!vap_handle)) {
     _mtlk_mmb_log_error_vap_not_exist(__FUNCTION__, radio_id, vap_id);
+    goto send_resp;
+  }
+
+  /* Skip if the VAP is already stopped. */
+  if (__UNLIKELY(_mtlk_mmb_get_vap_is_not_ready(hw, radio_id, vap_id))) {
+    _mtlk_mmb_log_error_vap_not_ready(__FUNCTION__, radio_id, vap_id);
     goto send_resp;
   }
 
@@ -9535,10 +9803,32 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
   }
 #endif /* BD_DBG */
 
+#ifdef MTLK_TOPAZ_PLATFORM
+  /* The firmware HD carries only the lower 32 bits of the DMA address.
+   * On Topaz the dma-ranges offset makes dma_to_phys() produce a garbage
+   * physical address from that truncated value, crashing in dcache_inval_poc().
+   * Look up the mirror entry by BD index to get the full dma_addr_t that was
+   * stored when the buffer was originally mapped. */
+  {
+    uint32 u32BdIndex = HD_BD_INDEX_GET(&hd_copy);
+    if (u32BdIndex >= hw->bss_mgmt.rx_bdr.basic.nof_bds) {
+      ELOG_DDD("CID-%02x: Wrong u32BdIndex (%u >= %u)", hw->card_idx, u32BdIndex,
+               hw->bss_mgmt.rx_bdr.basic.nof_bds);
+      goto critical_error_hw;
+    }
+    bss_ind_topaz = _mtlk_basic_bdr_get_mirror_bd(&hw->bss_mgmt.rx_bdr.basic,
+                                                   u32BdIndex,
+                                                   struct mtlk_hw_bss_ind_mirror);
+  }
+  mtlk_osal_unmap_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr),
+                            bss_ind_topaz->dma_addr, total_size, MTLK_DATA_FROM_DEVICE);
+  bss_ind_topaz->dma_addr = 0;
+#else
   mtlk_osal_unmap_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr),
                             hostpayload, total_size, MTLK_DATA_FROM_DEVICE);
+#endif
 
-  ILOG3_DP("phyaddr:0x%x vaddr:0x%p", hostpayload, buf);
+  ILOG3_DP("phyaddr:0x%x vaddr:0x%p", (uint32)hostpayload, buf);
   mtlk_dump(3, buf + sizeof(RX_PHY_METRICS), MIN(32, size),"EAPOL/BSS Frame");
 
   if (mtlk_wlan_buf_is_802_1X(buf, size) || ((is_eapol) ||
@@ -9621,6 +9911,9 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
              ELOG_P("Failed remapping 0x%p for dropped frame", buf);
              goto critical_error;
            }
+#ifdef MTLK_TOPAZ_PLATFORM
+           bss_ind_topaz->dma_addr = dma_addr;
+#endif
            goto send_resp; /* skip this frame but do not reset HW yet */
          }
 
@@ -9634,8 +9927,22 @@ int _mtlk_mmb_handle_bss_ind (mtlk_hw_t *hw, volatile HOST_DSC *pHD)
     goto critical_error;
   }
 
+#ifdef MTLK_TOPAZ_PLATFORM
+  bss_ind_topaz->dma_addr = dma_addr;
+#endif
+
 send_resp:
+#ifdef MTLK_TOPAZ_PLATFORM
+  /* We work on hd copy to avoid writing directly into the ring cache lines shared with FW-owned HDs.
+     For partly covered lines, arm64 cleans and invalidates rather than just invalidating.
+     Writing directly to HD in cache will mark cache lines as dirty
+     and will cause a clean and invalidate on next sync to CPU which will overwrite the next HD in DRAM */
+  if (MTLK_HD_FLUSH == _mtlk_mmb_hd_stack_push(&hw->bss_mgmt.hd_ret, &hw->bss_mgmt.rx_ring, &hd_copy)) { /* Batch of HDs ready to return */
+    _mtlk_mmb_hd_stack_flush(hw, &hw->bss_mgmt.rx_ring, &hw->bss_mgmt.hd_ret);
+  }
+#else
   _mtlk_mmb_put_hd_to_ring(hw, (HOST_DSC *)pHD, &hw->bss_mgmt.rx_ring);
+#endif
   return res;
 
 critical_error_hw:
@@ -9820,7 +10127,6 @@ _mtlk_mmb_bss_mgmt_tx(mtlk_hw_t *hw,
     ILOG2_P("WARNING: failed mapping 0x%p to physical address", bss_req->virt_addr);
     goto trap;
   }
-
   /* leave the u8Reserved, u8Status and retransmissions fields as 0 */
 
   bss_hd.u32BdIndex         = CPU_TO_LE32(bss_req->hdr.index);
@@ -9863,7 +10169,7 @@ _mtlk_mmb_bss_mgmt_tx(mtlk_hw_t *hw,
   bss_hd.u32HostPayloadAddr = CPU_TO_LE32(bss_req->dma_addr & ~7);
 
   ILOG3_DDHPDDD("bss_req: RadioID=%u, VapID=%u, cookie=%llu, virt_addr=0x%p, size=%u, dma_addr=0x%08x, subtype=%hu",
-    bss_req->radio_id, bss_req->vap_id, bss_req->cookie, bss_req->virt_addr, bss_req->size, bss_req->dma_addr, subtype);
+    bss_req->radio_id, bss_req->vap_id, bss_req->cookie, bss_req->virt_addr, bss_req->size, (uint32)bss_req->dma_addr, subtype);
 
   mtlk_dump(3, &bss_hd, sizeof(bss_hd), "BSS Mgmt TX HD:");
 
@@ -9992,7 +10298,7 @@ _mtlk_mmb_dump_bss_mgmt_res_queue(struct mtlk_bss_management *bss_mgmt)
         = MTLK_LIST_GET_CONTAINING_RECORD(listptr, struct mtlk_hw_bss_req_mirror, hdr.list_entry);
       ILOG0_DDHPDD("bss_req_res #%i: VapID=%u, cookie=%llu, virt_addr=0x%p, size=%u, dma_addr=0x%08x",
                    ++i, bss_req_res->vap_id, bss_req_res->cookie, bss_req_res->virt_addr,
-                   bss_req_res->size, bss_req_res->dma_addr);
+                   bss_req_res->size, (uint32)bss_req_res->dma_addr);
       mtlk_dump(0, bss_req_res->virt_addr, bss_req_res->size, "BSS Mgmt TX frame:");
     }
     mtlk_osal_lock_release(&bss_mgmt->tx_bdr.lock);
@@ -10309,6 +10615,7 @@ int _mtlk_mmb_handle_bss_cfm(mtlk_hw_t *hw, HOST_DSC *pHD)
   mtlk_vap_handle_t    vap_handle, vap_handle_res;
   wave_radio_t *radio;
   struct ieee80211_hw *mac80211_hw;
+  BOOL   vap_ready;
 
   MTLK_ASSERT(hw);
 
@@ -10350,13 +10657,12 @@ int _mtlk_mmb_handle_bss_cfm(mtlk_hw_t *hw, HOST_DSC *pHD)
     goto the_trap;
   }
 #endif
-#if (CPTCFG_IWLWAV_MAX_DLEVEL >= 2)
-  /* Confirmations can be received after VAP was traffic stopped */
-  if (__UNLIKELY(_mtlk_mmb_get_vap_is_not_ready(hw, radio_id, vap_id))) {
+  /* Check if the VAP is stopped before using its data below. */
+  vap_ready = !_mtlk_mmb_get_vap_is_not_ready(hw, radio_id, vap_id);
+  if (__UNLIKELY(!vap_ready)) {
     ILOG2_DD("Received bss frame cfm when VAP traffic was stopped RadioID:%u VapID:%u",
              radio_id, vap_id);
   }
-#endif /* CPTCFG_IWLWAV_MAX_DLEVEL */
   vap_handle = _mtlk_mmb_get_vap_handle_from_vap_id(hw, radio_id, vap_id);
   if (__UNLIKELY(!vap_handle)) {
     ELOG_DD("Received bss frame cfm when VAP was removed RadioID:%u VapID:%u", radio_id, vap_id);
@@ -10365,7 +10671,7 @@ int _mtlk_mmb_handle_bss_cfm(mtlk_hw_t *hw, HOST_DSC *pHD)
 
   ILOG3_DDHPDD("Confirmed bss_req: RadioID=%u VapID=%u, cookie=%llu, virt_addr=0x%p, size=%u, dma_addr=0x%08x",
               bss_req->radio_id, bss_req->vap_id, bss_req->cookie, bss_req->virt_addr,
-              bss_req->size, bss_req->dma_addr);
+              bss_req->size, (uint32)bss_req->dma_addr);
 
   df = mtlk_vap_get_df(vap_handle); /* this checks vap_handle and df, cannot return NULL */
   df_user = mtlk_df_get_user(df);
@@ -10386,11 +10692,14 @@ int _mtlk_mmb_handle_bss_cfm(mtlk_hw_t *hw, HOST_DSC *pHD)
    }
 #endif
 
-  /* First do the processing of cfm prior to handling of reserved or main queues */
-  mtlk_core_on_bss_cfm(mtlk_vap_get_core(vap_handle), &bss_req->dst_addr, bss_req->extra_processing, bss_req->subtype, bss_req->is_broadcast);
+  /* First do the processing of cfm prior to handling of reserved or main queues.
+   * Skip if the VAP is stopped. */
+  if (__LIKELY(vap_ready)) {
+    mtlk_core_on_bss_cfm(mtlk_vap_get_core(vap_handle), &bss_req->dst_addr, bss_req->extra_processing, bss_req->subtype, bss_req->is_broadcast);
 #ifndef WAVE_BSS_TX_DPP_EASY_CONNECT
-  mtlk_core_on_bss_dpp_acked(mtlk_vap_get_core(vap_handle), bss_req->subtype, bss_req->action_code, bss_req->action_field, bss_req->is_dpp);
+    mtlk_core_on_bss_dpp_acked(mtlk_vap_get_core(vap_handle), bss_req->subtype, bss_req->action_code, bss_req->action_field, bss_req->is_dpp);
 #endif
+  }
 
   /* Note that we don't use the tx_res_bdr.lock but the tx_bdr.lock,
    * because we want both queues protected by the same lock, because they work together
@@ -10408,13 +10717,12 @@ int _mtlk_mmb_handle_bss_cfm(mtlk_hw_t *hw, HOST_DSC *pHD)
     bss_req_res = MTLK_LIST_GET_CONTAINING_RECORD(entry, struct mtlk_hw_bss_req_mirror, hdr.list_entry);
     ILOG3_DDHPDD("Popped bss_req_res: RadioID=%u, VapID=%u, cookie=%llu, virt_addr=0x%p, size=%u, dma_addr=0x%08x",
                 bss_req_res->radio_id, bss_req_res->vap_id, bss_req_res->cookie, bss_req_res->virt_addr,
-                bss_req_res->size, bss_req_res->dma_addr);
+                bss_req_res->size, (uint32)bss_req_res->dma_addr);
 
     /* swap buffers */
     tmp_ptr = bss_req->virt_addr;
     bss_req->virt_addr = bss_req_res->virt_addr;
     bss_req_res->virt_addr = tmp_ptr;
-
     /* copy the relevant stuff */
     bss_req->size = bss_req_res->size;
     bss_req->cookie = bss_req_res->cookie;
@@ -10439,13 +10747,12 @@ int _mtlk_mmb_handle_bss_cfm(mtlk_hw_t *hw, HOST_DSC *pHD)
     ILOG3_DDHPD("Swapped bss_req: RadioID:%u VapID:%u cookie:%llu, virt_addr:0x%p, size:%u",
                 bss_req->radio_id, bss_req->vap_id, bss_req->cookie, bss_req->virt_addr,
                 bss_req->size);
-#if (CPTCFG_IWLWAV_MAX_DLEVEL >= 2)
-    /* All BSS frames should be sent to FW even VAP traffic was stopped */
+    /* Drop the frame if its VAP is already stopped. */
     if (__UNLIKELY(_mtlk_mmb_get_vap_is_not_ready(hw, bss_req->radio_id, bss_req->vap_id))) {
-      ILOG2_DD("Sending bss frame from reserved queue after VAP traffic was stopped RadioID:%u VapID:%u",
+      ILOG2_DD("Dropping bss frame from reserved queue - VAP traffic was stopped RadioID:%u VapID:%u",
                 bss_req->radio_id, bss_req->vap_id);
+      continue;
     }
-#endif /* CPTCFG_IWLWAV_MAX_DLEVEL */
     /* WAVE600: TODO: do it for the first radio now, but rework later! */
     vap_handle_res = _mtlk_mmb_get_vap_handle_from_vap_id(hw, bss_req->radio_id, bss_req->vap_id);
     if (__UNLIKELY(!vap_handle_res)) {
@@ -12008,7 +12315,6 @@ mtlk_hw_seq_write_logger_trace_buffers (mtlk_hw_t *hw, mtlk_seq_entry_t *s)
       data = data_ind->data;
 
     res = mtlk_aux_seq_write(s, data, data_ind->size);
-
     data_ind->dma_addr = mtlk_osal_map_to_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr),
                                data_ind->data,
                                data_ind->size,
@@ -12017,7 +12323,6 @@ mtlk_hw_seq_write_logger_trace_buffers (mtlk_hw_t *hw, mtlk_seq_entry_t *s)
         ILOG2_P("WARNING: failed mapping 0x%p to physical address", data_ind->data);
         return MTLK_ERR_NO_RESOURCES;
     }
-
     if (res) /* Overflow */
       return MTLK_ERR_OK;
   }
@@ -12065,18 +12370,21 @@ wave_hw_get_first_radio_master_vap_core (mtlk_hw_t *hw)
   return master_core;
 }
 
+/* TRUE if the radio does NOT request FW statistics on its stats timer, so the next radio has to do it for the card. */
 BOOL __MTLK_IFUNC
-wave_hw_master_vap_net_state_is_not_connected (mtlk_hw_t *hw, unsigned radio_idx)
+wave_hw_master_vap_stats_inactive (mtlk_hw_t *hw, unsigned radio_idx)
 {
   mtlk_core_t* master_core;
+  int net_state;
 
   MTLK_ASSERT(hw != NULL);
 
   master_core = mtlk_vap_manager_get_master_core(_hw_vap_manager_get(hw, radio_idx));
+  net_state = mtlk_core_get_net_state(master_core);
 
-  if (NET_STATE_CONNECTED != mtlk_core_get_net_state(master_core))
+  if ((NET_STATE_ACTIVATING != net_state) && (NET_STATE_CONNECTED != net_state))
     return TRUE;
-
+  /* ACTIVATING is also considered as valid for collecting FW stats, this is required for OneWifi where master VAPs are not CONNECTED */
   return FALSE;
 }
 
@@ -12405,6 +12713,7 @@ _wave_hw_init_sids_in_use (mtlk_hw_t *hw)
     hw->sids.in_use[sid] = WAVE_HW_SID_NOT_IN_USE;
     /* aid to sid mapping */
     hw->sids.aids[sid] = WAVE_AID_NOT_IN_USE;
+    memset(&hw->sids.mac[sid], 0, sizeof(IEEE_ADDR));
   }
   return mtlk_osal_lock_init(&hw->sids.lock);
 }
@@ -12418,6 +12727,7 @@ _wave_hw_cleanup_sids_in_use (mtlk_hw_t *hw)
       WLOG_DD("SID %u in use by vap_id_fw %u", sid, hw->sids.in_use[sid]);
       hw->sids.in_use[sid] = WAVE_HW_SID_NOT_IN_USE;
       hw->sids.aids[sid] = WAVE_AID_NOT_IN_USE;
+      memset(&hw->sids.mac[sid], 0, sizeof(IEEE_ADDR));
     }
   }
   mtlk_osal_lock_cleanup(&hw->sids.lock);
@@ -12554,6 +12864,7 @@ wave_hw_clear_sid_in_use (mtlk_hw_t *hw, wave_sid_t sid, wave_vap_id_t vap_id_fw
   if(in_use_id == vap_id_fw) {
     hw->sids.in_use[sid] = WAVE_HW_SID_NOT_IN_USE;
     hw->sids.aids[sid] = WAVE_AID_NOT_IN_USE;
+    memset(&hw->sids.mac[sid], 0, sizeof(IEEE_ADDR));
     res = MTLK_ERR_OK;
   }
   mtlk_osal_lock_release(&hw->sids.lock);
@@ -12562,6 +12873,43 @@ wave_hw_clear_sid_in_use (mtlk_hw_t *hw, wave_sid_t sid, wave_vap_id_t vap_id_fw
     WLOG_DD("SID %u in use by vap_id_fw %u", sid, in_use_id);
 
   return res;
+}
+
+void __MTLK_IFUNC
+wave_hw_set_sid_mac (mtlk_hw_t *hw, wave_sid_t sid, const IEEE_ADDR *mac)
+{
+  MTLK_ASSERT(hw);
+  MTLK_ASSERT(mac);
+  if (!hw || !_wave_hw_check_sid_valid(hw, sid, __FUNCTION__) || !mac)
+    return;
+
+  mtlk_osal_lock_acquire(&hw->sids.lock);
+  hw->sids.mac[sid] = *mac;
+  mtlk_osal_lock_release(&hw->sids.lock);
+}
+
+BOOL __MTLK_IFUNC
+wave_hw_is_mac_active_in_sid_table (mtlk_hw_t *hw, const unsigned char *mac)
+{
+  wave_sid_t sid;
+  BOOL       found = FALSE;
+
+  MTLK_ASSERT(hw);
+  MTLK_ASSERT(mac);
+  if (!hw || !mac)
+    return FALSE;
+
+  mtlk_osal_lock_acquire(&hw->sids.lock);
+  for (sid = 0; sid < ARRAY_SIZE(hw->sids.in_use); sid++) {
+    if (hw->sids.in_use[sid] != WAVE_HW_SID_NOT_IN_USE &&
+        memcmp(hw->sids.mac[sid].au8Addr, mac, IEEE_ADDR_LEN) == 0) {
+      found = TRUE;
+      break;
+    }
+  }
+  mtlk_osal_lock_release(&hw->sids.lock);
+
+  return found;
 }
 
 bool wave_hw_check_whm_config_change(mtlk_hw_t *hw, wave_whm_cfg_t *whm_cfg)

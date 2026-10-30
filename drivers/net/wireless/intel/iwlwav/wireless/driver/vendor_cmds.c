@@ -504,6 +504,30 @@ static int _wave_ieee80211_vendor_set_CoCAutoCfg (struct wiphy *wiphy, struct wi
   return set_int_params(wiphy, wdev, data, data_len, PRM_ID_COC_AUTO_PARAMS);
 }
 
+/*! \brief      Single HAL decision on driver's pending CoC antenna change.
+ *
+ *  \param[in]  wiphy     Pointer to wireless hardware description (wiphy) structure
+ *  \param[in]  wdev      Pointer to wireless device state (wireless_dev) structure
+ *  \param[in]  data      Pointer to struct mxl_coc_hal_decision: must not be NULL
+ *  \param[in]  data_len  Data length: sizeof(struct mxl_coc_hal_decision)
+ *
+ *  \return     Linux error code
+ *
+ */
+static int _wave_ieee80211_vendor_set_coc_decision (struct wiphy *wiphy, struct wireless_dev *wdev,
+                                                       const void *data, int data_len)
+{
+  const struct mxl_coc_hal_decision *coc_decision = (const struct mxl_coc_hal_decision *)data;
+
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  if (!coc_decision || data_len < sizeof(*coc_decision)) {
+    ELOG_S("%s: COC HAL decision subcmd: malformed data", wdev->netdev->name);
+    return -EINVAL;
+  }
+  ILOG1_SDD("%s: COC HAL decision subcmd received: TX%dxRX%d", wdev->netdev->name, coc_decision->num_tx, coc_decision->num_rx);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_COC_HAL_DECISION);
+}
+
 /*! \brief      Set TPC Loop type (0 - Closed, 1 - Open)
  *
  *  \param[in]  wiphy     Pointer to wireless hardware description (wiphy) structure
@@ -2298,7 +2322,6 @@ static int _wave_ieee80211_vendor_get_CoCAutoCfg (struct wiphy *wiphy, struct wi
   ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
   return get_int_params(wiphy, wdev, data, data_len, PRM_ID_COC_AUTO_PARAMS, MTLK_COC_AUTO_MAX_CFG_PARAMS);
 }
-
 /*! \brief      Get Effective Radiated Power (ERP) configuration
  *
  *  \param[in]  wiphy     Pointer to wireless hardware description (wiphy) structure
@@ -5828,6 +5851,20 @@ static int _wave_cfg80211_vendor_get_mru_tx_power_enable (struct wiphy *wiphy, s
   return get_int_params(wiphy, wdev, data, data_len, PRM_ID_MRU_TX_POWER_ENABLE, 1);
 }
 
+static int _wave_cfg80211_vendor_set_zwdfs_noise_suppress(struct wiphy *wiphy, struct wireless_dev *wdev,
+  const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return set_int_params(wiphy, wdev, data, data_len, PRM_ID_ZWDFS_NOISE_SUPPRESS);
+}
+
+static int _wave_cfg80211_vendor_get_zwdfs_noise_suppress (struct wiphy *wiphy, struct wireless_dev *wdev,
+  const void *data, int data_len)
+{
+  ILOG1_SSD("%s: Invoked from %s (%i)", wdev->netdev->name, current->comm, current->pid);
+  return get_int_params(wiphy, wdev, data, data_len, PRM_ID_ZWDFS_NOISE_SUPPRESS, 2);
+}
+
 
 /************************* DEBUG SET/GET FUNCTIONS *************************/
 #ifdef CONFIG_WAVE_DEBUG
@@ -7308,6 +7345,8 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
   VENDOR_CMD_WDEV(SET_MSCS_ENABLE, _wave_ieee80211_vendor_set_mscs_enable),
   /* Get MSCS enable */
   VENDOR_CMD_WDEV(GET_MSCS_ENABLE, _wave_ieee80211_vendor_get_mscs_enable),
+  /* Set COC decision */
+  VENDOR_CMD_WDEV(SET_COC_DECISION, _wave_ieee80211_vendor_set_coc_decision),
 #endif
 
   VENDOR_CMD_WDEV(SET_FIXED_RATE_THERMAL, _wave_ieee80211_vendor_set_FixedRateThermal),
@@ -7318,6 +7357,9 @@ wiphy_vendor_command _wave_mac80211_vendor_commands[] = {
 
   VENDOR_CMD_WDEV(SET_MRU_TX_POWER_ENABLE, _wave_cfg80211_vendor_set_mru_tx_power_enable),
   VENDOR_CMD_WDEV(GET_MRU_TX_POWER_ENABLE, _wave_cfg80211_vendor_get_mru_tx_power_enable),
+
+  VENDOR_CMD_WDEV(SET_ZWDFS_NOISE_SUPPRESS, _wave_cfg80211_vendor_set_zwdfs_noise_suppress),
+  VENDOR_CMD_WDEV(GET_ZWDFS_NOISE_SUPPRESS, _wave_cfg80211_vendor_get_zwdfs_noise_suppress),
 
   /******************** DEBUG COMMANDS ********************/
 #ifdef CONFIG_WAVE_DEBUG
@@ -7440,6 +7482,9 @@ nl80211_vendor_cmd_info _wave_mac80211_vendor_events[] = {
   VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_DYNAMIC_WMM_UPDATE),
   VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_REGDB_INFO_UPDATE),
   VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_RX_MEASURE),
+  VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_NEW_MLD_VAP),
+  VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_DEL_MLD_VAP),
+  VENDOR_EVT(LTQ_NL80211_VENDOR_EVENT_COC_UPDATE),
 };
 
 void _wave_mac80211_register_vendor_evts(struct wiphy *wiphy)

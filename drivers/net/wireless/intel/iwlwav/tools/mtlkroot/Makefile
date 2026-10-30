@@ -59,7 +59,6 @@ obj ?= $(shell pwd)
 
 ifeq ($(CPTCFG_BACKPORTED_WIRELESS),y)
 clean-files := logmacros.*
-clean-files += *.scd
 clean-files += .logprep_ts
 clean-files += $(shell find $(obj) -name "*.o.cmd")
 clean-files += $(shell find $(obj) -name "*.stderr")

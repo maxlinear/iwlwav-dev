@@ -291,17 +291,23 @@ void __MTLK_IFUNC
 wave_hw_reset_he_eht_la_mu_stats (mtlk_hw_t *hw, int group_id, BOOL full_reset)
 {
   int i;
+  uint32 group_idx;
   int chip_id = hw_mmb_get_chip_id(hw);
   hw_statistics_t *hw_stats = &hw->hw_stats;
 
+  if (group_id >= 0) {
+    /* Added due to a Klocwork issue: use a locally validated index in the reset path. */
+    group_idx = group_id;
+  }
+
   if ((group_id >= 0) && (group_id < MTLK_ARRAY_SIZE(hw_stats->mu_he_eht_la_stats32))) {
     if (full_reset) {
-      memset(&hw_stats->mu_he_eht_la_stats32[group_id], 0, sizeof(hw_stats->mu_he_eht_la_stats32[group_id]));
-      memset(&hw_stats->mu_he_eht_la_stats[group_id], 0, sizeof(hw_stats->mu_he_eht_la_stats[group_id]));
+      memset(&hw_stats->mu_he_eht_la_stats32[group_idx], 0, sizeof(hw_stats->mu_he_eht_la_stats32[group_idx]));
+      memset(&hw_stats->mu_he_eht_la_stats[group_idx], 0, sizeof(hw_stats->mu_he_eht_la_stats[group_idx]));
     }
     else {
-      memset(&hw_stats->mu_he_eht_la_stats32[group_id].dl, 0, sizeof(hw_stats->mu_he_eht_la_stats32[group_id].dl));
-      memset(&hw_stats->mu_he_eht_la_stats32[group_id].ul, 0, sizeof(hw_stats->mu_he_eht_la_stats32[group_id].ul));
+      memset(&hw_stats->mu_he_eht_la_stats32[group_idx].dl, 0, sizeof(hw_stats->mu_he_eht_la_stats32[group_idx].dl));
+      memset(&hw_stats->mu_he_eht_la_stats32[group_idx].ul, 0, sizeof(hw_stats->mu_he_eht_la_stats32[group_idx].ul));
     }
   }
   else {
@@ -334,6 +340,26 @@ static __INLINE void __stats_accumulate_32bit_from_8bit (uint32* sum, uint8* pre
   uint8 delta;
   delta = new_val - *prev_val;
   *sum += delta;
+  *prev_val = new_val;
+}
+
+/* Per-FW-sample delta variants: store the delta of the latest stats-copy
+ * cycle (~200 ms) instead of accumulating across cycles. Used for fields
+ * that are reported as a rate over the most recent sampling window
+ * (airUse, dataUse). */
+static __INLINE void __stats_delta_32bit_from_16bit (uint32* out, uint16* prev_val, uint16 new_val)
+{
+  uint16 delta;
+  delta = new_val - *prev_val;
+  *out = delta;
+  *prev_val = new_val;
+}
+
+static __INLINE void __stats_delta_32bit_from_32bit (uint32* out, uint32* prev_val, uint32 new_val)
+{
+  uint32 delta;
+  delta = new_val - *prev_val;
+  *out = delta;
   *prev_val = new_val;
 }
 
@@ -414,7 +440,37 @@ static void _wave_accumulate_mu_he_eht_la_group_stats (mtlk_hw_t *hw, int chip_i
                                            &hw_stats->mu_he_eht_la_stats[group_id].dl.mcsHistogram[i][j],
                                            MTLK_GET_STATS(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].mcsHistogram[i][j], chip_id));
       }
+
+      if (_chipid_is_gen7(chip_id)) {
+        __stats_accumulate_32bit_from_16bit(&hw_stats->mu_he_eht_la_stats32[group_id].dl.numOfMuMimoPpdus[i],
+                                            &hw_stats->mu_he_eht_la_stats[group_id].dl.numOfMuMimoPpdus[i],
+                                            MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].numOfMuMimoPpdus[i]));
+        __stats_accumulate_32bit_from_16bit(&hw_stats->mu_he_eht_la_stats32[group_id].dl.numOfOfdmaPpdus[i],
+                                            &hw_stats->mu_he_eht_la_stats[group_id].dl.numOfOfdmaPpdus[i],
+                                            MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].numOfOfdmaPpdus[i]));
+        __stats_accumulate_32bit_from_16bit(&hw_stats->mu_he_eht_la_stats32[group_id].dl.totalPpdus[i],
+                                            &hw_stats->mu_he_eht_la_stats[group_id].dl.totalPpdus[i],
+                                            MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].totalPpdus[i]));
+        __stats_delta_32bit_from_32bit(&hw_stats->mu_he_eht_la_stats32[group_id].dl.airUse[i],
+                                       &hw_stats->mu_he_eht_la_stats[group_id].dl.airUse[i],
+                                       MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].airUse[i]));
+        __stats_delta_32bit_from_32bit(&hw_stats->mu_he_eht_la_stats32[group_id].dl.dataUse[i],
+                                       &hw_stats->mu_he_eht_la_stats[group_id].dl.dataUse[i],
+                                       MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].dataUse[i]));
+        hw_stats->mu_he_eht_la_stats32[group_id].dl.phyRate[i] =
+                    MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].phyRate[i]);
+        hw_stats->mu_he_eht_la_stats32[group_id].dl.dataRate[i] =
+                    MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].dataRate[i]);
+        hw_stats->mu_he_eht_la_stats32[group_id].dl.muPER[i] =
+                    MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].muPER[i]);
+        hw_stats->mu_he_eht_la_stats32[group_id].dl.muBw[i] =
+                    MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].muBw[i]);
+        hw_stats->mu_he_eht_la_stats32[group_id].dl.muMcsNss[i] =
+                    MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[fw_idx].muMcsNss[i]);
+      }
     }
+
+
 
     return;
   }
@@ -459,7 +515,35 @@ static void _wave_accumulate_mu_he_eht_la_group_stats (mtlk_hw_t *hw, int chip_i
                                          &hw_stats->mu_he_eht_la_stats[group_id].ul.mcsHistogram[i][j],
                                          MTLK_GET_STATS(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].mcsHistogram[i][j], chip_id));
     }
+
+    if (_chipid_is_gen7(chip_id)) {
+      __stats_accumulate_32bit_from_16bit(&hw_stats->mu_he_eht_la_stats32[group_id].ul.numOfMuMimoPpdus[i],
+                                          &hw_stats->mu_he_eht_la_stats[group_id].ul.numOfMuMimoPpdus[i],
+                                          MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].numOfMuMimoPpdus[i]));
+      __stats_accumulate_32bit_from_16bit(&hw_stats->mu_he_eht_la_stats32[group_id].ul.numOfOfdmaPpdus[i],
+                                          &hw_stats->mu_he_eht_la_stats[group_id].ul.numOfOfdmaPpdus[i],
+                                          MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].numOfOfdmaPpdus[i]));
+      __stats_accumulate_32bit_from_16bit(&hw_stats->mu_he_eht_la_stats32[group_id].ul.totalPpdus[i],
+                                          &hw_stats->mu_he_eht_la_stats[group_id].ul.totalPpdus[i],
+                                          MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].totalPpdus[i]));
+      __stats_delta_32bit_from_32bit(&hw_stats->mu_he_eht_la_stats32[group_id].ul.airUse[i],
+                                     &hw_stats->mu_he_eht_la_stats[group_id].ul.airUse[i],
+                                     MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].airUse[i]));
+      __stats_delta_32bit_from_32bit(&hw_stats->mu_he_eht_la_stats32[group_id].ul.dataUse[i],
+                                     &hw_stats->mu_he_eht_la_stats[group_id].ul.dataUse[i],
+                                     MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].dataUse[i]));
+      hw_stats->mu_he_eht_la_stats32[group_id].ul.phyRate[i] =
+                  MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].phyRate[i]);
+      hw_stats->mu_he_eht_la_stats32[group_id].ul.dataRate[i] =
+                  MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].dataRate[i]);
+      hw_stats->mu_he_eht_la_stats32[group_id].ul.muBw[i] =
+                  MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].muBw[i]);
+      hw_stats->mu_he_eht_la_stats32[group_id].ul.muMcsNss[i] =
+                  MTLK_GET_STATS_G7(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[fw_idx].muMcsNss[i]);
+    }
   }
+
+
 }
 
 static void _wave_update_mu_he_eht_la_stats (mtlk_hw_t *hw)
@@ -546,6 +630,26 @@ wave_hw_get_la_mu_he_eht_stats (mtlk_hw_t *hw,
                 stats->dl.heMuFastProbeTriggeredCnt, sizeof(stats->dl.heMuFastProbeTriggeredCnt));
     wave_memcpy(out_stats->dl.mcsHistogram, sizeof(out_stats->dl.mcsHistogram),
                 stats->dl.mcsHistogram, sizeof(stats->dl.mcsHistogram));
+    wave_memcpy(out_stats->dl.phyRate, sizeof(out_stats->dl.phyRate),
+                stats->dl.phyRate, sizeof(stats->dl.phyRate));
+    wave_memcpy(out_stats->dl.dataRate, sizeof(out_stats->dl.dataRate),
+                stats->dl.dataRate, sizeof(stats->dl.dataRate));
+    wave_memcpy(out_stats->dl.airUse, sizeof(out_stats->dl.airUse),
+                stats->dl.airUse, sizeof(stats->dl.airUse));
+    wave_memcpy(out_stats->dl.dataUse, sizeof(out_stats->dl.dataUse),
+                stats->dl.dataUse, sizeof(stats->dl.dataUse));
+    wave_memcpy(out_stats->dl.muBw, sizeof(out_stats->dl.muBw),
+                stats->dl.muBw, sizeof(stats->dl.muBw));
+    wave_memcpy(out_stats->dl.muPER, sizeof(out_stats->dl.muPER),
+                stats->dl.muPER, sizeof(stats->dl.muPER));
+    wave_memcpy(out_stats->dl.muMcsNss, sizeof(out_stats->dl.muMcsNss),
+                stats->dl.muMcsNss, sizeof(stats->dl.muMcsNss));
+    wave_memcpy(out_stats->dl.numOfOfdmaPpdus, sizeof(out_stats->dl.numOfOfdmaPpdus),
+                stats->dl.numOfOfdmaPpdus, sizeof(stats->dl.numOfOfdmaPpdus));
+    wave_memcpy(out_stats->dl.numOfMuMimoPpdus, sizeof(out_stats->dl.numOfMuMimoPpdus),
+                stats->dl.numOfMuMimoPpdus, sizeof(stats->dl.numOfMuMimoPpdus));
+    wave_memcpy(out_stats->dl.totalPpdus, sizeof(out_stats->dl.totalPpdus),
+                stats->dl.totalPpdus, sizeof(stats->dl.totalPpdus));
 
     wave_memcpy(out_stats->dl.staId, sizeof(out_stats->dl.staId),
                 MTLK_GET_STATS(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtDLStatistics[stats->fw_idx].staId, chip_id),
@@ -573,6 +677,24 @@ wave_hw_get_la_mu_he_eht_stats (mtlk_hw_t *hw,
                 stats->ul.collisionDetectedCnt, sizeof(stats->ul.collisionDetectedCnt));
     wave_memcpy(out_stats->ul.mcsHistogram, sizeof(out_stats->ul.mcsHistogram),
                 stats->ul.mcsHistogram, sizeof(stats->ul.mcsHistogram));
+    wave_memcpy(out_stats->ul.phyRate, sizeof(out_stats->ul.phyRate),
+                stats->ul.phyRate, sizeof(stats->ul.phyRate));
+    wave_memcpy(out_stats->ul.dataRate, sizeof(out_stats->ul.dataRate),
+                stats->ul.dataRate, sizeof(stats->ul.dataRate));
+    wave_memcpy(out_stats->ul.airUse, sizeof(out_stats->ul.airUse),
+                stats->ul.airUse, sizeof(stats->ul.airUse));
+    wave_memcpy(out_stats->ul.dataUse, sizeof(out_stats->ul.dataUse),
+                stats->ul.dataUse, sizeof(stats->ul.dataUse));
+    wave_memcpy(out_stats->ul.muBw, sizeof(out_stats->ul.muBw),
+                stats->ul.muBw, sizeof(stats->ul.muBw));
+    wave_memcpy(out_stats->ul.muMcsNss, sizeof(out_stats->ul.muMcsNss),
+                stats->ul.muMcsNss, sizeof(stats->ul.muMcsNss));
+    wave_memcpy(out_stats->ul.numOfOfdmaPpdus, sizeof(out_stats->ul.numOfOfdmaPpdus),
+                stats->ul.numOfOfdmaPpdus, sizeof(stats->ul.numOfOfdmaPpdus));
+    wave_memcpy(out_stats->ul.numOfMuMimoPpdus, sizeof(out_stats->ul.numOfMuMimoPpdus),
+                stats->ul.numOfMuMimoPpdus, sizeof(stats->ul.numOfMuMimoPpdus));
+    wave_memcpy(out_stats->ul.totalPpdus, sizeof(out_stats->ul.totalPpdus),
+                stats->ul.totalPpdus, sizeof(stats->ul.totalPpdus));
 
     wave_memcpy(out_stats->ul.staId, sizeof(out_stats->ul.staId),
                 MTLK_GET_STATS(hw_stats->stats_copy, linkAdaptationMuHeEhtStats.laMuHeEhtULStatistics[stats->fw_idx].staId, chip_id),
@@ -1288,6 +1410,7 @@ _mtlk_sta_update_dl_mimo_statistics (mtlk_hw_t *hw, sta_entry *sta)
   uint8  mu_sta_entry;
   uint8  nss, mcs;
   uint8  no_of_mcs, no_of_nss;
+  uint8  max_mimo_sta_entries;
   uint8  hw_stats_mu_group_state;
   uint16 hw_stats_sta_sid;
   uint32 hw_stats_su_stats, hw_stats_mu_stats;
@@ -1325,8 +1448,10 @@ _mtlk_sta_update_dl_mimo_statistics (mtlk_hw_t *hw, sta_entry *sta)
                                    hw_stats_su_stats);
   }
 
-  /* DL MU MIMO stats */
-  for (mu_sta_entry = 0; mu_sta_entry < MAX_NUM_OF_MIMO_STA_STATS_ENTRIES; mu_sta_entry ++) {
+  /* DL MU MIMO stats - capped at W700 size to avoid mixed-profile over-indexing. */
+  max_mimo_sta_entries = _chipid_is_gen7(chip_id) ? MAX_NUM_OF_MIMO_STA_STATS_ENTRIES_GEN7 : MAX_NUM_OF_MIMO_STA_STATS_ENTRIES;
+  max_mimo_sta_entries = MIN(max_mimo_sta_entries, MAX_NUM_OF_MIMO_STA_STATS_ENTRIES_GEN7);
+  for (mu_sta_entry = 0; mu_sta_entry < max_mimo_sta_entries; mu_sta_entry ++) {
     hw_stats_sta_sid = MTLK_GET_STATS(hw_stats->stats_copy,
                                       linkAdaptationSuMuStatistics.mimoDl.staStatistics.muTableEntry[mu_sta_entry].staId,
                                       chip_id);
@@ -1497,6 +1622,7 @@ _mtlk_sta_update_ofdma_mu_statistics (mtlk_hw_t *hw, sta_entry *sta)
 
   uint8  ru_id, mu_sta_entry;
   uint8  no_of_ru_sizes;
+  uint8  max_mu_sta_entries;
   uint8  new_entry_word_index;
   uint8  new_entry_bit_index;
   uint8  new_entry_value;
@@ -1521,7 +1647,10 @@ _mtlk_sta_update_ofdma_mu_statistics (mtlk_hw_t *hw, sta_entry *sta)
                                                                linkAdaptationSuMuStatistics.ppdusUl.stationsPpdus.muPpdusNewEntryBitArray,
                                                                chip_id);
   new_entry_mu_db_size_in_words /= sizeof(uint32);
-  for (mu_sta_entry = 0; mu_sta_entry < MAX_NUM_OF_MU_STA_STATS_ENTRIES; mu_sta_entry ++) {
+  max_mu_sta_entries = _chipid_is_gen7(chip_id) ? MAX_NUM_OF_MU_STA_STATS_ENTRIES_GEN7 : MAX_NUM_OF_MU_STA_STATS_ENTRIES;
+  /* Keep MU stats iteration capped by W700 table size to avoid mixed-profile over-indexing. */
+  max_mu_sta_entries = MIN(max_mu_sta_entries, MAX_NUM_OF_MU_STA_STATS_ENTRIES_GEN7);
+  for (mu_sta_entry = 0; mu_sta_entry < max_mu_sta_entries; mu_sta_entry ++) {
     /* STA UL MU PPDUS */
     hw_stats_sta_sid = MTLK_GET_STATS(hw_stats->stats_copy,
                                       linkAdaptationSuMuStatistics.ppdusUl.stationsPpdus.muStationsPpdus[mu_sta_entry].staId,
@@ -2941,7 +3070,9 @@ _mtlk_hw_parse_statistics (mtlk_hw_t *hw)
                   sizeof(phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise),
                   &((devicePhyRxStatusDb_t_wave600b*)dev_stats)->backgroundNoise,
                   sizeof(((devicePhyRxStatusDb_t_wave600b*)dev_stats)->backgroundNoise));
-      for(a = ARRAY_SIZE(((devicePhyRxStatusDb_t_wave600b*)dev_stats)->backgroundNoise); a < WAVE_STAT_MAX_ANTENNAS; a++) {
+      for (a = ARRAY_SIZE(((devicePhyRxStatusDb_t_wave600b*)dev_stats)->backgroundNoise);
+           a < WAVE_STAT_MAX_ANTENNAS;
+           a++) {
         phy_rx_status->db_data->devicePhyRxStatus[i].noise[a] = NOISE_INVALID;
         phy_rx_status->db_data->devicePhyRxStatus[i].rf_gain[a] = 0;
         phy_rx_status->db_data->devicePhyRxStatus[i].backgroundNoise[a] = NOISE_INVALID;
@@ -3104,7 +3235,7 @@ mtlk_hw_get_statistics (mtlk_hw_t *hw)
   mtlk_txmm_data_t        *man_entry;
   UMI_GET_STATISTICS_DATA *req;
   hw_statistics_t         *hw_stats;
-  uint32                   dma_addr;
+  dma_addr_t               dma_addr;
   int                      res = MTLK_ERR_UNKNOWN, size = 0;
   int                      chip_id = hw_mmb_get_chip_id(hw);
   mtlk_osal_hr_timestamp_t ts;
@@ -3123,11 +3254,9 @@ mtlk_hw_get_statistics (mtlk_hw_t *hw)
   }
 
   hw_stats = &hw->hw_stats;
-
   dma_addr = mtlk_osal_map_to_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr),
                                         hw_stats->stats_data, size,
                                         MTLK_DATA_FROM_DEVICE);
-
   man_entry->id = UM_MAN_GET_STATISTICS_REQ;
   man_entry->payload_size = sizeof(*req);
   req = (UMI_GET_STATISTICS_DATA *) man_entry->payload;
@@ -3138,11 +3267,9 @@ mtlk_hw_get_statistics (mtlk_hw_t *hw)
   ILOG3_DDD("CID-%02x: Statistics data: size %d, dma_addr 0x%08x, ",
                 hw->card_idx, size, dma_addr);
   res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
-
   mtlk_osal_unmap_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr),
                             dma_addr, size,
                             MTLK_DATA_FROM_DEVICE);
-
   mtlk_txmm_msg_cleanup(&man_msg);
 
   if (res != MTLK_ERR_OK) {
@@ -3176,7 +3303,7 @@ int __MTLK_IFUNC
 mtlk_hw_statistics_init (mtlk_hw_t *hw)
 {
     hw_statistics_t      *hw_stats;
-    uint32                dma_addr;
+    dma_addr_t            dma_addr;
     int                   res, size = 0;
     int                   chip_id = hw_mmb_get_chip_id(hw);
     int                   i;
@@ -3247,7 +3374,6 @@ mtlk_hw_statistics_init (mtlk_hw_t *hw)
     /* Initialization test for map and unmap of statistics */
     dma_addr = mtlk_osal_map_to_phys_addr(mtlk_ccr_get_dev_ctx(hw->ccr), hw_stats->stats_data,
                                           size, MTLK_DATA_TO_DEVICE);
-
     ILOG0_DDPDP("CID-%02x: Statistics data: size %d, buffer 0x%p, dma_addr 0x%08x, buff_copy 0x%p",
                 hw->card_idx, size, hw_stats->stats_data, dma_addr, hw_stats->stats_copy);
     if (dma_addr) {

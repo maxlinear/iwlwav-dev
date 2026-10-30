@@ -31,11 +31,11 @@
 typedef struct
 {
   uint8          *ptr;
-  uint32     dma_addr;
+  dma_addr_t dma_addr;
   uint16 alloced_size;
 #ifdef MTLK_WAVE_700
   uint8      *mbssid_ptr;
-  uint32     mbssid_dma_addr;
+  dma_addr_t mbssid_dma_addr;
   uint32     mbssid_alloc_size;
 #endif
   uint16     head_len;

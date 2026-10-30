@@ -680,6 +680,42 @@ wave_vap_manager_get_ml_vap_info(mtlk_vap_handle_t vap_handle)
   return &_info->ml_vap_info;
 }
 
+BOOL __MTLK_IFUNC
+wave_vap_is_mld_multi_link(mtlk_vap_handle_t vap_handle)
+{
+  BOOL res = FALSE;
+
+  if (!mtlk_vap_ml_configured(vap_handle))
+    return FALSE;
+
+  mtlk_vap_ml_lock_acquire(vap_handle);
+  if (!mtlk_vap_ml_configured(vap_handle) || mtlk_vap_ml_teardown_inprogress(vap_handle)) {
+    mtlk_vap_ml_lock_release(vap_handle);
+    return FALSE;
+  }
+  res = (mtlk_vap_ml_configured(vap_handle) && (mtlk_vap_ml_get_num_of_siblings(vap_handle) > 0)) ? TRUE : FALSE;
+  mtlk_vap_ml_lock_release(vap_handle);
+  return res;
+}
+
+BOOL __MTLK_IFUNC
+wave_vap_is_mld_single_link(mtlk_vap_handle_t vap_handle)
+{
+  BOOL res = FALSE;
+
+  if (!mtlk_vap_ml_configured(vap_handle))
+    return FALSE;
+
+  mtlk_vap_ml_lock_acquire(vap_handle);
+  if (!mtlk_vap_ml_configured(vap_handle) || mtlk_vap_ml_teardown_inprogress(vap_handle)) {
+    mtlk_vap_ml_lock_release(vap_handle);
+    return FALSE;
+  }
+  res = (mtlk_vap_ml_configured(vap_handle) && (mtlk_vap_ml_get_num_of_siblings(vap_handle) == 0)) ? TRUE : FALSE;
+  mtlk_vap_ml_lock_release(vap_handle);
+  return res;
+}
+
 void __MTLK_IFUNC
 mtlk_vap_wait_ml_teardown(mtlk_vap_handle_t vap_handle)
 {
@@ -1139,7 +1175,37 @@ static mtlk_df_t ** _mtlk_vap_secondary_df_array_create(mtlk_vap_handle_t vap_ha
   memset(secondary_dfs, 0, sizeof(mtlk_df_t *) * max_vaps_count);
   secondary_dfs[_info->id] = _info->df;
 
+  if (MTLK_ERR_OK != mtlk_osal_lock_init(&_info->secondary_dfs_lock)) {
+    mtlk_osal_mem_free(secondary_dfs);
+    return NULL;
+  }
+
   return secondary_dfs;
+}
+
+static void
+_mtlk_vap_secondary_df_array_delete(mtlk_vap_info_internal_t *vap_info)
+{
+  mtlk_osal_lock_cleanup(&vap_info->secondary_dfs_lock);
+  mtlk_osal_mem_free(vap_info->secondary_dfs);
+}
+
+mtlk_df_t *
+mtlk_vap_get_secondary_df_ref (mtlk_vap_handle_t vap_handle, uint8 secondary_vap_id)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+  mtlk_df_t *df;
+
+  MTLK_ASSERT(NULL != _info);
+  MTLK_ASSERT(NULL != _info->secondary_dfs);
+
+  mtlk_osal_lock_acquire(&_info->secondary_dfs_lock);
+  df = _info->secondary_dfs[secondary_vap_id];
+  if (df)
+    mtlk_df_incref(df);
+  mtlk_osal_lock_release(&_info->secondary_dfs_lock);
+
+  return df;
 }
 
 static int
@@ -1188,7 +1254,7 @@ _mtlk_vap_cleanup (mtlk_vap_handle_t vap_handle)
     MTLK_CLEANUP_STEP(vap_handler, VAP_HANDLER_ABMGR_CREATE, MTLK_OBJ_PTR(vap_info),
                       mtlk_abmgr_delete, (vap_info->abmgr));
     MTLK_CLEANUP_STEP(vap_handler, VAP_HANDLER_SECNDRY_DF_CREATE, MTLK_OBJ_PTR(vap_info),
-                      mtlk_osal_mem_free, (vap_info->secondary_dfs));
+                      _mtlk_vap_secondary_df_array_delete, (vap_info));
     MTLK_CLEANUP_STEP(vap_handler, VAP_HANDLER_DF_CREATE, MTLK_OBJ_PTR(vap_info),
                       mtlk_df_delete, (vap_info->df));
     MTLK_CLEANUP_STEP(vap_handler, VAP_HANDLER_PDB_CREATE, MTLK_OBJ_PTR(vap_info),
@@ -1544,11 +1610,22 @@ mtlk_vap_del_secondary_vap (mtlk_vap_handle_t vap_handle, uint8 sec_vap_idx)
       mtlk_sta_decref(sta);
     }
 
-    mtlk_df_stop(secondary_df);
-    mtlk_df_delete(secondary_df);
-
+    /* Make the df unreachable to any *new* reader of secondary_dfs[] first
+     * (mtlk_vap_get_secondary_df_ref() takes the same lock), then drop our
+     * own reference and wait (bounded) for any reader that already grabbed
+     * one before this point to finish using it - only then is it safe to
+     * actually stop/free the object. See mtlk_df_incref/decref/wait_unref
+     * in mtlk_df_linux.c (same pattern as mtlk_sta_wait_delete in stadb.c). */
+    mtlk_osal_lock_acquire(&vap_info->secondary_dfs_lock);
     vap_info->secondary_dfs[sec_vap_idx] = NULL;
     obj->secondary_id_vap_array[sec_vap_idx] = obj->guest_vap_array[sec_vap_idx];
+    mtlk_osal_lock_release(&vap_info->secondary_dfs_lock);
+
+    mtlk_df_decref(secondary_df);
+    mtlk_df_wait_unref(secondary_df);
+
+    mtlk_df_stop(secondary_df);
+    mtlk_df_delete(secondary_df);
   }
 }
 
@@ -1559,6 +1636,7 @@ mtlk_vap_del_all_secondary_vaps (mtlk_vap_handle_t vap_handle)
   mtlk_df_t *secondary_df;
   mtlk_vap_manager_t *obj;
   uint32 vap_idx;
+  sta_entry *sta;
 
   MTLK_ASSERT(NULL != vap_handle);
   vap_info = (mtlk_vap_info_internal_t *)vap_handle;
@@ -1577,11 +1655,27 @@ mtlk_vap_del_all_secondary_vaps (mtlk_vap_handle_t vap_handle)
     if (!secondary_df)
       continue;
 
-    mtlk_df_stop(secondary_df);
-    mtlk_df_delete(secondary_df);
+    /* Bkh interface can be removed before backhaul STA deletion -
+       must release backhaul STA incref to avoid ref_cnt stuck non-zero */
+    sta = mtlk_df_user_get_backhaul_sta(mtlk_df_get_user(secondary_df));
+    if (sta) {
+      mtlk_vap_unbind_backhaul_sta(vap_handle, sta);
+      mtlk_sta_decref(sta);
+    }
 
+    /* Same discipline as mtlk_vap_del_secondary_vap(): make unreachable to
+     * new readers under the lock, then drop our reference and wait for
+     * outstanding ones before freeing. */
+    mtlk_osal_lock_acquire(&vap_info->secondary_dfs_lock);
     vap_info->secondary_dfs[vap_idx] = NULL;
     obj->secondary_id_vap_array[vap_idx] = NULL;
+    mtlk_osal_lock_release(&vap_info->secondary_dfs_lock);
+
+    mtlk_df_decref(secondary_df);
+    mtlk_df_wait_unref(secondary_df);
+
+    mtlk_df_stop(secondary_df);
+    mtlk_df_delete(secondary_df);
   }
 }
 
@@ -1607,14 +1701,18 @@ mtlk_vap_bind_backhaul_sta_to_secondary_vap (mtlk_vap_handle_t vap_handle, sta_e
   secondary_df = vap_info->secondary_dfs[sec_vap_idx];
   if (secondary_df) {
     mtlk_df_user_t *secondary_df_user = mtlk_df_get_user(secondary_df);
-    if (mtlk_df_user_backhaul_sta_is_set(secondary_df_user)) {
+
+    /* Atomic check-and-set: mtlk_df_user_backhaul_sta_is_set() followed by
+     * a separate mtlk_df_user_set_backhaul_sta() call would let a
+     * concurrent bind land in between and be silently overwritten. Only
+     * stamp secondary_vap_id on success, matching prior semantics. */
+    if (!mtlk_df_user_set_backhaul_sta_if_unset(secondary_df_user, sta)) {
       ELOG_S("Backhaul STA for VLAN interface '%s' already set!", mtlk_df_get_name(secondary_df));
       return MTLK_ERR_NO_RESOURCES;
     }
 
-    ILOG0_SY("VLAN interface '%s' exists, set backhaul STA %Y", mtlk_df_get_name(secondary_df), mtlk_sta_get_addr(sta)->au8Addr);
     sta->secondary_vap_id = sec_vap_idx;
-    mtlk_df_user_set_backhaul_sta(secondary_df_user, sta);
+    ILOG0_SY("VLAN interface '%s' exists, set backhaul STA %Y", mtlk_df_get_name(secondary_df), mtlk_sta_get_addr(sta)->au8Addr);
     return MTLK_ERR_OK;
   }
   return MTLK_ERR_NO_RESOURCES;
@@ -1659,14 +1757,15 @@ mtlk_vap_bind_backhaul_sta (mtlk_vap_handle_t vap_handle, sta_entry *sta)
       continue;
 
     secondary_df_user = mtlk_df_get_user(secondary_df);
-    if (mtlk_df_user_backhaul_sta_is_set(secondary_df_user)) {
+
+    /* Atomic check-and-set - see mtlk_vap_bind_backhaul_sta_to_secondary_vap() */
+    if (!mtlk_df_user_set_backhaul_sta_if_unset(secondary_df_user, sta)) {
       ELOG_S("Backhaul STA for VLAN interface '%s' already set!", sta->vlan_ifname);
       return MTLK_ERR_NO_RESOURCES;
     }
 
-    ILOG0_SY("VLAN interface '%s' found, set backhaul STA %Y", sta->vlan_ifname, mtlk_sta_get_addr(sta)->au8Addr);
     sta->secondary_vap_id = _vap_index;
-    mtlk_df_user_set_backhaul_sta(secondary_df_user, sta);
+    ILOG0_SY("VLAN interface '%s' found, set backhaul STA %Y", sta->vlan_ifname, mtlk_sta_get_addr(sta)->au8Addr);
 
     return MTLK_ERR_OK;
   }
@@ -1690,19 +1789,29 @@ mtlk_vap_unbind_backhaul_sta (mtlk_vap_handle_t vap_handle, sta_entry *sta)
 
   MTLK_ASSERT(NULL != vap_info->secondary_dfs);
   MTLK_ASSERT(NULL != vap_info->secondary_dfs[sta->secondary_vap_id]);
-  if (NULL == vap_info->secondary_dfs[sta->secondary_vap_id])
+  if (NULL == vap_info->secondary_dfs[sta->secondary_vap_id]) {
+    /* secondary VAP already gone - nothing to unbind; log ref_cnt in
+     * case this STA's bind-time reference was never released */
+    ELOG_YDD("mtlk_vap_unbind_backhaul_sta: secondary VAP for STA %Y (secondary_vap_id=%d) already gone, ref_cnt=%d",
+             mtlk_sta_get_addr(sta)->au8Addr, sta->secondary_vap_id,
+             mtlk_osal_atomic_get(&sta->ref_cnt));
     return;
+  }
 
   ILOG0_Y("unbind backhaul STA %Y", mtlk_sta_get_addr(sta)->au8Addr);
   secondary_df_user = mtlk_df_get_user(vap_info->secondary_dfs[sta->secondary_vap_id]);
-  if (!mtlk_df_user_is_equal_backhaul_sta(secondary_df_user, sta)) {
+
+  /* Atomic check-and-clear: is_equal_backhaul_sta() followed by a separate
+   * set_backhaul_sta(..., NULL) call would let a concurrent bind land in
+   * between and be silently cleared/decref'd - including a still-connected
+   * STA that this caller never validated. */
+  if (!mtlk_df_user_clear_backhaul_sta_if_equal(secondary_df_user, sta)) {
     MTLK_ASSERT(sta->secondary_vap_id == vap_info->id);
     sta->secondary_vap_id = vap_info->id;
     return;
   }
 
   sta->secondary_vap_id = vap_info->id;
-  mtlk_df_user_set_backhaul_sta(secondary_df_user, NULL);
 }
 
 mtlk_error_t __MTLK_IFUNC

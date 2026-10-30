@@ -848,7 +848,12 @@ static void ieee80211_uninit(struct net_device *dev)
 static void
 ieee80211_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
 {
+#ifdef MTLK_USE_DIRECTPATH_API
+	if (dp_get_netif_stats(dev, NULL, stats, 0))
+		dev_fetch_sw_netstats(stats, dev->tstats);
+#else
 	dev_fetch_sw_netstats(stats, dev->tstats);
+#endif
 }
 
 static int ieee80211_netdev_setup_tc(struct net_device *dev,

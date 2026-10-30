@@ -721,6 +721,10 @@ typedef struct _wave_ml_str_sta_tid_spreading_info {
   uint8  low_rate_tid;
   uint8  tid_to_link_bitmap[MLD_MAX_NUM_OF_LINKS];
   uint16 tid_remap_flip;
+  /* Shared by pointer across every linked sta_entry (up to 3, for tri-link MLD) - freed only once every sibling has released it, see _wave_sta_release_tid_spread_info(). Zero-initialized by the memset() at allocation. */
+  mtlk_atomic_t ref_cnt;
+  /* Protects every field above; acquired inside the owning sta's sta->lock where both are needed, never the reverse. */
+  mtlk_osal_spinlock_t lock;
 } __MTLK_IDATA wave_ml_str_sta_tid_spreading_info_t;
 #endif /* BEST_EFFORT_TID_SPREADING */
 
@@ -743,7 +747,7 @@ typedef enum ml_sta_link_type {
 #define ML_DUAL_LINK        2
 #define ML_TRIPLE_LINK      3
 
-#define ML_FISRT_SIBLING    0
+#define ML_FIRST_SIBLING    0
 #define ML_SECOND_SIBLING   1
 
 typedef struct _wave_ml_sta_info
@@ -1811,7 +1815,12 @@ mtlk_sta_remove_mld_lock_release(sta_entry *sta);
 typedef enum multilink_modes {
   MLSR_MODE,
   EMLSR_MODE,
-  STR_MODE
+  STR_MODE,
+  STR_EMLSR_MODE,
+  STR_NSTR_MODE,
+  STR_NSTR_EMLSR_MODE,
+  NSTR_MODE,
+  NSTR_EMLSR_MODE,
 } multilink_modes_e;
 
 static __INLINE uint8
@@ -2074,7 +2083,12 @@ wave_get_str_sta_tid_spreading_info (sta_entry *sta)
 static __INLINE void
 wave_sta_get_wssa_peer_list (const sta_entry *sta, mtlk_wssa_peer_list_t *peer_list)
 {
-  peer_list->addr = *(mtlk_sta_get_addr(sta));
+  const IEEE_ADDR *sta_addr = mtlk_sta_get_addr(sta);
+
+  if (sta_addr == NULL)
+    return;
+
+  peer_list->addr = *sta_addr;
   peer_list->is_sta_auth = mtlk_sta_get_is_sta_auth(sta);
 }
 

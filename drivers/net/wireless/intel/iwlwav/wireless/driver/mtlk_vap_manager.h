@@ -20,6 +20,7 @@
 #include "mtlk_card_types.h"
 #include "txmm.h"
 #include "vendor_cmds.h"
+#include "mtlk_osal.h"
 
 #define   MTLK_IDEFS_ON
 #include "mtlkidefs.h"
@@ -114,6 +115,8 @@ mtlk_error_t         __MTLK_IFUNC wave_vap_manager_get_vap_handle_by_mld_id(mtlk
 void                 __MTLK_IFUNC wave_vap_manager_update_ml_vap_info(mtlk_vap_handle_t vap_handle,
                                                                       mtlk_ml_vap_info_t ml_vap_info);
 mtlk_ml_vap_info_t*  __MTLK_IFUNC  wave_vap_manager_get_ml_vap_info(mtlk_vap_handle_t vap_handle);
+BOOL                 __MTLK_IFUNC wave_vap_is_mld_multi_link(mtlk_vap_handle_t vap_handle);
+BOOL                 __MTLK_IFUNC wave_vap_is_mld_single_link(mtlk_vap_handle_t vap_handle);
 void                 __MTLK_IFUNC mtlk_vap_wait_ml_teardown(mtlk_vap_handle_t vap_handle);
 int                  __MTLK_IFUNC mtlk_vap_initiate_ml_teardown(mtlk_vap_handle_t vap_handle);
 int                  __MTLK_IFUNC mtlk_vap_ml_teardown_inprogress(mtlk_vap_handle_t vap_handle);
@@ -177,6 +180,14 @@ typedef struct _mtlk_vap_info_internal_t
   struct _mtlk_core_api_t *core_api;
   mtlk_df_t               *df;
   mtlk_df_t               **secondary_dfs;
+  /* Guards every read AND every mutation (bind/unbind/teardown) of
+   * secondary_dfs[] as a single compound operation - the discipline that
+   * closes check-then-act races (see mtlk_vap_get_secondary_df_ref() and
+   * mtlk_vap_del_secondary_vap()/_all_secondary_vaps() in mtlk_vap_manager.c).
+   * Datapath readers pair this with the mtlk_df_t refcount
+   * (mtlk_df_incref/decref/wait_unref in mtlk_df_linux.c) so a df fetched
+   * here stays valid even if concurrently torn down by another context. */
+  mtlk_osal_spinlock_t    secondary_dfs_lock;
   mtlk_pdb_t              *param_db;
   mtlk_txmm_t             txmm;
   mtlk_txmm_t             txdm;
@@ -252,6 +263,15 @@ mtlk_vap_get_df (mtlk_vap_handle_t vap_handle)
   return _info->df;
 }
 
+/* Raw, unsynchronized accessor. SAFE ONLY for callers that run on the same
+ * per-VAP control serializer thread as mtlk_vap_del_secondary_vap()/
+ * mtlk_vap_del_all_secondary_vaps() (i.e. anything dispatched as a
+ * serializable core command - MTLK_CLPB_TRY/_MTLK_CORE_HANDLE_REQ_SERIALIZABLE
+ * handlers), since teardown then can't run concurrently with this read.
+ * Any caller reachable from datapath (RX indicate, TX ndo_start_xmit,
+ * interrupt/softirq context) MUST use mtlk_vap_get_secondary_df_ref()
+ * instead - see mtlk_core_analyze_and_send_up() and
+ * mtlk_df_ui_dp_prepare_and_xmit() for the pattern. */
 static __INLINE mtlk_df_t *
 mtlk_vap_get_secondary_df (mtlk_vap_handle_t vap_handle, uint8 secondary_vap_id)
 {
@@ -262,6 +282,20 @@ mtlk_vap_get_secondary_df (mtlk_vap_handle_t vap_handle, uint8 secondary_vap_id)
 
   return _info->secondary_dfs[secondary_vap_id];
 }
+
+/*! \fn      mtlk_df_t *mtlk_vap_get_secondary_df_ref(mtlk_vap_handle_t vap_handle, uint8 secondary_vap_id)
+
+    \brief   Safe accessor for any context that may race with concurrent
+             secondary-VAP teardown (RX/TX datapath, interrupt/softirq).
+             Returns a referenced mtlk_df_t* (via mtlk_df_incref()) that
+             stays valid until the caller calls mtlk_df_decref(), or NULL
+             if the secondary VAP has been (or is being) torn down. Caller
+             MUST call mtlk_df_decref() exactly once when done, on every
+             exit path.
+
+    \return  Referenced DF object, or NULL.
+*/
+mtlk_df_t *mtlk_vap_get_secondary_df_ref (mtlk_vap_handle_t vap_handle, uint8 secondary_vap_id);
 
 static __INLINE BOOL
 mtlk_vap_is_master (mtlk_vap_handle_t vap_handle)
@@ -637,6 +671,11 @@ wave_ml_vap_info_cleanup (mtlk_vap_handle_t vap_handle)
   tid_to_free = _info->ml_vap_info.tid_spread_info;
 #endif
 
+    /* Acquire the ML VAP lock directly.
+     * Do not use mtlk_vap_ml_lock_acquire() here—struct field is no longer valid. */
+  if (lock_to_free)
+    mtlk_osal_lock_acquire(lock_to_free);
+
   /* Clear self first — prevents new entrants via ml_configured check */
   mtlk_osal_atomic_set(&_info->ml_vap_info.ml_configured, 0);
   _info->ml_vap_info.ml_vap_rem_sync_lock = NULL;
@@ -666,6 +705,11 @@ wave_ml_vap_info_cleanup (mtlk_vap_handle_t vap_handle)
     }
   }
 
+  /* Release the ML VAP lock directly.
+   * Do not use mtlk_vap_ml_lock_release() here—struct field is no longer valid. */
+  if (lock_to_free)
+    mtlk_osal_lock_release(lock_to_free);
+
   /* Free shared resources last — all VAP pointers already NULLed,
    * so any in-flight reader that passed ml_configured/lock_available
    * checks will find valid lock memory, acquire it, see
@@ -687,6 +731,15 @@ mtlk_vap_ml_configured(mtlk_vap_handle_t vap_handle)
 
   MTLK_ASSERT(NULL != _info);
   return mtlk_osal_atomic_get(&_info->ml_vap_info.ml_configured) ? TRUE : FALSE;
+}
+
+static __INLINE uint8
+mtlk_vap_ml_get_num_of_siblings(mtlk_vap_handle_t vap_handle)
+{
+  mtlk_vap_info_internal_t *_info = (mtlk_vap_info_internal_t *)vap_handle;
+
+  MTLK_ASSERT(NULL != _info);
+  return _info->ml_vap_info.num_of_sibling_vaps;
 }
 
 static __INLINE mtlk_vap_handle_t

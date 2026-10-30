@@ -1923,13 +1923,13 @@ int wave_radio_ap_stop(
     if ((MTLK_HW_BAND_6_GHZ == wave_radio_band_get(radio)) &&
         (MTLK_CORE_PDB_GET_INT(nic, PARAM_DB_CORE_MBSSID_VAP) < WAVE_RADIO_OPERATION_MODE_MBSSID_NON_TRANSMIT_VAP)) {
       mtlk_pdb_t *radio_pdb = wave_radio_param_db_get(radio);
-      mtlk_pdb_size_t fils_frame_len = wave_pdb_get_int(radio_pdb, PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN);
+      mtlk_pdb_size_t fils_frame_len = wave_pdb_get_int(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN);
       ILOG1_V("Resetting the 6GHz unsolicited frame template in the radio PDB");
-      wave_pdb_set_int(radio_pdb, PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL_LEN, 0);
-      wave_pdb_set_int(radio_pdb, PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN, 0);
-      res = wave_pdb_set_binary(radio_pdb, PARAM_DB_RADIO_FILS_DISCOVERY_FRAME,
+      wave_pdb_set_int(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL_LEN, 0);
+      wave_pdb_set_int(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN, 0);
+      res = wave_pdb_set_binary(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_FILS_DISCOVERY_FRAME,
                                 fils_discovery_null, fils_frame_len);
-      res = wave_pdb_get_binary(radio_pdb, PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO,
+      res = wave_pdb_get_binary(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO,
                                 p_frame_info, &size);
       if (res != MTLK_ERR_OK) {
         ELOG_D("Unable to retrieve unsolicited tx frame info from Param DB! res = %d", res);
@@ -1939,7 +1939,7 @@ int wave_radio_ap_stop(
         wave_unsolicited_frame_templ_unmap_free(nic, p_frame_info, idx);
       }
       p_frame_info->buf_index = 0;
-      res = wave_pdb_set_binary(radio_pdb, PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO,
+      res = wave_pdb_set_binary(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO,
                                 (const void *)p_frame_info, sizeof(unsolicit_tx_frame_info_t));
 
       res = _wave_beacon_reset_btwt_config(nic);
@@ -8455,6 +8455,7 @@ int wave_radio_get_la_mu_vht_stats (
 end:
   return _mtlk_df_mtlk_to_linux_error_code(res);
 }
+#endif /* CONFIG_WAVE_DEBUG */
 
 void __MTLK_IFUNC wave_radio_on_rcvry_reset_mu_group_stats (wave_radio_t *radio)
 {
@@ -8471,7 +8472,6 @@ void __MTLK_IFUNC wave_radio_on_rcvry_reset_mu_group_stats (wave_radio_t *radio)
   if (MTLK_ERR_OK != WAVE_RADIO_PDB_SET_BINARY(radio, PARAM_DB_RADIO_PLAN_MU_GROUP_STATS, &HeMuGroupStats[0], HeMuGroupStatsSize))
     ELOG_D("RadioId %d: Error in reset PLAN_MU_GROUP_STATS to PDB", radio->idx);
 }
-#endif /* CONFIG_WAVE_DEBUG */
 
 /* UL and DL PPDU OFDMA stats */
 void __MTLK_IFUNC

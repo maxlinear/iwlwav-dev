@@ -231,19 +231,19 @@ mtlk_hw_mmb_get_dp_mode(mtlk_hw_t *hw);
 #endif
 
 #if MTLK_USE_DIRECTCONNECT_DP_API
-BOOL __MTLK_IFUNC mtlk_mmb_fastpath_available(mtlk_hw_t *hw)    __MTLK_INT_HANDLER_SECTION;
-BOOL __MTLK_IFUNC mtlk_mmb_dcdp_path_available(mtlk_hw_t *hw)   __MTLK_INT_HANDLER_SECTION;
-BOOL __MTLK_IFUNC mtlk_mmb_dcdp_frag_wa_enabled(mtlk_hw_t *hw)  __MTLK_INT_HANDLER_SECTION;
-BOOL __MTLK_IFUNC wave_mmb_dcdp_4umt_cntr_mode(mtlk_hw_t *hw)   __MTLK_INT_HANDLER_SECTION;
-BOOL __MTLK_IFUNC wave_mmb_dcdp_topaz_available(mtlk_hw_t *hw) __MTLK_INT_HANDLER_SECTION;
-BOOL __MTLK_IFUNC wave_mmb_dcdp_topaz_l4s_available(mtlk_hw_t *hw) __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC mtlk_mmb_fastpath_available(mtlk_hw_t *hw)        __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC mtlk_mmb_dcdp_path_available(mtlk_hw_t *hw)       __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC mtlk_mmb_dcdp_frag_wa_enabled(mtlk_hw_t *hw)      __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC wave_mmb_dcdp_4umt_lgm_cntr_mode(mtlk_hw_t *hw)   __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC wave_mmb_dcdp_4umt_topaz(mtlk_hw_t *hw)           __MTLK_INT_HANDLER_SECTION;
+BOOL __MTLK_IFUNC wave_mmb_dcdp_topaz_l4s_capable(mtlk_hw_t *hw)  __MTLK_INT_HANDLER_SECTION;
 #else
 #define mtlk_mmb_fastpath_available(hw)       (FALSE)
 #define mtlk_mmb_dcdp_path_available(hw)      (FALSE)
 #define mtlk_mmb_dcdp_frag_wa_enabled(hw)     (FALSE)
-#define wave_mmb_dcdp_4umt_cntr_mode(hw)      (FALSE)
-#define wave_mmb_dcdp_topaz_available(hw)     (FALSE)
-#define wave_mmb_dcdp_topaz_l4s_available(hw) (FALSE)
+#define wave_mmb_dcdp_4umt_lgm_cntr_mode(hw)  (FALSE)
+#define wave_mmb_dcdp_4umt_topaz(hw)          (FALSE)
+#define wave_mmb_dcdp_topaz_l4s_capable(hw) (FALSE)
 #endif
 
 const char* __MTLK_IFUNC wave_hw_get_dc_mode_name (mtlk_hw_t *hw);
@@ -350,7 +350,7 @@ mtlk_hw_mmb_mailbox_legacy_shared_handler(mtlk_irq_handler_data *ihd)  __MTLK_IN
  **************************************************************/
 #if MTLK_USE_DIRECTCONNECT_DP_API
 int __MTLK_IFUNC
-mtlk_mmb_dcdp_rx (struct net_device *rxif, struct dp_subif *rx_subif, struct sk_buff *skb, int32_t len);
+mtlk_mmb_dcdp_rx (struct net_device *rxif, mtlk_dp_subif_t *rx_subif, struct sk_buff *skb, int32_t len);
 #endif
 
 /**************************************************************/
@@ -701,7 +701,7 @@ void __MTLK_IFUNC
 mtlk_hw_copy_drv_stats_per_channel (wave_radio_t *radio, wave_drv_channel_stats_t *chan_stats, int ch_num);
 
 BOOL __MTLK_IFUNC
-wave_hw_master_vap_net_state_is_not_connected (mtlk_hw_t *hw, unsigned radio_idx);
+wave_hw_master_vap_stats_inactive (mtlk_hw_t *hw, unsigned radio_idx);
 
 BOOL __MTLK_IFUNC
 mtlk_hw_stats_scan_allow (mtlk_hw_t *hw);
@@ -765,6 +765,7 @@ wave_reset_chan_stats (mtlk_hw_t *hw, unsigned idx);
 void __MTLK_IFUNC
 wave_hw_radio_usage_stats_get (mtlk_hw_t *hw, int radio_id, int channel, wave_radio_usage_stats_t *user_radio_stats);
 
+
 #ifdef CONFIG_WAVE_DEBUG
 void wave_hw_mmb_set_dbg_unprotected_deauth (mtlk_df_t *df, int value);
 void wave_hw_mmb_set_dbg_pn_reset (mtlk_df_t *df, int value);
@@ -776,6 +777,8 @@ BOOL         __MTLK_IFUNC wave_hw_is_sid_in_use(mtlk_hw_t *hw, wave_sid_t sid, w
 wave_sid_t   __MTLK_IFUNC wave_hw_get_sid_in_use(mtlk_hw_t *hw, wave_sid_t sid);
 mtlk_error_t __MTLK_IFUNC wave_hw_set_sid_in_use(mtlk_hw_t *hw, wave_sid_t sid, wave_vap_id_t vap_id_fw);
 mtlk_error_t __MTLK_IFUNC wave_hw_clear_sid_in_use(mtlk_hw_t *hw, wave_sid_t sid, wave_vap_id_t vap_id_fw, BOOL do_warn);
+void         __MTLK_IFUNC wave_hw_set_sid_mac(mtlk_hw_t *hw, wave_sid_t sid, const IEEE_ADDR *mac);
+BOOL         __MTLK_IFUNC wave_hw_is_mac_active_in_sid_table(mtlk_hw_t *hw, const unsigned char *mac);
 #ifdef MTLK_WAVE_700
 mtlk_error_t __MTLK_IFUNC
 wave_hw_set_sid_to_aid (mtlk_hw_t *hw, wave_sid_t sid, u16 aid, wave_vap_id_t vap_id_fw);

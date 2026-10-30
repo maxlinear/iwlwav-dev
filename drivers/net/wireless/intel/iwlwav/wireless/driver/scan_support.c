@@ -490,7 +490,7 @@ int scan_support_init(mtlk_core_t *core, mtlk_scan_support_t *ss)
 #endif
   ss->master_core = core; /* save the core too for convenience */
 
-  mtlk_osal_hrtimer_init(&ss->scan_timer, &scan_hrtimer_clb_func, HANDLE_T(core), HRTIMER_MODE_ABS);
+  mtlk_osal_hrtimer_init(&ss->scan_timer, &scan_hrtimer_clb_func, HANDLE_T(core), (mtlk_hrtimer_mode_e)HRTIMER_MODE_ABS);
 
   return res;
 }
@@ -1159,11 +1159,15 @@ static int scan_timeout_func(mtlk_core_t *core, mtlk_scan_support_t *ss)
        * current core and not from stats timer context of any other core,
        * to avoid both scan(current core) and stats(for any other core)
        * from overwriting the common stats buffer. */
+#if defined(MTLK_TOPAZ_PLATFORM_FPGA)
+      ILOG0_V("Disable statistics on scan time for topaz FPGA ");
+#else
       res = mtlk_hw_get_statistics(hw);
       if (res != MTLK_ERR_OK) {
         ELOG_V("Failed to retrieve Statistics");
         goto end_scan;
       }
+#endif
 
       ch_data.channel = ss->last_chan_num;
       scan_get_aocs_info(core, &ch_data);
@@ -1319,12 +1323,15 @@ set_chan:
       ss->flags &= ~SDF_BG_BREAK;
       wave_hw_stats_scan_lock_release(hw);
       ss->chan_in_chunk = 0;
-
+#if defined(MTLK_TOPAZ_PLATFORM_FPGA)
+      ILOG0_V("Disable statistics on BG scan time for topaz FPGA");
+#else
       res = mtlk_hw_get_statistics(hw);
       if (res != MTLK_ERR_OK) {
         ELOG_V("Failed to retrieve Statistics");
         goto end_scan;
       }
+#endif
 
       get_channel_data_hw_save_chan_stats_info(core, &ch_data);
       mtlk_core_save_chan_statistics_info(core, &ch_data);
@@ -1375,7 +1382,7 @@ set_chan:
       ss->scan_next_ktime = ktime_add_us(ss->scan_next_ktime, timeout_val);
 
       ILOG2_DH("update scan timer:%u(us) next kernel_time:%lli(ns)", timeout_val, ktime_to_ns(ss->scan_next_ktime));
-      mtlk_osal_hrtimer_set(&ss->scan_timer, ktime_to_ns(ss->scan_next_ktime), HRTIMER_MODE_ABS);
+      mtlk_osal_hrtimer_set(&ss->scan_timer, ktime_to_ns(ss->scan_next_ktime), (mtlk_hrtimer_mode_e)HRTIMER_MODE_ABS);
       return MTLK_ERR_OK;
     }
   }
@@ -1514,7 +1521,7 @@ probe:
     if (!ss->chan_in_chunk_time) {
       ILOG2_DH("update scan timer:%u(us) next kernel_time:%lli(ns)", timeout_val, ktime_to_ns(ss->scan_next_ktime));
     }
-    mtlk_osal_hrtimer_set(&ss->scan_timer, ktime_to_ns(ss->scan_next_ktime), HRTIMER_MODE_ABS);
+    mtlk_osal_hrtimer_set(&ss->scan_timer, ktime_to_ns(ss->scan_next_ktime), (mtlk_hrtimer_mode_e)HRTIMER_MODE_ABS);
 
     /* revert flags */
     if (ss->chan_flags & SDF_PROBE_HIDDEN_SSID) {

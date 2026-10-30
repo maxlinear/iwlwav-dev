@@ -556,7 +556,7 @@ wave_core_ap_remove_sta (struct nic *nic, uint16 sid, IEEE_ADDR *sta_addr)
     goto finish;
   }
 
-  ILOG0_DYD("CID-%04x: Station %Y disconnected (SID = %u)",
+  ILOG1_DYD("CID-%04x: Station %Y disconnected (SID = %u)",
             mtlk_vap_get_oid(vap_handle), sta_addr, sid);
 
 #ifdef MTLK_WAVE_700
@@ -1879,6 +1879,20 @@ mtlk_send_filter_req (mtlk_core_t *core, uint16 sid, BOOL authorizing)
   mtlk_txmm_t         *txmm = mtlk_vap_get_txmm(core->vap_handle);
   UMI_802_1X_FILTER   *umi_filter;
 
+  /* Check if the station is ML and see if the ADD_STA_MLD is sent to the FW */
+  if (authorizing) {
+    sta_entry *sta = mtlk_stadb_find_sid(&core->slow_ctx->stadb, sid);
+    if (sta) {
+      bool add_mld_done = sta->ml_sta_info.add_mld_done;
+      mtlk_sta_decref(sta);
+
+      if (wave_is_mld_sta(sta) && !add_mld_done) {
+        ILOG0_DD("CID-%04x: [MLO_BARRIER] SET_FILTER for MLD STA (SID %u) arrived BEFORE ADD_STA_MLD completed! Dropping call — returning error",
+                 mtlk_vap_get_oid(core->vap_handle), sid);
+        return MTLK_ERR_BUSY;
+      }
+    }
+  }
   /* Prepare UMI message */
   man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, txmm, NULL);
   if (!man_entry) {
@@ -1916,6 +1930,19 @@ static __INLINE unsigned
 _mtlk_core_get_rrsi_offs (mtlk_core_t *nic)
 {
     return mtlk_hw_get_rrsi_offs(mtlk_vap_get_hw(nic->vap_handle));
+}
+
+static __INLINE BOOL
+_mtlk_core_is_sta_sid_in_use (mtlk_core_t *nic, u8 *addr, uint16 sid)
+{
+  sta_entry *sta = mtlk_stadb_find_sid(&nic->slow_ctx->stadb, sid);
+  if (sta) {
+    ELOG_DYD("CID-%04x: STA %Y STA_ADD rejected - SID %u is in use by connected station",
+             mtlk_vap_get_oid(nic->vap_handle), addr, sid);
+    mtlk_sta_decref(sta);
+    return TRUE;
+  }
+  return FALSE;
 }
 
 mtlk_error_t __MTLK_IFUNC
@@ -1968,6 +1995,12 @@ mtlk_core_ap_add_sta_req (struct nic *nic, struct ieee80211_sta *mac80211_sta)
         res = MTLK_ERR_PARAMS;
         goto FINISH;
     }
+  }
+
+  /* Reject if a connected station already owns this SID to prevent duplicate STA_ADD to FW */
+  if (_mtlk_core_is_sta_sid_in_use(nic, mac80211_sta->addr, info->sid)) {
+    res = MTLK_ERR_ALREADY_EXISTS;
+    goto FINISH;
   }
 
   man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(nic->vap_handle), &res);
@@ -2289,6 +2322,17 @@ mtlk_core_get_unconnected_station (mtlk_handle_t hcore, const void* data, uint32
         mtlk_vap_get_oid(sta_core->vap_handle));
         res = MTLK_ERR_ALREADY_EXISTS;
         goto end;
+    }
+
+    /* Guard against the race where the station has been removed from stadb
+     * (by AP_DISCONNECT_STA on a different VAP serializer) but its SID is
+     * still active in FW pending a REMOVE_SID_REQ.  Sending REQUEST_SID for
+     * the same MAC while FW still owns that SID causes a FW fatal assert. */
+    if (wave_hw_is_mac_active_in_sid_table(hw, addr)) {
+      WLOG_DY("CID-%04x: station %Y has active SID pending removal, aborting unconnected STA request",
+        mtlk_vap_get_oid(caller_core->vap_handle), ieee_addr->au8Addr);
+      res = MTLK_ERR_ALREADY_EXISTS;
+      goto end;
     }
 
     if (wv_mac80211_has_sta_connections(mac80211)) {
@@ -3297,9 +3341,14 @@ wave_core_recovery_cfg_change_bss (mtlk_core_t *core)
   uint8 vap_id = mtlk_vap_get_id(core->vap_handle);
   mtlk_pdb_t *param_db_core = mtlk_vap_get_param_db(core->vap_handle);
   struct nic *master_core = mtlk_core_get_master(core->vap_handle);
-  struct mtlk_chan_def *current_chandef = __wave_core_chandef_get(master_core);
+  struct mtlk_chan_def *current_chandef;
   wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
   mtlk_hw_band_e band = wave_radio_band_get(radio);
+
+  if (master_core == NULL)
+    return MTLK_ERR_NOT_READY;
+
+  current_chandef = __wave_core_chandef_get(master_core);
 
   /* prepare msg for the FW */
   if (!(man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(core->vap_handle), &res))) {
@@ -3402,7 +3451,21 @@ mtlk_core_send_fixed_pwr_cfg (mtlk_core_t *core, FIXED_POWER *fixed_pwr_params)
 static uint8
 _wave_core_find_ml_supp_mode (struct mxl_ml_sta_add_param *ml_sta_add_params)
 {
-  return (ml_sta_add_params->num_of_sim_links ? STR_MODE : ((ml_sta_add_params->eml_capab & BIT(0)) ? EMLSR_MODE : MLSR_MODE));
+  u8 mode = MLSR_MODE;
+  BOOL is_emlsr, is_str, is_nstr;
+
+  is_emlsr = (ml_sta_add_params->eml_capab & BIT(0)) ? TRUE : FALSE;
+  is_str = ml_sta_add_params->num_of_sim_links ? TRUE : FALSE;
+  is_nstr = ml_sta_add_params->nstr_pair_present ? TRUE : FALSE;
+  if (is_str && is_nstr)
+    mode = is_emlsr ? STR_NSTR_EMLSR_MODE : STR_NSTR_MODE;
+  else if (is_nstr)
+    mode = is_emlsr ? NSTR_EMLSR_MODE : NSTR_MODE;
+  else if (is_str)
+    mode = is_emlsr ? STR_EMLSR_MODE : STR_MODE;
+  else
+    mode = is_emlsr ? EMLSR_MODE : MLSR_MODE;
+  return mode;
 }
 
 static uint8
@@ -3649,9 +3712,13 @@ core_cfg_internal_request_ml_sid (mtlk_core_t *nic,
 static __INLINE BOOL
 _wave_core_is_tid_spread_init_allowed(wave_ml_sta_info_t *ml_sta_info)
 {
-  return ((ml_sta_info->ml_supp_mode == STR_MODE) &&
-          ((ml_sta_info->link_type == ML_STA_TYPE_DUAL_LINK) ||
-           (ml_sta_info->link_type == ML_STA_TYPE_TRI_LINK)));
+  BOOL link_type_valid = (ml_sta_info->link_type == ML_STA_TYPE_DUAL_LINK) ||
+                         (ml_sta_info->link_type == ML_STA_TYPE_TRI_LINK);
+  BOOL is_str = (ml_sta_info->ml_supp_mode == STR_MODE) ||
+                (ml_sta_info->ml_supp_mode == STR_EMLSR_MODE) ||
+                (ml_sta_info->ml_supp_mode == STR_NSTR_MODE) ||
+                (ml_sta_info->ml_supp_mode == STR_NSTR_EMLSR_MODE);
+  return (is_str && link_type_valid);
 }
 
 static mtlk_error_t
@@ -3723,6 +3790,7 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
   ml_sta_link_type_e link_type = ML_STA_TYPE_NONE;
   uint8 link_id = 0, link_mask = 0, bitmap = 0, sib_idx = 0;
   uint8 *pStaAddr = NULL;
+  BOOL ml_sta_info_published = FALSE;
 #ifdef BEST_EFFORT_TID_SPREADING
   wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info = NULL;
   wave_ml_str_sta_tid_spreading_info_t *ml_sta_tid_spread_info = NULL;
@@ -3815,15 +3883,24 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
       goto FINISH;
   }
 
-  psUmiStaAdd->u8AssocLinkBitmap = ml_sta_add_params->assoc_link_bitmap;
+  psUmiStaAdd->u8AssocLinkBitmap  = ml_sta_add_params->assoc_link_bitmap;
   ieee_addr_set(&psUmiStaAdd->sStaMldMacAddr, ml_sta_add_params->mld_mac_addr);
-  psUmiStaAdd->u16MlAID = HOST_TO_MAC16(ml_sta_add_params->aid);
-  psUmiStaAdd->u8MldId = ml_sta_add_params->mld_id;
+  psUmiStaAdd->u16MlAID           = HOST_TO_MAC16(ml_sta_add_params->aid);
+  psUmiStaAdd->u8MldId            = ml_sta_add_params->mld_id;
   psUmiStaAdd->u16EmlCapabilities = HOST_TO_MAC16(ml_sta_add_params->eml_capab);
   wave_memcpy(psUmiStaAdd->u8DlTid2LinkBitmap, sizeof(psUmiStaAdd->u8DlTid2LinkBitmap),
               dl_ttlm_to_fw, sizeof(dl_ttlm_to_fw));
-  psUmiStaAdd->u8NumOfSimLink_R = ml_sta_add_params->num_of_sim_links;
-  pStatus              = &psUmiStaAdd->u8Status;
+  psUmiStaAdd->u8NumOfSimLink_R   = ml_sta_add_params->num_of_sim_links;
+  psUmiStaAdd->u8IsNstr           = ml_sta_add_params->nstr_pair_present;
+  pStatus                         = &psUmiStaAdd->u8Status;
+
+ /* Reset flag at start of association */
+  if (sta)
+    sta->ml_sta_info.add_mld_done = FALSE;
+  if (linked_sta)
+    linked_sta->ml_sta_info.add_mld_done = FALSE;
+  if (linked_sta2)
+    linked_sta2->ml_sta_info.add_mld_done = FALSE;
 
   ILOG1_D("CID-%04x: UMI_ADD_STA_MLD", mtlk_vap_get_oid(nic->vap_handle));
   mtlk_dump(1, psUmiStaAdd, sizeof(UMI_ADD_STA_MLD), "dump of UMI_ADD_STA_MLD:");
@@ -3841,13 +3918,14 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
     res = MTLK_ERR_MAC;
     goto FINISH;
   }
-  ILOG1_DDD("CID-%04x: UMI_ADD_STA_MLD main absolute VAP ID: %u num_of_sim_links: %u",
-          mtlk_vap_get_oid(nic->vap_handle), psUmiStaAdd->u8MainVapId, ml_sta_add_params->num_of_sim_links);
+  ILOG1_DDDD("CID-%04x: UMI_ADD_STA_MLD main absolute VAP ID: %u num_of_sim_links: %u is_nstr: %u",
+          mtlk_vap_get_oid(nic->vap_handle), psUmiStaAdd->u8MainVapId,
+          ml_sta_add_params->num_of_sim_links, ml_sta_add_params->nstr_pair_present);
 
   if (sta)
     sta->ml_sta_info.add_mld_done = TRUE;
   if (linked_sta) {
-    ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = linked_sta;
+    ml_sta_info.sibling_sta[ML_FIRST_SIBLING] = linked_sta;
     linked_sta->ml_sta_info.add_mld_done = TRUE;
   }
   if (linked_sta2) {
@@ -3858,29 +3936,37 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
   ml_sta_info.ml_supp_mode = _wave_core_find_ml_supp_mode(ml_sta_add_params);
 #ifdef BEST_EFFORT_TID_SPREADING
   ml_sta_info.sta_tid_spread_info = NULL;
-  if (_wave_core_is_tid_spread_init_allowed(&ml_sta_info)) {
+  if (_wave_core_is_tid_spread_init_allowed(&ml_sta_info) && wave_vap_is_mld_multi_link(nic->vap_handle)) {
     sta_tid_map = dl_tid_to_link_bitmap[wave_convert_radio_band_to_link_id(assoc_band)];
     linked_sta_tid_map = dl_tid_to_link_bitmap[wave_convert_radio_band_to_link_id(sib_band)];
+    /* Held while touching ml_vap_tid_spread_info - shared with the sibling VAP and read from the TX datapath, which takes this same lock. */
+    mtlk_vap_ml_lock_acquire(nic->vap_handle);
     ml_vap_tid_spread_info = wave_vap_manager_get_str_tid_spreading_info(nic->vap_handle);
-    MTLK_ASSERT(NULL != ml_vap_tid_spread_info);
-    /* disable tid spreading when tid_to_link_bitmap config is invalid - or in triband STR (for now) */
-    ml_vap_tid_spread_info->active = (((sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID0_BIT)) &&
-                                     ((sta_tid_map & TID3_BIT) ^ (linked_sta_tid_map & TID3_BIT)) &&
-                                     ((sta_tid_map & TID0_BIT) ^ (sta_tid_map & TID3_BIT)) &&
-                                     ((linked_sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID3_BIT)));
-    ml_sta_tid_spread_info = mtlk_osal_mem_alloc(sizeof(wave_ml_str_sta_tid_spreading_info_t), WAVE_MEM_TAG_TID_LINK_SPREADING);
-    if (ml_sta_tid_spread_info == NULL) {
-      ELOG_D("CID-%04x: Can't allocate memory for ml_sta_tid_spread_info", mtlk_vap_get_oid(nic->vap_handle));
-      res = MTLK_ERR_NO_MEM;
-      goto FINISH;
+    if (ml_vap_tid_spread_info) {
+      /* disable tid spreading when tid_to_link_bitmap config is invalid - or in triband STR (for now) */
+      ml_vap_tid_spread_info->active = (((sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID0_BIT)) &&
+                                       ((sta_tid_map & TID3_BIT) ^ (linked_sta_tid_map & TID3_BIT)) &&
+                                       ((sta_tid_map & TID0_BIT) ^ (sta_tid_map & TID3_BIT)) &&
+                                       ((linked_sta_tid_map & TID0_BIT) ^ (linked_sta_tid_map & TID3_BIT)));
+      ml_sta_tid_spread_info = mtlk_osal_mem_alloc(sizeof(wave_ml_str_sta_tid_spreading_info_t), WAVE_MEM_TAG_TID_LINK_SPREADING);
+      if (ml_sta_tid_spread_info == NULL) {
+        ELOG_D("CID-%04x: Can't allocate memory for ml_sta_tid_spread_info", mtlk_vap_get_oid(nic->vap_handle));
+        res = MTLK_ERR_NO_MEM;
+        mtlk_vap_ml_lock_release(nic->vap_handle);
+        goto FINISH;
+      }
+      memset(ml_sta_tid_spread_info, 0, sizeof(wave_ml_str_sta_tid_spreading_info_t));
+      mtlk_osal_lock_init(&ml_sta_tid_spread_info->lock);
+      wave_memcpy(ml_sta_tid_spread_info->tid_to_link_bitmap, sizeof(ml_sta_tid_spread_info->tid_to_link_bitmap),
+                  dl_tid_to_link_bitmap, sizeof(dl_tid_to_link_bitmap));
+      wave_core_set_assigned_tid_to_link(ml_sta_tid_spread_info, ml_vap_tid_spread_info->high_bw_vap);
+      ml_sta_info.sta_tid_spread_info = ml_sta_tid_spread_info;
+      ILOG1_DSY("CID-%04x: TID spreading [%s] for MLD %Y", mtlk_vap_get_oid(nic->vap_handle),
+          ml_vap_tid_spread_info->active ? "ENABLED" : "DISABLED", ml_sta_add_params->mld_mac_addr);
+    } else {
+      ELOG_D("CID-%04x: Can't get ml_vap_tid_spread_info for TID spreading config", mtlk_vap_get_oid(nic->vap_handle));
     }
-    memset(ml_sta_tid_spread_info, 0, sizeof(wave_ml_str_sta_tid_spreading_info_t));
-    wave_memcpy(ml_sta_tid_spread_info->tid_to_link_bitmap, sizeof(ml_sta_tid_spread_info->tid_to_link_bitmap),
-                dl_tid_to_link_bitmap, sizeof(dl_tid_to_link_bitmap));
-    wave_core_set_assigned_tid_to_link(ml_sta_tid_spread_info, ml_vap_tid_spread_info->high_bw_vap);
-    ml_sta_info.sta_tid_spread_info = ml_sta_tid_spread_info;
-    ILOG1_DSY("CID-%04x: TID spreading [%s] for MLD %Y", mtlk_vap_get_oid(nic->vap_handle),
-        ml_vap_tid_spread_info->active ? "ENABLED" : "DISABLED", ml_sta_add_params->mld_mac_addr);
+    mtlk_vap_ml_lock_release(nic->vap_handle);
   }
 #endif
   ml_sta_info.remove_sta_mld = NULL;
@@ -3897,6 +3983,8 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
   }
   /* update mld sta info in sta_entry */
   wave_update_ml_sta_info(sta, &ml_sta_info, psUmiStaAdd->u8MainVapId, mtlk_vap_get_id_fw(nic->vap_handle));
+  /* From here on, ml_sta_tid_spread_info (if any) is shared with sta and its siblings - any later failure must release it the same way a normal disconnect would (wave_cleanup_ml_sta_info), not raw-free it. */
+  ml_sta_info_published = TRUE;
 
   if (psUmiStaAdd->u8MainVapId == mtlk_vap_get_id_fw(nic->vap_handle)) {
     *main_link_id = _wave_core_get_link_id(nic->vap_handle);
@@ -3916,6 +4004,16 @@ wave_core_internal_ml_sta_add(mtlk_core_t *nic,
   }
 
 FINISH:
+  if (MTLK_ERR_OK != res) {
+    ELOG_D("CID-%04x: ADD STA MLD Failed", mtlk_vap_get_oid(nic->vap_handle));
+    if (ml_sta_info_published) {
+      /* wave_update_ml_sta_info() already published ml_sta_tid_spread_info into sta (and its siblings, if any) - release it the same way a normal disconnect would, while sta is still valid (before the decref below can destroy it), instead of raw-freeing memory that live sta_entry's still point to. */
+      if (sta)
+        wave_cleanup_ml_sta_info(sta);
+    } else if (ml_sta_tid_spread_info) {
+      mtlk_osal_mem_free(ml_sta_tid_spread_info);
+    }
+  }
   if (sta) mtlk_sta_decref(sta);
   if (linked_sta) mtlk_sta_decref(linked_sta);
   if (linked_sta2) mtlk_sta_decref(linked_sta2);
@@ -3923,11 +4021,6 @@ FINISH:
     mtlk_txmm_msg_cleanup(&man_msg);
   }
 
-  if (MTLK_ERR_OK != res) {
-    ELOG_D("CID-%04x: ADD STA MLD Failed", mtlk_vap_get_oid(nic->vap_handle));
-    if (ml_sta_tid_spread_info)
-      mtlk_osal_mem_free(ml_sta_tid_spread_info);
-  }
   return res;
 }
 

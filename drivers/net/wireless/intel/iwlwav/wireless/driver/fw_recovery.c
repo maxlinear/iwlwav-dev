@@ -2854,6 +2854,10 @@ static void _rcvry_process_mac_hang (wave_rcvry_card_cfg_t *pcard, mtlk_hw_state
     return;
   }
 
+#if defined(MTLK_TOPAZ_PLATFORM)
+  ILOG0_D("CID-%02x: Recovery disabled, skip recovery trigger after assert", pcard->card_idx);
+  return;
+#endif
   _rcvry_mac_hang_evt_set(pcard, cpu_no);
 }
 
@@ -2890,27 +2894,6 @@ static void _rcvry_process_mac_code (wave_rcvry_card_cfg_t *pcard, const APP_FAT
 
   __rcvry_mac_error_type_set(&pcard->rcvry_ctx, WAVE_RCVRY_ERRORTYPE_MAC_FATAL);
 
-#if MTLK_USE_DIRECTCONNECT_DP_API
-  #if DC_DP_API_VERSION_CODE >= DC_DP_API_VERSION(5,0,0)
-  if (mtlk_mmb_dcdp_path_available(pcard->hw_ctx)) {
-    /* Recovery of PDPoolBuffers */
-    wave_hw_pdpool_return_list_t return_list;
-    mtlk_error_t res = wave_mmb_build_pdpool_return_list(pcard->hw_ctx, MAC_TO_HOST32(data->uFirstFreePdOffset), &return_list);
-
-    if (MTLK_ERR_OK == res) {
-      if (DC_DP_SUCCESS != dc_dp_return_bufs(
-          mtlk_hw_mmb_get_dp_port_id(pcard->hw_ctx, 0),
-          return_list.ret_dma_list,
-          return_list.len, 0)) {
-        ELOG_V("dc_dp_return_bufs() error: cannot to recover buffers");
-      }
-      wave_mmb_cleanup_pdpool_return_list(&return_list);
-    } else {
-      ELOG_V("Can't build PD return list: no memory");
-    }
-  }
-  #endif
-#endif
 #ifdef CONFIG_WAVE_RTLOG_REMOTE
   _rcvry_process_mac_fatal_log(pcard->hw_ctx, data);
 #endif

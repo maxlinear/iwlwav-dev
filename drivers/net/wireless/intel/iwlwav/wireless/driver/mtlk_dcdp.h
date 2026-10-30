@@ -24,7 +24,12 @@
 #define MTLK_DCDP_SEPARATE_REG      (0)     /* Register and initilalize datapath device in one place (0) or separately (1). */
                                             /* Should be removed further! */
 #if MTLK_USE_DIRECTCONNECT_DP_API
+
+#ifdef MTLK_TOPAZ_PLATFORM
+#include <linux/soc/mxl/gwdpa_dcdp/directconnect_dp_api.h>
+#else
 #include <net/directconnect_dp_api.h>
+#endif
 
 
 #ifndef DC_DP_F_MC_NEW_STA
@@ -62,6 +67,24 @@
 #define WAVE_DCDP_4UMT_SUPPORTED
 #endif
 
+/* Table 10-3: TOPAZ UMT Message Summary (from TOPAZ SWAS)
+ *
+ * Ring    Descriptor Ring  Direction              TPZ        Endian  Mode          UMT Counter
+ * Label   Name             Host <-> Peripheral    Impl.      -ness                 Size
+ * ------  ---------------  ---------------------  ---------  ------  ------------  -----------
+ * RXIN    BuffReq-ADD      Host -> Peripheral     Yes        LE      Incremental   8b
+ * RXOUT   PktEnq-SUB       Host -> Peripheral     Yes        LE      Incremental   8b
+ * TXIN    PktDeq-ADD       Host -> Peripheral     Yes        LE      Incremental   8b
+ * TXOUT   BuffRet-SUB      Host -> Peripheral     Yes        LE      Incremental   8b
+ * RXIN    BufReq-SUB       Peripheral -> Host     Mandatory  LE      Incremental   8b
+ * RXOUT   PktEnq-ADD       Peripheral -> Host     Mandatory  LE      Incremental   8b
+ * TXIN    PktDeq-SUB       Peripheral -> Host     Mandatory  LE      Incremental   8b
+ * TXOUT   BuffRet-ADD      Peripheral -> Host     Mandatory  LE      Incremental   8b
+ *
+ * All 8 messages are Incremental 8-bit counters in little-endian format.
+ * The 4 Peripheral->Host messages are mandatory for WAV (WiFi peripheral).
+ * In 4MSG UMT mode dccntr[0] carries the 4MSG pair (RXIN+TXIN+RXOUT+TXOUT).
+ */
 #if DC_DP_API_VERSION_CODE >= DC_DP_API_VERSION(5,2,0)
 #define WAVE_DCDP_TOPAZ_SUPPORTED
 #endif
@@ -79,10 +102,10 @@
 #define MTLK_DCDP_SWPATH_SUPPORTED  (0)     /* Set to 1 if DC DP SWPATH is supported by DCDP and driver */
 #endif /* MTLK_TOPAZ_PLATFORM_FPGA */
 
-#define MTLK_DCDP_DCCNTR_NUM        (1)     /* Number of DC counters. For WAVE500/600 it is 1 */
+#define MTLK_DCDP_DCCNTR_NUM        (1)     /* Number of DC counters. For WAVE500/600 or TOPAZ */
 #define MTLK_DCDP_DCCNTR_NUM_4UMT   (2)     /* Number of DC counters. For 4UMT CNTR mode, it is 2 */
 #define MTLK_DCDP_DCCNTR_NUM_MAX    MAX(MTLK_DCDP_DCCNTR_NUM, MTLK_DCDP_DCCNTR_NUM_4UMT)
-#ifdef MTLK_TOPAZ_PLATFORM
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
 #define MTLK_DCDP_DCCNTR_SIZE       (1)     /* Counter has 1 byte length */
 #else
 #define MTLK_DCDP_DCCNTR_SIZE       (4)     /* Counter has 4 bytes length */
@@ -107,6 +130,15 @@ typedef enum _mtlk_dcdp_cntr_mode_t {
   MTLK_DC_DP_CNTR_MODE_BIG_ENDIAN,
 } mtlk_dcdp_cntr_mode_t;
 
+/* Topaz DC DP API adds a smaller dp_subif_single (subset of fields) alongside the
+   original dp_subif/dp_subif_t; use it here for the common tx/rx subif case.
+   Expect _mtlk_df_dcdp_get_subif_cb which must keep raw struct dp_subif to match the
+   dc_dp_get_netif_subifid_fn_t callback prototype expected by the DC DP API. */
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+typedef struct dp_subif_single mtlk_dp_subif_t;
+#else
+typedef struct dp_subif mtlk_dp_subif_t;
+#endif
 
 #ifndef WAVE_DCDP_LGM_FLM_SUPPORTED
 /* For DC DP API V4.x we will simulate reading of config parameters*/

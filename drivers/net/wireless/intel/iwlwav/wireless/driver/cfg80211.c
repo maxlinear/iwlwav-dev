@@ -279,48 +279,271 @@ void __MTLK_IFUNC  wv_cfg80211_peer_disconnect (struct net_device *ndev, const I
 #define WAVE_CHAN_IS_5G(freq) (((freq) / 5000u) != 0)
 #define WAVE_REGULATORY_POWER_MAX_DBM 0xFF
 
+static BOOL
+_wv_freq_in_rule_band(const struct ieee80211_freq_range *freq_range,
+                      u32 freq_khz)
+{
+#define ONE_GHZ_IN_KHZ 1000000
+  u32 limit = freq_khz > 45 * ONE_GHZ_IN_KHZ ?
+              20 * ONE_GHZ_IN_KHZ : 2 * ONE_GHZ_IN_KHZ;
+
+  if (abs(freq_khz - freq_range->start_freq_khz) <= limit)
+    return TRUE;
+
+  if (abs(freq_khz - freq_range->end_freq_khz) <= limit)
+    return TRUE;
+
+  return FALSE;
+#undef ONE_GHZ_IN_KHZ
+}
+
+static BOOL
+_wv_does_bw_fit_range(const struct ieee80211_freq_range *freq_range,
+                      u32 center_freq_khz,
+                      u32 bw_khz)
+{
+  u32 start_freq_khz = center_freq_khz - (bw_khz / 2);
+  u32 end_freq_khz = center_freq_khz + (bw_khz / 2);
+
+  if (start_freq_khz >= freq_range->start_freq_khz &&
+      end_freq_khz <= freq_range->end_freq_khz)
+    return TRUE;
+
+  return FALSE;
+}
+
+static int
+_wv_cfg80211_afc_regulatory_limit_get(struct wireless_dev *wdev,
+                                      unsigned center_freq_khz,
+                                      unsigned bw_khz,
+                                      int *max_power_dbm)
+{
+  mtlk_df_user_t *df_user;
+  mtlk_df_t *df;
+  mtlk_core_t *core;
+  wave_radio_t *radio;
+  wave_radio_reg_data_t mxl_wave_reg_data;
+  mtlk_pdb_size_t size = sizeof(mxl_wave_reg_data);
+  const struct ieee80211_regdomain *regd;
+
+  if (!wdev || !max_power_dbm)
+    return MTLK_ERR_PARAMS;
+
+  df_user = mtlk_df_user_from_wdev(wdev);
+  if (!df_user)
+    return MTLK_ERR_UNKNOWN;
+
+  df = mtlk_df_user_get_df(df_user);
+  if (!df)
+    return MTLK_ERR_UNKNOWN;
+
+  core = mtlk_vap_get_core(mtlk_df_get_vap_handle(df));
+  if (!core)
+    return MTLK_ERR_UNKNOWN;
+
+  radio = wave_vap_radio_get(core->vap_handle);
+  if (!radio)
+    return MTLK_ERR_UNKNOWN;
+
+  if (WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_6GHZ_REG_FCC_SP,
+                                &mxl_wave_reg_data, &size) != MTLK_ERR_OK)
+    return MTLK_ERR_NO_ENTRY;
+
+  if (!mxl_wave_reg_data.regd) {
+    ILOG1_D("[BW_REG] AFC(PDB) missing regd ptr, flags=%u", mxl_wave_reg_data.flags);
+    return MTLK_ERR_NO_ENTRY;
+  }
+
+  if (mxl_wave_reg_data.flags != AFC_UPDATE_STATUS_SERVER) {
+    ILOG1_D("[BW_REG] AFC(PDB) not in server state, flags=%u", mxl_wave_reg_data.flags);
+    return MTLK_ERR_NO_ENTRY;
+  }
+
+  regd = mxl_wave_reg_data.regd;
+  ILOG1_DD("[BW_REG] AFC(PDB) lookup start: flags=%u rules=%u",
+           mxl_wave_reg_data.flags, regd->n_reg_rules);
+  {
+    const struct ieee80211_reg_rule *best_rule = NULL;
+    u32 best_rule_bw = U32_MAX;
+    u32 best_rule_idx = U32_MAX;
+    u32 i;
+
+    for (i = 0; i < regd->n_reg_rules; i++) {
+      const struct ieee80211_reg_rule *rrule = &regd->reg_rules[i];
+      const struct ieee80211_freq_range *freq_range = &rrule->freq_range;
+      u32 rule_bw_khz = freq_range->max_bandwidth_khz;
+
+      if (!_wv_freq_in_rule_band(freq_range, center_freq_khz))
+        continue;
+
+      if (!_wv_does_bw_fit_range(freq_range, center_freq_khz, bw_khz))
+        continue;
+
+      if (rule_bw_khz < bw_khz)
+        continue;
+
+      ILOG1_DDDD("[BW_REG] AFC candidate idx=%u req_bw=%u kHz rule_bw=%u kHz eirp=%d mBm",
+             i, bw_khz, rule_bw_khz, rrule->power_rule.max_eirp);
+
+      if (!best_rule || rule_bw_khz < best_rule_bw ||
+          (rule_bw_khz == best_rule_bw &&
+           rrule->power_rule.max_eirp < best_rule->power_rule.max_eirp)) {
+        best_rule = rrule;
+        best_rule_bw = rule_bw_khz;
+        best_rule_idx = i;
+        ILOG1_DDD("[BW_REG] AFC best updated idx=%u selected_bw=%u kHz selected_eirp=%d mBm",
+            best_rule_idx, best_rule_bw, best_rule->power_rule.max_eirp);
+      }
+    }
+
+    if (best_rule) {
+      *max_power_dbm = MBM_TO_DBM(best_rule->power_rule.max_eirp);
+      ILOG1_DDDD("[BW_REG] AFC final selection idx=%u req_bw=%u kHz selected_bw=%u kHz selected_eirp=%d mBm",
+                 best_rule_idx, bw_khz, best_rule_bw, best_rule->power_rule.max_eirp);
+      return MTLK_ERR_OK;
+    }
+  }
+
+  ILOG1_DDD("[BW_REG] AFC(PDB) no rule match: cf=%u MHz bw=%u MHz rules=%u",
+            KHZ_TO_MHZ(center_freq_khz), KHZ_TO_MHZ(bw_khz), regd->n_reg_rules);
+  return MTLK_ERR_NO_ENTRY;
+}
+
 /*
  * Get regulatory power limit with a support of
  * regulatory rules conjuncted with AUTO_BW flag
+ *
+ * On 6 GHz band, use bandwidth-aware rule lookup to support
+ * standard power (SP) and indoor standard power (ISP) modes which
+ * allow higher TX power for narrower channel widths per AFC rules.
+ * On other bands, use per-channel minimum for conservative limits.
  */
 unsigned __MTLK_IFUNC
 wv_cfg80211_regulatory_limit_get (struct wireless_dev *wdev,
                                   unsigned lower_freq, unsigned upper_freq)
 {
   int max_power = WAVE_REGULATORY_POWER_MAX_DBM;
-  unsigned freq, freq_step = 5; /* frequency step between used channels for 2.4 GHz */
+  int afc_max_power = 0;
+  unsigned center_freq_khz;
+  unsigned bw_khz;
+  const struct ieee80211_reg_rule *rrule;
+  int use_bw_aware = 0;
 
-  /* adjust frequency step for 5.2 GHz and 6 GHz */
-  if (WAVE_CHAN_IS_5G(lower_freq) || WAVE_FREQ_IS_6G(lower_freq))
-    freq_step = 20;
+  if (WAVE_FREQ_IS_6G(lower_freq)) {
+    mtlk_df_user_t *df_user;
+    mtlk_df_t *df;
+    mtlk_core_t *core;
+    wave_radio_t *radio;
+    uint32 oper_power_mode;
 
-  ILOG2_DDD("lower_freq %u upper_freq %u freq_step %u", lower_freq, upper_freq, freq_step);
-
-  for (freq = lower_freq; freq <= upper_freq; freq += freq_step) {
-    struct ieee80211_channel *channel = ieee80211_get_channel(wdev->wiphy, freq);
-
-    if (NULL == channel) {
-      WLOG_D("No ieee80211_channel for freq %d", freq);
-      continue;
+    df_user = mtlk_df_user_from_wdev(wdev);
+    if (df_user) {
+      df = mtlk_df_user_get_df(df_user);
+      if (df) {
+        core = mtlk_vap_get_core(mtlk_df_get_vap_handle(df));
+        if (core) {
+          radio = wave_vap_radio_get(core->vap_handle);
+          if (radio) {
+            oper_power_mode = WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_6GHZ_OPER_POWER_MODE);
+            if (oper_power_mode == IEEE80211_6GHZ_CTRL_REG_SP_AP ||
+                oper_power_mode == IEEE80211_6GHZ_CTRL_REG_ISP_AP)
+              use_bw_aware = 1;
+          }
+        }
+      }
     }
-
-    if (channel->flags & IEEE80211_CHAN_DISABLED) {
-      ILOG2_D("Disabled channel %d", freq);
-      continue;
-    }
-
-    ILOG2_DD("freq %d max_reg_power %d", channel->center_freq, channel->max_reg_power);
-
-    /* find minimal allowed by regulatory */
-    if (channel->max_reg_power < max_power)
-      max_power = channel->max_reg_power;
   }
 
+  ILOG1_DDD("[BW_REG] entry: lower_freq %u upper_freq %u use_bw_aware %d", lower_freq, upper_freq, use_bw_aware);
+
+  if (use_bw_aware) {
+    /*
+     * 6 GHz SP/ISP modes: Use bandwidth-aware rule lookup.
+     * 6 GHz LPI and all other bands stay on legacy per-channel path.
+     */
+    center_freq_khz = MHZ_TO_KHZ((lower_freq + upper_freq) / 2);
+    /*
+     * lower_freq/upper_freq are sub-channel center frequencies.
+     * Add 20 MHz to convert center-to-center span into occupied channel width.
+     */
+    bw_khz = MHZ_TO_KHZ(upper_freq - lower_freq + 20);
+
+    ILOG1_DD("[BW_REG] 6GHz lookup: center_freq_khz %u bw_khz %u", center_freq_khz, bw_khz);
+
+    if (_wv_cfg80211_afc_regulatory_limit_get(wdev, center_freq_khz, bw_khz, &afc_max_power) == MTLK_ERR_OK) {
+      max_power = afc_max_power;
+      ILOG1_DDD("[BW_REG] 6GHz AFC(PDB) rule found: max_power %d dBm (cf=%u MHz bw=%u MHz)",
+                 max_power,
+                 KHZ_TO_MHZ(center_freq_khz),
+                 KHZ_TO_MHZ(bw_khz));
+      goto reg_limit_done;
+    } else {
+      ILOG1_DD("[BW_REG] AFC(PDB) fallback to wiphy lookup: cf=%u MHz bw=%u MHz",
+               KHZ_TO_MHZ(center_freq_khz),
+               KHZ_TO_MHZ(bw_khz));
+    }
+
+    rrule = freq_reg_info(wdev->wiphy, center_freq_khz);
+    if (!IS_ERR_OR_NULL(rrule)) {
+      max_power = MBM_TO_DBM(rrule->power_rule.max_eirp);
+      ILOG1_DDD("[BW_REG] 6GHz rule found: max_power %d dBm (cf=%u MHz bw=%u MHz)",
+                 max_power,
+                 KHZ_TO_MHZ(center_freq_khz),
+                 KHZ_TO_MHZ(bw_khz));
+      ILOG1_DDD("[BW_REG] matched rule: start=%u MHz end=%u MHz max_bw=%u MHz",
+                 KHZ_TO_MHZ(rrule->freq_range.start_freq_khz),
+                 KHZ_TO_MHZ(rrule->freq_range.end_freq_khz),
+                 KHZ_TO_MHZ(rrule->freq_range.max_bandwidth_khz));
+    } else {
+      ILOG1_V("[BW_REG] 6GHz rule lookup FAILED, falling back to per-channel");
+      use_bw_aware = 0;
+    }
+  }
+
+  if (!use_bw_aware) {
+    /*
+     * 2.4/5 GHz or 6 GHz with no BW-aware rule: Use per-channel minimum
+     * This provides conservative limits for non-AFC bands.
+     */
+    unsigned freq, freq_step = 5; /* frequency step between used channels for 2.4 GHz */
+
+    /* adjust frequency step for 5.2 GHz and 6 GHz */
+    if (WAVE_CHAN_IS_5G(lower_freq) || WAVE_FREQ_IS_6G(lower_freq))
+      freq_step = 20;
+
+    ILOG1_DDD("[BW_REG] per-channel fallback: lower_freq %u upper_freq %u freq_step %u",
+              lower_freq, upper_freq, freq_step);
+
+    max_power = WAVE_REGULATORY_POWER_MAX_DBM;
+
+    for (freq = lower_freq; freq <= upper_freq; freq += freq_step) {
+      struct ieee80211_channel *channel = ieee80211_get_channel(wdev->wiphy, freq);
+
+      if (NULL == channel) {
+        ILOG1_D("[BW_REG] no channel struct for freq %d", freq);
+        continue;
+      }
+
+      if (channel->flags & IEEE80211_CHAN_DISABLED) {
+        ILOG1_D("[BW_REG] disabled channel %d, skipping", freq);
+        continue;
+      }
+
+      ILOG1_DD("[BW_REG] per-channel: freq %d max_reg_power %d", channel->center_freq,
+               channel->max_reg_power);
+
+      /* find minimal allowed by regulatory */
+      if (channel->max_reg_power < max_power)
+        max_power = channel->max_reg_power;
+    }
+  }
+
+reg_limit_done:
   /* check if nothing was found */
   if (max_power == WAVE_REGULATORY_POWER_MAX_DBM)
     max_power = 0;
 
-  ILOG1_D("max_power %d dBm", max_power);
+  ILOG1_D("[BW_REG] result: max_power %d dBm", max_power);
 
   return DBM_TO_POWER((unsigned)max_power);
 }

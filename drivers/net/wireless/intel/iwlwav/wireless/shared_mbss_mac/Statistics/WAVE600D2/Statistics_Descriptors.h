@@ -829,11 +829,23 @@ typedef struct
     uint16 heMuFastProbeTriggeredCnt[MAX_STA_IN_GROUP];
     uint16 heMuFastProbeNotFinishedCnt[MAX_STA_IN_GROUP];
     uint16 heMuCollisionDetectedCnt[MAX_STA_IN_GROUP];
+    uint16 phyRate[MAX_STA_IN_GROUP];
+	uint32 dataRate[MAX_STA_IN_GROUP];
+    uint16 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+    uint16 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+    uint16 totalPpdus[MAX_STA_IN_GROUP];
+    uint16 reserved1; /* explicit padding for uint32 airUse alignment */
+    uint32 airUse[MAX_STA_IN_GROUP];
+    uint32 dataUse[MAX_STA_IN_GROUP];
+    uint8  muPER[MAX_STA_IN_GROUP];
+    uint8  muBw[MAX_STA_IN_GROUP];
+    uint8  muMcsNss[MAX_STA_IN_GROUP];
     StaId  staId[MAX_STA_IN_GROUP];
     int8   targetRssi[MAX_STA_IN_GROUP];
     int8   txPower[MAX_STA_IN_GROUP];
     uint8  mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS];
     uint8  groupId;
+    uint8  reserved2[3]; /* explicit padding for 4-byte struct alignment */
 #ifdef CPU_ARC
 } LinkAdaptationMuHeEhtDLStatistics_t;
 #else
@@ -848,12 +860,23 @@ typedef struct
     uint16 rxPPDUsCnt[MAX_STA_IN_GROUP];
     uint16 changedWpCnt[MAX_STA_IN_GROUP];
     uint16 collisionDetectedCnt[MAX_STA_IN_GROUP];
+    uint16 phyRate[MAX_STA_IN_GROUP];
+	uint32 dataRate[MAX_STA_IN_GROUP];
+    uint16 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+    uint16 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+    uint16 totalPpdus[MAX_STA_IN_GROUP];
+    uint16 reserved1; /* explicit padding for uint32 airUse alignment */
+    uint32 airUse[MAX_STA_IN_GROUP];
+    uint32 dataUse[MAX_STA_IN_GROUP];
+    uint8  muBw[MAX_STA_IN_GROUP];
+    uint8  muMcsNss[MAX_STA_IN_GROUP];
     StaId  staId[MAX_STA_IN_GROUP];
     int8   targetRSSI[MAX_STA_IN_GROUP];
     uint8  longTermErrorRate[MAX_STA_IN_GROUP];
     uint8  workingPointErrorRate[MAX_STA_IN_GROUP];
     uint8  mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS];
     uint8  groupId;
+    uint8  reserved2[3]; /* explicit padding for 4-byte struct alignment */
 #ifdef CPU_ARC
 } LinkAdaptationMuHeEhtULStatistics_t;
 #else

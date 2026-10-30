@@ -58,7 +58,7 @@
 #define SIZEOF(a) MTLK_ARRAY_SIZE(a)
 #define INC_WRAP_IDX(i,s) do { (i)++; if ((i) == (s)) (i) = 0; } while (0)
 
-#if LINUX_VERSION_IS_LESS(5,15,195)
+#if LINUX_VERSION_IS_GEQ(6,6,0) && LINUX_VERSION_IS_LESS(6,7,0)
 #define MIN(x,y) ((x) < (y) ? (x) : (y))
 #define MAX(x,y) ((x) > (y) ? (x) : (y))
 #endif
@@ -197,8 +197,12 @@ typedef uint16      K_MSG_TYPE;
 /* #define MTLK_LGM_PLATFORM_FPGA */
 #endif
 
-#ifdef CONFIG_SOC_MXL
+/* TODO: Replace with Topaz CFLAG when available */
+#if LINUX_VERSION_IS_GEQ(6,6,0)
 #define MTLK_TOPAZ_PLATFORM
+#endif
+/* CONFIG_TARGET_arm_a55_haps */
+#ifdef CONFIG_TOPAZ_PLATFORM_FPGA
 #define MTLK_TOPAZ_PLATFORM_FPGA
 #endif
 
@@ -216,7 +220,7 @@ typedef uint16      K_MSG_TYPE;
 #endif
 
 /* Define conditional defines, depended from external flags */
-#if IS_ENABLED(CONFIG_DIRECTCONNECT_DP_API) && defined(CPTCFG_IWLWAV_DC_DP_LIB_SUPPORT)
+#if defined(CPTCFG_IWLWAV_DC_DP_LIB_SUPPORT) && (IS_ENABLED(CONFIG_DIRECTCONNECT_DP_API) || IS_ENABLED(CONFIG_DIRECTCONNECT_DP))
 #define MTLK_USE_DIRECTCONNECT_DP_API 1
 #else
 #define MTLK_USE_DIRECTCONNECT_DP_API 0

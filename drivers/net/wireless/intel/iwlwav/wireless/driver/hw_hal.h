@@ -129,7 +129,7 @@ typedef struct
 {
   mtlk_hw_mirror_hdr_t hdr;        /* Header */
   mtlk_nbuf_t         *nbuf;       /* Network buffer   */
-  uint32               dma_addr;   /* DMA mapped address */
+  dma_addr_t           dma_addr;   /* DMA mapped address */
   uint32               size;       /* Data buffer size */
   uint8                tid;        /* Packets priority */
   mtlk_osal_timestamp_t ts;        /* Timestamp (used for TX monitoring) */

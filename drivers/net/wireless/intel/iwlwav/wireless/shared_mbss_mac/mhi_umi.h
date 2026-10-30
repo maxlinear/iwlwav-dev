@@ -120,8 +120,6 @@ COPYRIGHT:
 #define ALL_SID_MAX             MAX(GEN5_ALL_STA_SID, GEN6_ALL_STA_SID)
 #define ALL_SID_MAX_G7          GEN7_ALL_STA_SID
 
-#define MLD_MAX_NUM_OF_LINKS 3 // Number of supported links for MLO
-
 /*--------------------------------------------------------------------------
  * Description:     Bitmasks of required calibr
  *
@@ -403,7 +401,11 @@ typedef uint16 UMI_ACCESS_PROTOCOL;
 #define MAX_NUM_OF_TRIGGER_FRAME_STATIONS	(36)
 
 /* Triband MLD */
-#define MAX_NUM_OF_SIBLING_VAPS 2	/* In Triband MLD, Driver may provide up to two sibling VAPs noted TX Secondary and Non-TX Secondary */
+#define VAP_MLD_ID_MIN			0	/* Minimum valid VAP MLD ID */
+#define VAP_MLD_ID_MAX			30	/* Maximum valid VAP MLD ID */
+#define MLD_MAX_NUM_OF_LINKS	3	/* Number of supported links for MLO */
+#define MIN_NUM_OF_SIBLING_VAPS	0	/* Minimum number of sibling VAPs affiliated with an MLD */
+#define MAX_NUM_OF_SIBLING_VAPS	2	/* In Triband MLD, Driver may provide up to two sibling VAPs noted TX Secondary and Non-TX Secondary */
 
 /***************************************************************************/
 /***                       UASP VAP  definitions 				         ***/
@@ -616,6 +618,7 @@ typedef enum _UMI_Msgs
 	UMI_MAN_AQM_STA_EN,						// UMI_AQM_STA_EN
 	UMI_MAN_RX_MEASURE,        				// UMI_RX_MEASURE
 	UMI_MAN_SET_MRU_TX_POWER_ENABLE,		// UMI_SET_MRU_TX_POWER_ENABLE
+	UMI_MAN_SET_ZWDFS_NOISE_SUPPRESS,		// UMI_SET_ZWDFS_NOISE_SUPPRESS
 	UMI_TOTAL_NUM_MSGS
 } UMI_Msgs;
 
@@ -1111,6 +1114,9 @@ typedef enum _UMI_Msgs
 
 #define UM_MAN_SET_MRU_TX_POWER_ENABLE_REQ    UMI_MSG_MAN_REQ(UMI_MAN_SET_MRU_TX_POWER_ENABLE) //0x04A1
 #define MC_MAN_SET_MRU_TX_POWER_ENABLE_CFM    UMI_MSG_MAN_CFM(UMI_MAN_SET_MRU_TX_POWER_ENABLE) //0x14A1
+
+#define UM_MAN_SET_ZWDFS_NOISE_SUPPRESS_REQ   UMI_MSG_MAN_REQ(UMI_MAN_SET_ZWDFS_NOISE_SUPPRESS) //0x04A2
+#define MC_MAN_SET_ZWDFS_NOISE_SUPPRESS_CFM   UMI_MSG_MAN_CFM(UMI_MAN_SET_ZWDFS_NOISE_SUPPRESS) //0x14A2
 /***************************************************************************/
 /***                          Management Messages                        ***/
 /***************************************************************************/
@@ -1342,7 +1348,7 @@ typedef struct _UMI_CREATE_MLD
 {
 	IEEE_ADDR	sBSSID;
 	IEEE_ADDR	sMldMacAddr;
-	uint8		numOfSiblingVaps; /* 0 - reserved. 1 - two MLD links. 2 - three MLD links. */
+	uint8		numOfSiblingVaps; /* 0 - Single Band MLD. 1 - Dual Band MLD. 2 - Triband MLD. */
 	uint8		siblingVapIds[MAX_NUM_OF_SIBLING_VAPS];
 	uint8		u8MldId;
 	uint8		u8Status;
@@ -2845,7 +2851,9 @@ typedef struct _UMI_ADD_STA_MLD
 	uint8		u8AssocLinkBitmap;
 	uint8		u8DlTid2LinkBitmap[MLD_MAX_NUM_OF_LINKS];
 	uint8 		u8NumOfSimLink_R;
+	uint8		u8IsNstr;			/* 1 = 5G+6G pair is NSTR, 0 = normal */
 	uint8    	u8Status;
+	uint8		u8Reserved[3];
 } __MTLK_PACKED UMI_ADD_STA_MLD;
  
 typedef struct _UMI_STA_REMOVE
@@ -2953,6 +2961,7 @@ typedef enum MultiLinkModes
 	MLD_STR_REGULAR_MODE,
 	MLD_EMLSR_MODE,
 	MLD_MLSR_MODE,
+	MLD_NSTR_MODE,
 } MultiLinkModes_e;
 
 // QAMplus : activate from Driver
@@ -4747,6 +4756,19 @@ typedef struct _UMI_SET_MRU_TX_POWER_ENABLE {
 	uint8 status;
 	uint8 reserved[2];       /* Padding for alignment */
 } __MTLK_PACKED UMI_SET_MRU_TX_POWER_ENABLE;
+
+/***************************************************************************
+**
+** NAME         UMI_SET_ZWDFS_NOISE_SUPPRESS
+**
+** DESCRIPTION: Enable/Disable ZWDFS packet-noise radar suppression and set
+**              its noisy-window threshold (WiFi packet events per 1 s window)
+****************************************************************************/
+typedef struct _UMI_SET_ZWDFS_NOISE_SUPPRESS {
+	uint16 noisyWifiPacketTh;  /* packets per 1 s window; 0 = any packet is noisy */
+	uint8  enable;             /* 0 = Disabled, 1 = Enabled */
+	uint8  status;
+} __MTLK_PACKED UMI_SET_ZWDFS_NOISE_SUPPRESS;
 
 #define   MTLK_PACK_OFF
 #include "mtlkpack.h"

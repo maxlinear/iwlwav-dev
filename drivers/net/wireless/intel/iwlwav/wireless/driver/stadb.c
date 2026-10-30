@@ -251,9 +251,19 @@ _mtlk_sta_keepalive_tmr (mtlk_osal_timer_t *timer,
                          mtlk_handle_t      clb_usr_data)
 {
   sta_entry *sta = HANDLE_T_PTR(sta_entry, clb_usr_data);
-  mtlk_osal_msec_t timeout = sta->paramdb->keepalive_interval;
+  const IEEE_ADDR *sta_addr;
+  mtlk_osal_msec_t timeout;
 
-  sta->paramdb->cfg.api.on_sta_keepalive(sta->paramdb->cfg.api.usr_data, *mtlk_sta_get_addr(sta));
+  if (sta == NULL)
+    return 0;
+
+  sta_addr = mtlk_sta_get_addr(sta);
+  if (sta_addr == NULL)
+    return 0;
+
+  timeout = sta->paramdb->keepalive_interval;
+
+  sta->paramdb->cfg.api.on_sta_keepalive(sta->paramdb->cfg.api.usr_data, *sta_addr);
   return timeout; /* restart with same timeout */
 }
 
@@ -593,6 +603,8 @@ _mtlk_sta_get_peer_rates_info(const sta_entry *sta, mtlk_wssa_drv_peer_rates_inf
   memset(rates_info, 0, sizeof(*rates_info));
   mcore = mtlk_core_get_master(sta->vap_handle);
   MTLK_ASSERT(NULL != mcore);
+  if (mcore == NULL)
+    return;
 
   radio = wave_vap_radio_get(mcore->vap_handle);
   radio_idx = wave_radio_id_get(radio);
@@ -792,9 +804,35 @@ mtlk_sta_get_ml_main_sta(sta_entry *sta)
   return main_sta;
 }
 
+#ifdef BEST_EFFORT_TID_SPREADING
+/* Releases this sta's reference to its sibling-shared sta_tid_spread_info (shared across up to 3 linked stas for tri-link MLD); only frees it once every sibling has released its own reference. */
+static void _wave_sta_release_tid_spread_info(sta_entry *sta)
+{
+  wave_ml_str_sta_tid_spreading_info_t *tid_spread_info;
+
+  /* sta->lock also guards this field on the read side (wave_core_qos_adjust_be_priority and friends), so clearing it here has to happen under the same lock - otherwise a reader can fetch the pointer moments before we free it. */
+  mtlk_osal_lock_acquire(&sta->lock);
+  tid_spread_info = sta->ml_sta_info.sta_tid_spread_info;
+  sta->ml_sta_info.sta_tid_spread_info = NULL;
+  mtlk_osal_lock_release(&sta->lock);
+
+  if (!tid_spread_info)
+    return;
+
+  if (mtlk_osal_atomic_inc(&tid_spread_info->ref_cnt) == mtlk_sta_get_rem_count_limit(sta)) {
+    mtlk_osal_lock_cleanup(&tid_spread_info->lock);
+    mtlk_osal_mem_free(tid_spread_info);
+  }
+}
+#endif /* BEST_EFFORT_TID_SPREADING */
+
 static void _mtlk_sta_ml_info_cleanup(sta_entry *sta)
 {
   uint32 remove_sta_cnt = 0;
+
+#ifdef BEST_EFFORT_TID_SPREADING
+  _wave_sta_release_tid_spread_info(sta);
+#endif /* BEST_EFFORT_TID_SPREADING */
 
   if (sta->ml_sta_info.remove_sta_mld) {
     mtlk_sta_remove_mld_lock_acquire(sta);
@@ -803,20 +841,13 @@ static void _mtlk_sta_ml_info_cleanup(sta_entry *sta)
     if (remove_sta_cnt == mtlk_sta_get_rem_count_limit(sta)) {
       mtlk_osal_lock_cleanup(&sta->ml_sta_info.remove_sta_mld->lock);
       mtlk_osal_mem_free(sta->ml_sta_info.remove_sta_mld);
-#ifdef BEST_EFFORT_TID_SPREADING
-      if (sta->ml_sta_info.sta_tid_spread_info != NULL) {
-        mtlk_osal_mem_free(sta->ml_sta_info.sta_tid_spread_info);
-      }
-#endif /* BEST_EFFORT_TID_SPREADING */
     }
   }
   sta->ml_sta_info.rem_sta_mld_inprogress = FALSE;
   sta->ml_sta_info.remove_sta_mld = NULL;
   mtlk_osal_event_cleanup(&sta->ml_sta_info.ml_discnt_event);
   sta->ml_sta_info.add_mld_done = FALSE;
-#ifdef BEST_EFFORT_TID_SPREADING
-  sta->ml_sta_info.sta_tid_spread_info = NULL;
-#endif /* BEST_EFFORT_TID_SPREADING */
+  ILOG0_Y("[MLO_BARRIER] STA %Y disconnected -> add_mld_done reset to FALSE", mtlk_sta_get_addr(sta));
 }
 
 #ifdef BEST_EFFORT_TID_SPREADING
@@ -831,14 +862,17 @@ static void _wave_sta_tid_link_cleanup (sta_entry *sta, BOOL cleanup)
   wave_ml_str_sta_tid_spreading_info_t *ml_sta_tid_spread_info;
 
   current_time = mtlk_osal_timestamp_to_ms(mtlk_osal_timestamp());
-  ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(sta);
+  /* Fetched only after taking sta->lock - see _wave_sta_release_tid_spread_info(), which clears this field under the same lock before possibly freeing it. */
   mtlk_osal_lock_acquire(&sta->lock);
+  ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(sta);
   h = mtlk_hash_enum_first_skb_hash(hash, &e);
   while (h) {
     tid_info = MTLK_CONTAINER_OF(h, tid_hash_map_info, hentry);
     timediff = mtlk_osal_ms_time_diff(current_time, tid_info->timestamp);
     if (cleanup || timediff > SKB_HASH_AGE_TIME) {
      if (ml_sta_tid_spread_info) {
+       /* Shared across every linked sta - needs its own lock, not sta->lock (already held here for skb_hash), since a sibling mutates it under a different sta->lock. */
+       mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
        if (tid_info->tid == ml_sta_tid_spread_info->low_rate_tid &&
            ml_sta_tid_spread_info->curr_load_low_rate_tid)
          ml_sta_tid_spread_info->curr_load_low_rate_tid--;
@@ -848,11 +882,14 @@ static void _wave_sta_tid_link_cleanup (sta_entry *sta, BOOL cleanup)
          ml_sta_tid_spread_info->tid_remap_flip--;
        if (ml_sta_tid_spread_info->tid_flip)
          ml_sta_tid_spread_info->tid_flip--;
+       mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
      }
      mtlk_hash_remove_skb_hash(&sta->skb_hash, &tid_info->hentry);
      mtlk_osal_lock_release(&sta->lock);
      mtlk_osal_mem_free(tid_info);
+     /* Dropped the lock above to avoid holding sta->lock (spin_lock_bh - disables softirqs) across the whole aging walk; re-fetch rather than reuse the old pointer, since ml_sta_tid_spread_info could have been released/freed by a sibling while we didn't hold the lock. */
      mtlk_osal_lock_acquire(&sta->lock);
+     ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(sta);
     }
     h = mtlk_hash_enum_next_skb_hash(hash, &e);
   }
@@ -948,7 +985,7 @@ _wave_set_rem_sta_count_limit(uint8 link_type)
 void __MTLK_IFUNC
 wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 main_vap_id, wave_vap_id_t vap_id_fw)
 {
-  sta_entry *linked_sta = ml_sta_info->sibling_sta[ML_FISRT_SIBLING];
+  sta_entry *linked_sta = ml_sta_info->sibling_sta[ML_FIRST_SIBLING];
   sta_entry *linked_sta2 = ml_sta_info->sibling_sta[ML_SECOND_SIBLING];
   uint8 num_of_siblings = 0;
   ml_sta_link_type_e link_type = ml_sta_info->link_type;
@@ -971,7 +1008,7 @@ wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 
       break;
   }
 
-  sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = linked_sta;
+  sta->ml_sta_info.sibling_sta[ML_FIRST_SIBLING] = linked_sta;
   if (link_type == ML_STA_TYPE_TRI_LINK && linked_sta2)
     sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = linked_sta2;
   /* update the main_vap_id */
@@ -984,11 +1021,13 @@ wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 
   sta->ml_sta_info.link_type = link_type;
   sta->ml_sta_info.num_of_siblings = num_of_siblings;
 #ifdef BEST_EFFORT_TID_SPREADING
+  mtlk_osal_lock_acquire(&sta->lock);
   sta->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
+  mtlk_osal_lock_release(&sta->lock);
 #endif
 
   if (linked_sta) {
-    linked_sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = sta;
+    linked_sta->ml_sta_info.sibling_sta[ML_FIRST_SIBLING] = sta;
     if ((link_type == ML_STA_TYPE_TRI_LINK) && linked_sta2)
       linked_sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = linked_sta2;
     /* update the main_vap_id */
@@ -1001,12 +1040,14 @@ wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 
     linked_sta->ml_sta_info.link_type = link_type;
     linked_sta->ml_sta_info.num_of_siblings = num_of_siblings;
 #ifdef BEST_EFFORT_TID_SPREADING
+    mtlk_osal_lock_acquire(&linked_sta->lock);
     linked_sta->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
+    mtlk_osal_lock_release(&linked_sta->lock);
 #endif
   }
 
   if ((link_type == ML_STA_TYPE_TRI_LINK) && linked_sta && linked_sta2) {
-    linked_sta2->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = sta;
+    linked_sta2->ml_sta_info.sibling_sta[ML_FIRST_SIBLING] = sta;
     linked_sta2->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = linked_sta;
     /* update the main_vap_id */
     linked_sta2->info.MainVapId = main_vap_id;
@@ -1018,7 +1059,9 @@ wave_update_ml_sta_info (sta_entry *sta, wave_ml_sta_info_t *ml_sta_info, uint8 
     linked_sta2->ml_sta_info.link_type = link_type;
     linked_sta2->ml_sta_info.num_of_siblings = num_of_siblings;
 #ifdef BEST_EFFORT_TID_SPREADING
+    mtlk_osal_lock_acquire(&linked_sta2->lock);
     linked_sta2->ml_sta_info.sta_tid_spread_info = ml_sta_info->sta_tid_spread_info;
+    mtlk_osal_lock_release(&linked_sta2->lock);
 #endif
   }
 }
@@ -1030,27 +1073,25 @@ wave_cleanup_ml_sta_info (sta_entry *sta)
   uint8 sib_idx;
 
 #ifdef BEST_EFFORT_TID_SPREADING
-  if (sta->ml_sta_info.sta_tid_spread_info != NULL) {
-    mtlk_osal_mem_free(sta->ml_sta_info.sta_tid_spread_info);
-    sta->ml_sta_info.sta_tid_spread_info = NULL;
-  }
+  _wave_sta_release_tid_spread_info(sta);
 #endif /* BEST_EFFORT_TID_SPREADING */
 
   for (sib_idx = 0; sib_idx < sta->ml_sta_info.num_of_siblings; sib_idx++) {
     sib_sta = mtlk_get_sibling_sta(sta, sib_idx);
     if (sib_sta) {
       sib_sta->ml_sta_info.rem_sta_mld_done = TRUE;
-      sib_sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = NULL;
+      sib_sta->ml_sta_info.sibling_sta[ML_FIRST_SIBLING] = NULL;
       sib_sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = NULL;
       sib_sta->ml_sta_info.link_type = ML_STA_TYPE_NONE;
 #ifdef BEST_EFFORT_TID_SPREADING
-      sib_sta->ml_sta_info.sta_tid_spread_info = NULL;
+      /* Only ever release this sibling's own copy under its own lock - never poke its struct directly, since that would race its own datapath/cleanup. */
+      _wave_sta_release_tid_spread_info(sib_sta);
 #endif /* BEST_EFFORT_TID_SPREADING */
     }
   }
 
   sta->ml_sta_info.rem_sta_mld_done = TRUE;
-  sta->ml_sta_info.sibling_sta[ML_FISRT_SIBLING] = NULL;
+  sta->ml_sta_info.sibling_sta[ML_FIRST_SIBLING] = NULL;
   sta->ml_sta_info.sibling_sta[ML_SECOND_SIBLING] = NULL;
   sta->ml_sta_info.link_type = ML_STA_TYPE_NONE;
 }
@@ -1327,7 +1368,11 @@ _mtlk_sta_init (sta_entry *sta,
                    mtlk_peer_analyzer_init, (&sta->info.sta_analyzer,
                    wave_hw_mmb_get_stats_poll_period(mtlk_vap_get_hw(vap_handle))));
   MTLK_INIT_FINALLY(sta_entry, MTLK_OBJ_PTR(sta))
+#ifdef __KLOCWORK__
+  return MTLK_ERR_OK;
+#else
   MTLK_INIT_RETURN(sta_entry, MTLK_OBJ_PTR(sta), _mtlk_sta_cleanup, (sta))
+#endif
 }
 
 /* WARNING: the function _mtlk_sta_stop() cannot be called from a spinlock context
@@ -1607,6 +1652,7 @@ mtlk_sta_get_peer_capabilities (const sta_entry* sta, mtlk_wssa_drv_peer_capabil
 void __MTLK_IFUNC
 wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAssociatedDevDiagnostic2_t *dev_diagnostic_stats)
 {
+  const IEEE_ADDR *sta_addr;
   uint32 band_width;
   uint32 LastDataUplinkRate;
   int i;
@@ -1614,12 +1660,18 @@ wave_sta_get_dev_diagnostic_res2(mtlk_core_t *core, const sta_entry* sta, wifiAs
 
   MTLK_ASSERT(sta != NULL);
   MTLK_ASSERT(dev_diagnostic_stats != NULL);
+  if (sta == NULL || dev_diagnostic_stats == NULL)
+    return;
+
+  sta_addr = mtlk_sta_get_addr(sta);
+  if (sta_addr == NULL)
+    return;
 
   band_width = _mtlk_sta_rate_cbw_to_cbw_in_mhz(mtlk_bitrate_params_get_cbw(sta->info.stats.tx_data_rate_params));
 
   memset(dev_diagnostic_stats, 0, sizeof(wifiAssociatedDevDiagnostic2_t));
   LastDataUplinkRate                                       = __mtlk_sta_get_phy_rate_synched_to_psdu_rate_kbps(sta);
-  dev_diagnostic_stats->MACAddress                         = *mtlk_sta_get_addr(sta);
+  dev_diagnostic_stats->MACAddress                         = *sta_addr;
   dev_diagnostic_stats->AuthenticationState                = true;
   dev_diagnostic_stats->LastDataDownlinkRate               = __mtlk_sta_get_tx_data_rate_kbps(sta);
   /* PHY Limitation - PHY rate mismatch caused by WAV700 metrics format */
@@ -1728,11 +1780,22 @@ _wave_calculate_str_sta_effective_rates (sta_entry *sta)
   sta_entry *sibling_sta;
 
   main_vap_handle = sta->vap_handle;
+  /* Shared with the sibling VAP; wave_ml_vap_info_cleanup() (WLANRTSYS-98211) NULLs every copy under this same lock before freeing the memory after releasing it, so holding it across the fetch/check below is enough - only needed here, not held past it since info isn't used again in this function. */
+  mtlk_vap_ml_lock_acquire(main_vap_handle);
   info = wave_vap_manager_get_str_tid_spreading_info(main_vap_handle);
-  ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(sta);
-  /* dynamic tid to link spreading mode should be enabled */
-  if (!(info->active) || (info->tid_spreading_mode != TID_SPREAD_DYNAMIC) || !ml_sta_tid_spread_info)
+  if (!info || !(info->active) || (info->tid_spreading_mode != TID_SPREAD_DYNAMIC)) {
+    mtlk_vap_ml_lock_release(main_vap_handle);
     return;
+  }
+  mtlk_vap_ml_lock_release(main_vap_handle);
+
+  /* Held for the whole remainder of the function, through the final writes below - see _wave_sta_release_tid_spread_info(), which clears/frees this field under the same lock. */
+  mtlk_osal_lock_acquire(&sta->lock);
+  ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(sta);
+  if (!ml_sta_tid_spread_info) {
+    mtlk_osal_lock_release(&sta->lock);
+    return;
+  }
 
   main_radio = wave_vap_radio_get(main_vap_handle);
   /* calculate primary 20MHz channel_load on main link */
@@ -1794,12 +1857,18 @@ _wave_calculate_str_sta_effective_rates (sta_entry *sta)
     low_percent = main_eff_rate_percent;
   }
 
-  if (high_eff_phy_rate_vap == MTLK_INVALID_VAP_HANDLE)
+  if (high_eff_phy_rate_vap == MTLK_INVALID_VAP_HANDLE) {
+    mtlk_osal_lock_release(&sta->lock);
     return;
+  }
 
+  /* Shared across every linked sta, mutated under a different sta->lock by a sibling - needs its own lock too. */
+  mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
   wave_core_set_assigned_tid_to_link(ml_sta_tid_spread_info, high_eff_phy_rate_vap);
   ml_sta_tid_spread_info->high_eff_rate_tid_percent = high_percent;
   ml_sta_tid_spread_info->low_eff_rate_tid_percent = low_percent;
+  mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
+  mtlk_osal_lock_release(&sta->lock);
 }
 
 static uint32
@@ -1849,18 +1918,26 @@ wave_get_ml_str_sta_tid_spread_stat (sta_db *stadb, mtlk_clpb_t *clpb)
   mtlk_stadb_iterator_t iter;
   mtlk_stadb_stat_t     stadb_stat;
   wave_ml_str_sta_tid_spreading_info_t *ml_sta_tid_spread_info;
-  wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info = wave_vap_manager_get_str_tid_spreading_info(stadb->vap_handle);
+  wave_ml_vap_str_tid_spreading_info_t *ml_vap_tid_spread_info;
 
+  /* Shared with the sibling VAP; wave_ml_vap_info_cleanup() (WLANRTSYS-98211) NULLs every copy under this same lock before freeing the memory after releasing it, so holding it across this fetch/check is enough - not used again below. */
+  mtlk_vap_ml_lock_acquire(stadb->vap_handle);
+  ml_vap_tid_spread_info = wave_vap_manager_get_str_tid_spreading_info(stadb->vap_handle);
   if (!ml_vap_tid_spread_info || !ml_vap_tid_spread_info->active) {
+    mtlk_vap_ml_lock_release(stadb->vap_handle);
     return res;
   }
+  mtlk_vap_ml_lock_release(stadb->vap_handle);
 
   sta = mtlk_stadb_iterate_first(stadb, &iter);
   if (sta) {
     do {
       if (wave_is_mld_sta((sta_entry *)sta)) {
+        /* Held through the fetch and the memcpy below - see _wave_sta_release_tid_spread_info(), which clears/frees this field under the same lock. */
+        mtlk_osal_lock_acquire(&((sta_entry *)sta)->lock);
         ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info((sta_entry *)sta);
         if (!ml_sta_tid_spread_info) {
+          mtlk_osal_lock_release(&((sta_entry *)sta)->lock);
           sta = mtlk_stadb_iterate_next(&iter);
           continue;
         }
@@ -1878,8 +1955,13 @@ wave_get_ml_str_sta_tid_spread_stat (sta_db *stadb, mtlk_clpb_t *clpb)
             stadb_stat.u.tid_spread_stat.sib2_sta_addr = *(mtlk_sta_get_addr(sibling_sta2));
         }
         stadb_stat.u.tid_spread_stat.aid = mac80211_sta->aid;
+        /* Shared across every linked sta, mutated under a different sta->lock by a sibling - needs its own lock too. */
+        mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
+        /* Copy only the config/stat fields, not the trailing ref_cnt/lock - those are internal synchronization state, not part of this stat's ABI, and stadb_stat is already zeroed above. */
         wave_memcpy(&stadb_stat.u.tid_spread_stat.cfg, sizeof(wave_ml_str_sta_tid_spreading_info_t),
-                    ml_sta_tid_spread_info, sizeof(wave_ml_str_sta_tid_spreading_info_t));
+                    ml_sta_tid_spread_info, MTLK_OFFSET_OF(wave_ml_str_sta_tid_spreading_info_t, ref_cnt));
+        mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
+        mtlk_osal_lock_release(&((sta_entry *)sta)->lock);
 
         /* push stadb statistic to clipboard */
         res = mtlk_clpb_push(clpb, &stadb_stat, sizeof(stadb_stat));
@@ -2021,9 +2103,18 @@ _mtlk_stadb_remove_sta_from_stadb_internal (sta_db* stadb, sta_entry *sta)
 void __MTLK_IFUNC
 mtlk_stadb_remove_sta (sta_db* stadb, sta_entry *sta)
 {
-  IEEE_ADDR sta_addr = *mtlk_sta_get_addr(sta);
+  const IEEE_ADDR *sta_addr_ptr;
+  IEEE_ADDR sta_addr;
   sta_whm_discnt_data  whm_discnt_data;
   struct ieee80211_sta * mac80211_sta;
+
+  if (sta == NULL)
+    return;
+
+  sta_addr_ptr = mtlk_sta_get_addr(sta);
+  if (sta_addr_ptr == NULL)
+    return;
+  sta_addr = *sta_addr_ptr;
 
   /* Decrease global counter */
   mtlk_osal_atomic_dec(__mtlk_global_stadb_get_cntr());

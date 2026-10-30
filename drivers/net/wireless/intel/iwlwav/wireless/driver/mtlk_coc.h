@@ -37,6 +37,7 @@ typedef struct _mtlk_coc_temp_t mtlk_coc_temp_t;
 typedef struct _mtlk_coc_t mtlk_coc_t;
 typedef struct _mtlk_erp_t mtlk_erp_t;
 
+extern int coc_mode;
 #define MTLK_COC_AUTO_INTER_CFG_PARAMS 4  /* time intervals  */
 #define MTLK_COC_AUTO_LIMIT_CFG_PARAMS 6 /* high/low limits */
 #define MTLK_COC_AUTO_RSSI_CFG_PARAMS  3 /* RSSI low limits */
@@ -63,8 +64,11 @@ typedef struct _mtlk_erp_t mtlk_erp_t;
 #define MTLK_COC_ANT_MASK_VALUE_MAX   ((1 << MTLK_COC_NUM_ANTENNAS) - 1)
 #define MTLK_COC_ANT_MASK_VALUE_UNDEF (MAX_UINT8)
 
-#define COC_BW_SWITCH_ENABLED    0
-#define COC_BW_SWITCH_DISABLED   1
+#define COC_BW_SWITCH_ENABLED         (0)
+#define COC_BW_SWITCH_DISABLED        (1)
+
+#define COC_MODE_HAL_CONTROLLED       (0)
+#define COC_MODE_DRIVER_CONTROLLED    (1)
 
 typedef enum {
   COC_BW_SWITCH_DOWN = 1,
@@ -228,6 +232,9 @@ mtlk_coc_erp_activate(mtlk_erp_t *erp_obj);
 
 int __MTLK_IFUNC
 mtlk_coc_set_actual_power_mode(mtlk_coc_t *coc_obj);
+
+int __MTLK_IFUNC
+wave_coc_set_decision(mtlk_coc_t *coc_obj, uint8 num_tx_antennas, uint8 num_rx_antennas);
 
 int __MTLK_IFUNC
 mtlk_coc_set_pause_power_mode(mtlk_coc_t *coc_obj);

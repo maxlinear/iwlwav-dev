@@ -447,6 +447,8 @@ typedef enum
   WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL,         /*!< Get Fixed Rate Thermal */
   WAVE_CORE_REQ_SET_MRU_TX_POWER_ENABLE,        /*!< Set MRU Tx Power Test Mode */
   WAVE_CORE_REQ_GET_MRU_TX_POWER_ENABLE,        /*!< Get MRU Tx Power Test Mode */
+  WAVE_CORE_REQ_SET_ZWDFS_NOISE_SUPPRESS,       /*!< Set ZWDFS packet-noise suppression enable + threshold */
+  WAVE_CORE_REQ_GET_ZWDFS_NOISE_SUPPRESS,       /*!< Get ZWDFS packet-noise suppression enable + threshold */
   WAVE_CORE_REQ_MSCS_ADD,                       /*!< MSCS ADD Request */
   WAVE_CORE_REQ_MSCS_REM,                       /*!< MSCS REM Request */
 /* DEBUG COMMANDS */
@@ -847,6 +849,7 @@ MTLK_DECLARE_CFG_START(mtlk_coc_mode_cfg_t)
   MTLK_CFG_ITEM(mtlk_coc_auto_cfg_t,  auto_params)
   MTLK_CFG_ITEM(uint8, cur_ant_mask)
   MTLK_CFG_ITEM(uint8, hw_ant_mask)
+  MTLK_CFG_ITEM(mtlk_coc_antenna_cfg_t, coc_decision_cfg)
 MTLK_DECLARE_CFG_END(mtlk_coc_mode_cfg_t)
 
 /* COC structure */
@@ -1471,6 +1474,15 @@ MTLK_DECLARE_CFG_END(wave_3addr_mcast_mode_t)
 MTLK_DECLARE_CFG_START(wave_mru_tx_power_enable_cfg_t)
   MTLK_CFG_ITEM(uint32, mru_tx_power_enable)
 MTLK_DECLARE_CFG_END(wave_mru_tx_power_enable_cfg_t)
+
+typedef struct {
+  uint32 enable;      /* 0 = off, 1 = on */
+  uint32 packet_th;   /* WiFi packet events per 1 s window */
+} __MTLK_IDATA wave_zwdfs_noise_suppress_t;
+
+MTLK_DECLARE_CFG_START(wave_zwdfs_noise_suppress_cfg_t)
+  MTLK_CFG_ITEM(wave_zwdfs_noise_suppress_t, zwdfs_noise_suppress)
+MTLK_DECLARE_CFG_END(wave_zwdfs_noise_suppress_cfg_t)
 
 /* Calculate antennas factor depending on TX antennas number */
 /* Exception: (-1) in case of 0 antennas number */
@@ -2261,7 +2273,7 @@ typedef struct _mtlk_beacon_data_t
   void const *tail;
   void const *probe_resp;
   void *data;
-  uint32 dma_addr;
+  dma_addr_t dma_addr;
   uint16 head_len;
   uint16 tail_len;
   uint16 probe_resp_len;
@@ -2617,7 +2629,7 @@ void mtlk_core_on_bss_drop_tx_que_full(mtlk_core_t *core);
 typedef struct {
   uint8        buf_index;   /* index for driver's owned buffer */
   uint8        *templ[MAX_NUM_UNSOLICIT_TX_BUFS];   /* ping-pong buffers */
-  uint32       dma_addr_hist[MAX_NUM_UNSOLICIT_TX_BUFS];
+  dma_addr_t   dma_addr_hist[MAX_NUM_UNSOLICIT_TX_BUFS];
   uint32       len[MAX_NUM_UNSOLICIT_TX_BUFS];
 } unsolicit_tx_frame_info_t;
 

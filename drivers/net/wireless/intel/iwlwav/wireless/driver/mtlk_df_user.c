@@ -30,6 +30,7 @@
 #include "mac80211.h"
 #include "mhi_umi.h"
 #include "cfg80211.h"
+#include "vendor_cmds.h"
 
 #include <linux/module.h>
 #include <linux/wireless.h>
@@ -83,12 +84,21 @@
 #ifdef MTLK_DEBUG
     /* A semicolon ';' at the end of line is required for proper LOG macro generation */
     /* Format string is also required, even an empty one at the end of the 1st param */
+#ifdef MTLK_TOPAZ_PLATFORM_FPGA
+    #define TRACE_PARAM_NOTE(str)       do { ILOG0_V(str ""); } while (0)
+    #define TRACE_PARAM_INT(value)      do { ILOG0_SD("%s: 0x%08X", #value, (uint32)(value));                } while (0)
+    #define TRACE_PARAM_PTR(value)      do { ILOG0_SP("%s: 0x%p",   #value, (value));                        } while (0)
+    #define TRACE_PARAM_STR(value)      do { ILOG0_SS("%s: %s",     #value, (value));                        } while (0)
+    #define TRACE_PARAM_MAC16(value)    do { ILOG0_SD("%s: 0x%04X", #value, MAC_TO_HOST16((uint16)(value))); } while (0)
+    #define TRACE_PARAM_MAC32(value)    do { ILOG0_SD("%s: 0x%08X", #value, MAC_TO_HOST32((uint32)(value))); } while (0)
+#else
     #define TRACE_PARAM_NOTE(str)       do { ILOG1_V(str ""); } while (0)
     #define TRACE_PARAM_INT(value)      do { ILOG1_SD("%s: 0x%08X", #value, (uint32)(value));                } while (0)
     #define TRACE_PARAM_PTR(value)      do { ILOG1_SP("%s: 0x%p",   #value, (value));                        } while (0)
     #define TRACE_PARAM_STR(value)      do { ILOG1_SS("%s: %s",     #value, (value));                        } while (0)
     #define TRACE_PARAM_MAC16(value)    do { ILOG1_SD("%s: 0x%04X", #value, MAC_TO_HOST16((uint16)(value))); } while (0)
     #define TRACE_PARAM_MAC32(value)    do { ILOG1_SD("%s: 0x%08X", #value, MAC_TO_HOST32((uint32)(value))); } while (0)
+#endif /* MTLK_TOPAZ_PLATFORM_FPGA */
 #else
     #define TRACE_PARAM_NOTE(str)
     #define TRACE_PARAM_INT(value)
@@ -110,6 +120,29 @@
 }
 
 #define IS_VALID_RANGE(val, min, max) (((int32)val >= min) && ((int32)val <= max))
+
+/* planType values come from FW FormationType_e:
+ *   0 = DL_OFDMA, 1 = DL_MIMO, 2 = UL_OFDMA, 3 = UL_MIMO
+ */
+#define WAVE_MU_PLAN_TYPE_DL_OFDMA  0
+#define WAVE_MU_PLAN_TYPE_DL_MIMO   1
+#define WAVE_MU_PLAN_TYPE_UL_OFDMA  2
+#define WAVE_MU_PLAN_TYPE_UL_MIMO   3
+#define WAVE_MU_PLAN_TYPE_IS_DL(plan_type) ((plan_type) <= WAVE_MU_PLAN_TYPE_DL_MIMO)
+
+/* BW enum to MHz: BW_20=0, BW_40=1, BW_80=2, BW_160=3, BW_320=4 */
+static const uint16 wave_mu_bw_to_mhz[BW_MAX_G7] = {20, 40, 80, 160, 320};
+
+/* DL: 11 columns including PER - wider format */
+#define WAVE_MU_STATS_TABLE_DL_SEP \
+  "-----------------------------------------------------------------------------------------------------\n"
+#define WAVE_MU_STATS_TABLE_DL_ROW_FMT \
+  "%-18s %9s %10s %8s %9s %4s %4s %5s %4s %7s %8s\n"
+/* UL: 10 columns, no PER */
+#define WAVE_MU_STATS_TABLE_UL_SEP \
+  "----------------------------------------------------------------------------------------------\n"
+#define WAVE_MU_STATS_TABLE_UL_ROW_FMT \
+  "%-18s %9s %10s %8s %9s %4s %5s %4s %7s %8s\n"
 
 static const IEEE_ADDR EMPTY_MAC_MASK = { {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF} };
 
@@ -221,7 +254,7 @@ typedef enum _mtlk_df_user_dcdp_mode_t {
 typedef struct _mtlk_df_user_dcdp_t {
     mtlk_df_user_dcdp_mode_t      mode;  /* Current mode of subif */
     BOOL                          mcast_registered;
-    struct dp_subif               subif_id;
+    mtlk_dp_subif_t               subif_id;
     mtlk_df_user_litepath_stats_t litepath_stats;
 } mtlk_df_user_dcdp_t;
 #endif /* MTLK_USE_DIRECTCONNECT_DP_API */
@@ -236,6 +269,9 @@ struct _mtlk_df_user_t {
   BOOL               is_stats_available;
   uint32             secondary_vap_id;
   sta_entry         *backhaul_sta;
+  /* protects backhaul_sta for the atomic bind/unbind ops below, see
+   * mtlk_df_user_set_backhaul_sta_if_unset()/clear_backhaul_sta_if_equal() */
+  mtlk_osal_spinlock_t backhaul_sta_lock;
 
   char   name[IFNAMSIZ];
   BOOL   frame_registered[FRAME_SUBTYPE_SIZE];
@@ -414,6 +450,11 @@ mtlk_df_user_set_ndev(mtlk_df_user_t *df_user, struct net_device *ndev) {
   df_user->ndev = ndev;
 }
 
+/* No longer called anywhere in this module (bind/unbind now use the atomic
+ * mtlk_df_user_set_backhaul_sta_if_unset()/clear_backhaul_sta_if_equal()
+ * below). Left in place as a plain unconditional setter, but do NOT compose
+ * it with a separate mtlk_df_user_backhaul_sta_is_set()/is_equal_backhaul_sta()
+ * check - see the comment on those atomic variants for why. */
 void
 mtlk_df_user_set_backhaul_sta(mtlk_df_user_t *df_user, sta_entry *backhaul_sta)
 {
@@ -448,16 +489,75 @@ mtlk_df_user_get_backhaul_sta(mtlk_df_user_t *df_user)
   return sta;
 }
 
+/* No longer called anywhere in this module. WARNING: do not reintroduce a
+ * caller that composes this with a separate mtlk_df_user_set_backhaul_sta()
+ * call to implement "bind if unset" - that is exactly the check-then-act
+ * race mtlk_df_user_set_backhaul_sta_if_unset() below exists to close. */
 BOOL
 mtlk_df_user_backhaul_sta_is_set(mtlk_df_user_t *df_user)
 {
   return (df_user->backhaul_sta != NULL);
 }
 
+/* No longer called anywhere in this module. WARNING: do not reintroduce a
+ * caller that composes this with a separate mtlk_df_user_set_backhaul_sta()
+ * call to implement "clear if equal" - that is exactly the check-then-act
+ * race mtlk_df_user_clear_backhaul_sta_if_equal() below exists to close. */
 BOOL
 mtlk_df_user_is_equal_backhaul_sta(mtlk_df_user_t *df_user, sta_entry * sta)
 {
   return (df_user->backhaul_sta == sta);
+}
+
+/* Atomic "bind if the slot is still free" - closes the check-then-act race
+ * that mtlk_df_user_backhaul_sta_is_set() + mtlk_df_user_set_backhaul_sta()
+ * has when composed by the caller as two separate lock acquisitions (a
+ * concurrent bind/unbind could land in between). Used by
+ * mtlk_vap_bind_backhaul_sta(_to_secondary_vap)() in mtlk_vap_manager.c. */
+BOOL
+mtlk_df_user_set_backhaul_sta_if_unset(mtlk_df_user_t *df_user, sta_entry *new_sta)
+{
+  BOOL was_unset;
+
+  MTLK_ASSERT(NULL != df_user);
+  MTLK_ASSERT(NULL != new_sta);
+
+  mtlk_osal_lock_acquire(&df_user->backhaul_sta_lock);
+  was_unset = (NULL == df_user->backhaul_sta);
+  if (was_unset) {
+    mtlk_sta_incref(new_sta);
+    df_user->backhaul_sta = new_sta;
+  }
+  mtlk_osal_lock_release(&df_user->backhaul_sta_lock);
+
+  return was_unset;
+}
+
+/* Atomic "clear only if it's still the STA the caller expects" - closes
+ * the check-then-act race that mtlk_df_user_is_equal_backhaul_sta() +
+ * mtlk_df_user_set_backhaul_sta(..., NULL) has when composed by the caller
+ * as two separate lock acquisitions: without this, a concurrent bind
+ * landing between the check and the clear would make the caller drop the
+ * reference of a STA it never validated, including a still-connected one.
+ * Used by mtlk_vap_unbind_backhaul_sta() in mtlk_vap_manager.c. */
+BOOL
+mtlk_df_user_clear_backhaul_sta_if_equal(mtlk_df_user_t *df_user, sta_entry *expected_sta)
+{
+  BOOL cleared;
+
+  MTLK_ASSERT(NULL != df_user);
+  MTLK_ASSERT(NULL != expected_sta);
+
+  mtlk_osal_lock_acquire(&df_user->backhaul_sta_lock);
+  cleared = (expected_sta == df_user->backhaul_sta);
+  if (cleared)
+    df_user->backhaul_sta = NULL;
+  mtlk_osal_lock_release(&df_user->backhaul_sta_lock);
+
+  if (cleared)
+    mtlk_sta_decref(expected_sta);
+
+  return cleared;
 }
 
 mtlk_error_t mtlk_df_user_push_backhaul_sta_to_pending_list (mtlk_df_user_t *df_user, sta_entry *backhaul_sta)
@@ -465,6 +565,8 @@ mtlk_error_t mtlk_df_user_push_backhaul_sta_to_pending_list (mtlk_df_user_t *df_
    in order to associate it with the bkh interface later after interface creation */
 {
   pending_list_entry_t *list_entry;
+  const IEEE_ADDR *addr;
+
   MTLK_ASSERT(df_user != NULL);
   MTLK_ASSERT(backhaul_sta != NULL);
 
@@ -472,7 +574,14 @@ mtlk_error_t mtlk_df_user_push_backhaul_sta_to_pending_list (mtlk_df_user_t *df_
   if (NULL == list_entry) {
     return MTLK_ERR_NO_MEM;
   }
-  list_entry->addr = *mtlk_sta_get_addr(backhaul_sta);
+
+  addr = mtlk_sta_get_addr(backhaul_sta);
+  if (NULL == addr) {
+    mtlk_osal_mem_free(list_entry);
+    return MTLK_ERR_NO_ENTRY;
+  }
+
+  list_entry->addr = *addr;
   wave_memcpy(list_entry->vlan_ifname, sizeof(list_entry->vlan_ifname),
     backhaul_sta->vlan_ifname, sizeof(backhaul_sta->vlan_ifname));
   mtlk_dlist_push_back(&df_user->vlan_pending_list, &list_entry->lentry);
@@ -927,7 +1036,7 @@ EXPORT_SYMBOL(_mtlk_df_user_ppa_start_xmit);
 
 /* Fn to get vapid from subif param through DCDP API*/
 int
-mtlk_get_dcdp_subif_vapid(struct dp_subif *subif_id, int32_t port_id)
+mtlk_get_dcdp_subif_vapid(mtlk_dp_subif_t *subif_id, int32_t port_id)
 {
   struct dc_dp_subif dc_dp_subif;
   memset(&dc_dp_subif, 0, sizeof(dc_dp_subif));
@@ -1288,8 +1397,16 @@ _mtlk_df_update_litepath (mtlk_df_user_t* df_user)
 int __MTLK_IFUNC
 mtlk_df_on_rcvry_subxface_start (mtlk_df_t* df)
 {
-  mtlk_df_user_t *df_user = mtlk_df_get_user(df);
-  int res = _mtlk_df_user_priv_subxface_start(df_user);
+  mtlk_df_user_t *df_user;
+  int res;
+
+  if (__UNLIKELY(NULL == df)) {
+    /* Secondary VAP is gone - nothing to (re)start */
+    return MTLK_ERR_OK;
+  }
+
+  df_user = mtlk_df_get_user(df);
+  res = _mtlk_df_user_priv_subxface_start(df_user);
   if (MTLK_ERR_OK == res) {
     mtlk_df_user_group_init(df_user);
   }
@@ -1300,7 +1417,14 @@ mtlk_df_on_rcvry_subxface_start (mtlk_df_t* df)
 int __MTLK_IFUNC
 mtlk_df_on_rcvry_subxface_stop (mtlk_df_t* df)
 {
-  mtlk_df_user_t *df_user = mtlk_df_get_user(df);
+  mtlk_df_user_t *df_user;
+
+  if (__UNLIKELY(NULL == df)) {
+    /* Secondary VAP is gone - nothing to stop */
+    return MTLK_ERR_OK;
+  }
+
+  df_user = mtlk_df_get_user(df);
   mtlk_df_user_group_uninit(df_user);
   return _mtlk_df_user_priv_subxface_stop(df_user);
 }
@@ -4323,6 +4447,42 @@ wave_thermal_cfg_t *fixed_rate_thermal)
   intvec[2] = (uint32)fixed_rate_thermal->thermal_cfg.thermal_power_reduc_val;
 }
 
+static mtlk_error_t
+_mtlk_df_user_fill_zwdfs_noise_suppress_by_intvec (uint32 *intvec, uint16 intvec_length,
+                                                  wave_zwdfs_noise_suppress_t *cfg)
+{
+  if ((intvec_length < 1) || (intvec_length > 2)) {
+    ELOG_D("Need 1 or 2 arguments <enable> [<packet_th>] (length=%u)", intvec_length);
+    return MTLK_ERR_PARAMS;
+  }
+  if (intvec[0] > 1) {
+    ELOG_D("Incorrect enable value %u, must be 0 or 1", intvec[0]);
+    return MTLK_ERR_PARAMS;
+  }
+  cfg->enable = intvec[0];
+
+  if (intvec_length == 2) {
+    if (intvec[1] > ZWDFS_NOISE_SUPPRESS_MAX_PACKET_TH) {
+      ELOG_D("Incorrect packet threshold %u", intvec[1]);
+      return MTLK_ERR_VALUE;
+    }
+    cfg->packet_th = intvec[1];
+  } else {
+    /* threshold omitted -> mark as unset so the core layer preserves the current PDB value */
+    cfg->packet_th = MTLK_PARAM_DB_INVALID_UINT32;
+  }
+  return MTLK_ERR_OK;
+}
+
+static void
+_mtlk_df_user_get_intvec_by_zwdfs_noise_suppress (uint32 *intvec, uint16 max_length, uint16 *intvec_length,
+                                                 const wave_zwdfs_noise_suppress_t *cfg)
+{
+  WAVE_CHECK_AND_SET_INTVEC_LENGTH(max_length, 2, *intvec_length);
+  intvec[0] = cfg->enable;
+  intvec[1] = cfg->packet_th;
+}
+
 static int
 _mtlk_df_user_fill_fixed_pwr_params (uint32 *intvec, uint16 intvec_length, FIXED_POWER *fixed_pwr_params)
 {
@@ -5032,6 +5192,11 @@ _mtlk_df_user_iwpriv_get_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_GET_ON_PARAM(PRM_ID_MRU_TX_POWER_ENABLE, WAVE_CORE_REQ_GET_MRU_TX_POWER_ENABLE, FALSE, wave_mru_tx_power_enable_cfg_t, cfg)
       MTLK_CFG_GET_ITEM(cfg, mru_tx_power_enable, *(uint32*)data);
 
+    /* ZWDFS packet-noise suppression enable + threshold */
+    _DF_USER_GET_ON_PARAM(PRM_ID_ZWDFS_NOISE_SUPPRESS, WAVE_CORE_REQ_GET_ZWDFS_NOISE_SUPPRESS, FALSE, wave_zwdfs_noise_suppress_cfg_t, cfg)
+      MTLK_CFG_GET_ITEM_BY_FUNC_VOID(cfg, zwdfs_noise_suppress, _mtlk_df_user_get_intvec_by_zwdfs_noise_suppress,
+                                     ((uint32*)data, max_length, length, &cfg->zwdfs_noise_suppress));
+
     /* Fixed rate thermal */
     _DF_USER_GET_ON_PARAM(PRM_ID_FIXED_RATE_THERMAL, WAVE_CORE_REQ_GET_FIXED_RATE_THERMAL, FALSE, wave_thermal_cfg_t, wave_thermal_cfg)
       MTLK_CFG_GET_ITEM_BY_FUNC_VOID(wave_thermal_cfg, thermal_cfg, _mtlk_df_user_get_intvec_by_fixed_rate_thermal,
@@ -5296,6 +5461,9 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_SET_ON_PARAM(PRM_ID_COC_AUTO_PARAMS, WAVE_RADIO_REQ_SET_COC_CFG, FALSE, mtlk_coc_mode_cfg_t, coc_cfg)
       MTLK_CFG_SET_ITEM_BY_FUNC(coc_cfg, auto_params,
                                 _mtlk_df_user_get_coc_auto_params_by_intvec, ((uint32*)data, length, &coc_cfg->auto_params), res);
+
+    _DF_USER_SET_ON_PARAM(PRM_ID_COC_HAL_DECISION, WAVE_RADIO_REQ_SET_COC_CFG, FALSE, mtlk_coc_mode_cfg_t, coc_cfg)
+      MTLK_CFG_SET_ITEM(coc_cfg, coc_decision_cfg, *(struct _mtlk_coc_antenna_cfg_t *)data);
 
     _DF_USER_SET_ON_PARAM(PRM_ID_ERP, WAVE_RADIO_REQ_SET_ERP_CFG, FALSE, mtlk_erp_mode_cfg_t, erp_cfg)
       MTLK_CFG_SET_ITEM_BY_FUNC(erp_cfg, erp_cfg,
@@ -5587,6 +5755,11 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
     _DF_USER_SET_ON_PARAM(PRM_ID_MRU_TX_POWER_ENABLE, WAVE_CORE_REQ_SET_MRU_TX_POWER_ENABLE, FALSE, wave_mru_tx_power_enable_cfg_t, cfg)
       MTLK_CFG_SET_ITEM(cfg, mru_tx_power_enable, !!(*(uint32*)data)); /* 0 or 1 */
 
+    /* ZWDFS packet-noise suppression enable + threshold */
+    _DF_USER_SET_ON_PARAM(PRM_ID_ZWDFS_NOISE_SUPPRESS, WAVE_CORE_REQ_SET_ZWDFS_NOISE_SUPPRESS, FALSE, wave_zwdfs_noise_suppress_cfg_t, cfg)
+      MTLK_CFG_SET_ITEM_BY_FUNC(cfg, zwdfs_noise_suppress, _mtlk_df_user_fill_zwdfs_noise_suppress_by_intvec,
+                                ((uint32*)data, length, &cfg->zwdfs_noise_suppress), res);
+
     /* Fixed rate thermal */
     _DF_USER_SET_ON_PARAM(PRM_ID_FIXED_RATE_THERMAL, WAVE_CORE_REQ_SET_FIXED_RATE_THERMAL, FALSE, wave_thermal_cfg_t, wave_thermal_cfg)
       MTLK_CFG_SET_ITEM_BY_FUNC(wave_thermal_cfg, thermal_cfg, _mtlk_df_user_fill_fixed_rate_thermal_by_intvec,
@@ -5704,6 +5877,7 @@ _mtlk_df_user_iwpriv_set_param(mtlk_df_user_t* df_user, uint32 param_id, char* d
   return res;
 }
 
+#ifndef MTLK_TOPAZ_PLATFORM_FPGA
 static void
 _mtlk_df_user_copy_linux_stats (struct rtnl_link_stats64 *linux_stats,
                           mtlk_core_general_stats_t *core_status)
@@ -5718,6 +5892,7 @@ _mtlk_df_user_copy_linux_stats (struct rtnl_link_stats64 *linux_stats,
   linux_stats->rx_dropped     = core_status->rx_drops;
   /* TBD */
 }
+#endif
 
 static int
 _mtlk_df_user_get_dcdp_linux_stat (mtlk_df_user_t *df_user, struct rtnl_link_stats64 *linux_stats)
@@ -5814,6 +5989,7 @@ void __MTLK_IFUNC mtlk_df_user_start_stats_timer (mtlk_df_user_t *df_user, uint3
   __mtlk_df_user_set_stats_timer(df_user, poll_period);
 }
 
+#ifndef MTLK_TOPAZ_PLATFORM_FPGA
 static void __MTLK_IFUNC
 _mtlk_df_poll_stats_clb(mtlk_handle_t user_context,
                         int           processing_result,
@@ -5857,10 +6033,14 @@ _mtlk_df_poll_stats_clb(mtlk_handle_t user_context,
   }
   mtlk_osal_lock_release(&df_user->slow_ctx->stat_timer_lock);
 }
+#endif
 
 static uint32
 _mtlk_df_poll_stats (mtlk_osal_timer_t *timer, mtlk_handle_t data)
 {
+#if defined(MTLK_TOPAZ_PLATFORM_FPGA)
+  ILOG1_V("Disable stats for topaz FPGA");
+#else
   mtlk_df_user_t* df_user = (mtlk_df_user_t*) data;
   mtlk_hw_t *hw = mtlk_vap_get_hw(mtlk_df_get_vap_handle(df_user->df));
 
@@ -5869,7 +6049,7 @@ _mtlk_df_poll_stats (mtlk_osal_timer_t *timer, mtlk_handle_t data)
     _mtlk_df_user_invoke_core_async(df_user->df, WAVE_CORE_REQ_GET_STATUS,
                                     NULL, 0, _mtlk_df_poll_stats_clb, HANDLE_T(df_user));
   }
-
+#endif
   return 0;
 }
 
@@ -6906,6 +7086,11 @@ _mtlk_df_ui_channel_read(mtlk_seq_entry_t *s, void *data)
   mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
   struct mtlk_chan_def cd;
 
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
   /* Note: this info could have been changing while we copied it and
    * we won't necessarily catch it with the is_channel_certain() trick.
    */
@@ -6927,13 +7112,23 @@ _wave_df_ui_ml_vap_str_tid_spread_cfg (mtlk_seq_entry_t *s, void *data)
   mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
   mtlk_vap_handle_t vap_handle = mtlk_df_get_vap_handle(df);
   wave_ml_vap_str_tid_spreading_info_t *info;
+  BOOL is_ml_vap, active, tid_spreading_mode;
+  uint16 tid_split_ratio;
 
+  mtlk_vap_ml_lock_acquire(vap_handle);
   info = wave_vap_manager_get_str_tid_spreading_info(vap_handle);
+  is_ml_vap = (info != NULL);
+  if (is_ml_vap) {
+    active = info->active;
+    tid_spreading_mode = info->tid_spreading_mode;
+    tid_split_ratio = info->tid_split_ratio;
+  }
+  mtlk_vap_ml_lock_release(vap_handle);
 
-  if (info) {
-    mtlk_aux_seq_printf(s, "tid spreading      : %d\n", info->active);
-    mtlk_aux_seq_printf(s, "dynamic mode       : %d\n", info->tid_spreading_mode);
-    mtlk_aux_seq_printf(s, "static split ratio : %d\n", info->tid_split_ratio);
+  if (is_ml_vap) {
+    mtlk_aux_seq_printf(s, "tid spreading      : %d\n", active);
+    mtlk_aux_seq_printf(s, "dynamic mode       : %d\n", tid_spreading_mode);
+    mtlk_aux_seq_printf(s, "static split ratio : %d\n", tid_split_ratio);
   } else {
     mtlk_aux_seq_printf(s, "non ml vap\n");
   }
@@ -6997,11 +7192,13 @@ static int
 _mtlk_df_ui_radio_cfg_read(mtlk_seq_entry_t *s, void *data)
 {
   /* FIXME some protection against core removal is needed */
+  wave_radio_t *radio = NULL;
+  mtlk_hw_t *hw = NULL;
+  unsigned band;
+  wave_hw_radio_band_cfg_t band_cfg;
   mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
   mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
-  wave_radio_t *radio = wave_vap_radio_get(mcore->vap_handle);
-  mtlk_hw_t *hw = mtlk_vap_get_hw(mcore->vap_handle);
-
+  char *band_to_string[] = { "5GHz", "2.4GHz", "6GHz", "none", "Dual_2.4_5.2", "Dual_2.4_6.0", "Dual_5.2_6.0", "none" };
   char *band_cfg_to_string[] =
     { "none",
       "single band",
@@ -7015,10 +7212,15 @@ _mtlk_df_ui_radio_cfg_read(mtlk_seq_entry_t *s, void *data)
 #endif
     };
 
-  char *band_to_string[] = { "5GHz", "2.4GHz", "6GHz", "none", "Dual_2.4_5.2", "Dual_2.4_6.0", "Dual_5.2_6.0", "none" };
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
 
-  unsigned band = WAVE_RADIO_PDB_GET_UINT(radio, PARAM_DB_RADIO_FREQ_BAND_CUR);
-  wave_hw_radio_band_cfg_t band_cfg = wave_hw_radio_band_cfg_get(hw);
+  radio = wave_vap_radio_get(mcore->vap_handle);
+  hw = mtlk_vap_get_hw(mcore->vap_handle);
+  band = WAVE_RADIO_PDB_GET_UINT(radio, PARAM_DB_RADIO_FREQ_BAND_CUR);
+  band_cfg = wave_hw_radio_band_cfg_get(hw);
 
   if (band >= MTLK_ARRAY_SIZE(band_to_string))
     return MTLK_ERR_UNKNOWN;
@@ -7150,14 +7352,28 @@ static int
 _mtlk_df_ui_calibration_read(mtlk_seq_entry_t *s, void *data)
 {
   /* FIXME some protection against core removal is needed */
+  unsigned i;
+  struct scan_support *ss = NULL;
+  struct channel_scan_support *loc_css = NULL;
+  mtlk_hw_band_e band;
   mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
   mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
-  struct scan_support *ss = mtlk_core_get_scan_support(mcore);
-  unsigned i;
-  mtlk_hw_band_e band = wave_radio_band_get(wave_vap_radio_get(mcore->vap_handle));
-  int num_chans = ((MTLK_HW_BAND_6_GHZ == band) ? NUM_TOTAL_CHANS_6G : NUM_TOTAL_CHANS);
-  struct channel_scan_support *loc_css = ((MTLK_HW_BAND_6_GHZ == band) ? ss->css_6g : ss->css);
+  int num_chans = 0;
 
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  ss = mtlk_core_get_scan_support(mcore);
+  if (!ss) {
+    ELOG_V("Scan support is NULL");
+    return MTLK_ERR_NO_ENTRY;
+  }
+
+  band = wave_radio_band_get(wave_vap_radio_get(mcore->vap_handle));
+  loc_css = ((MTLK_HW_BAND_6_GHZ == band) ? ss->css_6g : ss->css);
+  num_chans = ((MTLK_HW_BAND_6_GHZ == band) ? NUM_TOTAL_CHANS_6G : NUM_TOTAL_CHANS);
   mtlk_aux_seq_printf(s, "param_algomask:  0x%08x\n", ss->param_algomask);
   mtlk_aux_seq_printf(s, "param_oalgomask: 0x%08x\n", ss->param_oalgomask);
 
@@ -7176,7 +7392,14 @@ _mtlk_df_ui_hdkconfig_read(mtlk_seq_entry_t *s, void *data)
   /* FIXME some protection against core removal is needed */
   mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
   mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
-  UMI_HDK_CONFIG *chc = __wave_core_hdkconfig_get(mcore);
+  UMI_HDK_CONFIG *chc = NULL;
+
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  chc = __wave_core_hdkconfig_get(mcore);
 
   /* Config data are in MAC format */
   mtlk_aux_seq_printf(s, "calibrationBufferBaseAddress: 0x%08x\n", MAC_TO_HOST32(chc->calibrationBufferBaseAddress));
@@ -7427,16 +7650,34 @@ static int
 _mtlk_df_ui_scanrequest_read(mtlk_seq_entry_t *s, void *data)
 {
   /* FIXME some protection against core removal is needed */
+  int i;
+  mtlk_hw_band_e band;
+  int numchans = 0;
+  int numssids = 0;
+  mtlk_scan_support_t *ss = NULL;
+  struct mtlk_scan_request *req = NULL;
+  struct mtlk_channel *chan = NULL;
   mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
   mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
-  mtlk_scan_support_t *ss = mtlk_core_get_scan_support(mcore);
-  struct mtlk_scan_request *req = &ss->req;
-  int i;
-  mtlk_hw_band_e band = wave_radio_band_get(wave_vap_radio_get(mcore->vap_handle));
-  int numchans = ((MTLK_HW_BAND_6_GHZ == band) ? NUM_TOTAL_CHANS_6G : NUM_TOTAL_CHANS);
-  int numssids = MIN(req->n_ssids, MAX_SCAN_SSIDS);
 
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  band = wave_radio_band_get(wave_vap_radio_get(mcore->vap_handle));
+  numchans = ((MTLK_HW_BAND_6_GHZ == band) ? NUM_TOTAL_CHANS_6G : NUM_TOTAL_CHANS);
+
+  ss = mtlk_core_get_scan_support(mcore);
+  if (!ss) {
+    ELOG_V("Scan support is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  req = &ss->req;
   numchans = MIN(req->n_channels, numchans);
+  numssids = MIN(req->n_ssids, MAX_SCAN_SSIDS);
+
   mtlk_aux_seq_printf(s, "n_channels:     %u\n", req->n_channels);
   mtlk_aux_seq_printf(s, "flags:          0x%08x\n", req->flags);
   mtlk_aux_seq_printf(s, "rates:          0x%08x 0x%08x\n", req->rates[0], req->rates[1]);
@@ -7449,7 +7690,7 @@ _mtlk_df_ui_scanrequest_read(mtlk_seq_entry_t *s, void *data)
 
   for (i = 0; i < numchans; i++)
   {
-    struct mtlk_channel *chan = req->channels + i;
+    chan = req->channels + i;
     mtlk_aux_seq_printf(s, "%5u\t%4u\t%3u\t0x%06x\n", i, chan->center_freq,
                         ieee80211_frequency_to_channel(chan->center_freq), chan->flags);
   }
@@ -7466,13 +7707,26 @@ static int
 _mtlk_df_ui_scansupport_read(mtlk_seq_entry_t *s, void *data)
 {
   /* FIXME some protection against core removal is needed */
-  mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
-  mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
-  struct scan_support *ss = mtlk_core_get_scan_support(mcore);
   unsigned i;
   int num_chans = 0;
   struct channel_scan_support *loc_css = NULL;
-  mtlk_hw_band_e band = (mtlk_hw_band_e) ss->last_chan_band;
+  struct scan_support *ss = NULL;
+  mtlk_hw_band_e band;
+  mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
+  mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
+
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  ss = mtlk_core_get_scan_support(mcore);
+  if (!ss) {
+    ELOG_V("Scan support is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  band = (mtlk_hw_band_e) ss->last_chan_band;
 
   _mtlk_df_ui_print_chandef_info(s, "orig_chandef.", &ss->orig_chandef);
 
@@ -7523,13 +7777,28 @@ static int
 _mtlk_df_ui_survey_read(mtlk_seq_entry_t *s, void *data)
 {
   /* FIXME some protection against core removal is needed */
+  unsigned i;
+  mtlk_hw_band_e band;
+  unsigned num_surveys;
+  struct scan_support *ss = NULL;
+  struct channel_survey_support *csys = NULL;
   mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
   mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
-  struct scan_support *ss = mtlk_core_get_scan_support(mcore);
-  mtlk_hw_band_e band = wave_radio_band_get(wave_vap_radio_get(mcore->vap_handle));
-  unsigned num_surveys = ((MTLK_HW_BAND_6_GHZ == band) ? MAX_NUM_SURVEYS_6G : MAX_NUM_SURVEYS);
-  unsigned i;
-  struct channel_survey_support *csys = ((MTLK_HW_BAND_6_GHZ == band) ? ss->csys_6g : ss->csys);
+
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  ss = mtlk_core_get_scan_support(mcore);
+  if (!ss) {
+    ELOG_V("Scan support is NULL");
+    return MTLK_ERR_UNKNOWN;
+  }
+
+  band = wave_radio_band_get(wave_vap_radio_get(mcore->vap_handle));
+  num_surveys = ((MTLK_HW_BAND_6_GHZ == band) ? MAX_NUM_SURVEYS_6G : MAX_NUM_SURVEYS);
+  csys = ((MTLK_HW_BAND_6_GHZ == band) ? ss->csys_6g : ss->csys);
 
   num_surveys = MIN(ss->num_surveys, num_surveys);
   mtlk_aux_seq_printf(s, "num_surveys: %u\n", ss->num_surveys);
@@ -7710,6 +7979,603 @@ static int df_ui_wds_dbg(mtlk_seq_entry_t *s, void *v)
 }
 
 #endif /* CONFIG_WAVE_DEBUG */
+
+static const char *wave_mu_plan_type_to_str(uint8 plan_type)
+{
+  switch (plan_type) {
+    case WAVE_MU_PLAN_TYPE_DL_OFDMA: return "DL_OFDMA";
+    case WAVE_MU_PLAN_TYPE_DL_MIMO:  return "DL_MIMO";
+    case WAVE_MU_PLAN_TYPE_UL_OFDMA: return "UL_OFDMA";
+    case WAVE_MU_PLAN_TYPE_UL_MIMO:  return "UL_MIMO";
+    default:                         return "UNKNOWN";
+  }
+}
+
+/* Look up the MAC address of the STA whose SID matches `sid` by enumerating
+ * the STA DB clpb. Returns TRUE on success and writes the MAC into `out_str`
+ * (must be at least 18 bytes). On miss, writes "(unknown)" and returns FALSE. */
+static BOOL wave_mu_stats_sid_to_mac_str(mtlk_clpb_t *stadb_clpb, uint16 sid,
+                                         char *out_str, size_t out_size)
+{
+  mtlk_stadb_stat_t *stadb_stat;
+  uint32 size;
+
+  mtlk_clpb_enum_rewind(stadb_clpb);
+  while (NULL != (stadb_stat = mtlk_clpb_enum_get_next(stadb_clpb, &size))) {
+    if (sizeof(*stadb_stat) != size)
+      break;
+    if ((STAT_ID_STADB != stadb_stat->type) && (STAT_ID_HSTDB != stadb_stat->type))
+      continue;
+    if (stadb_stat->u.general_stat.sta_sid == sid) {
+      snprintf(out_str, out_size, MAC_PRINTF_FMT,
+               MAC_PRINTF_ARG(stadb_stat->u.general_stat.addr.au8Addr));
+      return TRUE;
+    }
+  }
+
+  wave_strcopy(out_str, "(unknown)", out_size);
+  return FALSE;
+}
+
+/* --------------------------------------------------------------------------
+ * MU statistics shared helpers
+ * -------------------------------------------------------------------------- */
+
+/* Fetch LA stats for a group without resetting them.
+ * Returns the stats pointer (or NULL on error) and stores the clipboard in
+ * *la_clpb_out so the caller can delete it after use. */
+static mtlk_wssa_drv_la_mu_he_eht_stats_t *
+wave_mu_la_stats_fetch(mtlk_df_t *df, uint32 group_id, mtlk_clpb_t **la_clpb_out)
+{
+  mtlk_wssa_drv_la_mu_he_eht_input_t la_input;
+  mtlk_wssa_drv_la_mu_he_eht_stats_t *la_stats;
+  mtlk_clpb_t *la_clpb = NULL;
+  uint32 la_size;
+  mtlk_error_t res;
+
+  la_input.group_id    = group_id;
+  la_input.reset_stats = LA_MU_HE_EHT_NO_RESET;
+  res = _mtlk_df_user_invoke_core(df, WAVE_CORE_REQ_GET_LA_MU_HE_EHT_STATS, &la_clpb,
+                                  &la_input, sizeof(la_input));
+  res = _mtlk_df_user_process_core_retval(res, la_clpb,
+                                          WAVE_CORE_REQ_GET_LA_MU_HE_EHT_STATS, FALSE);
+  if (MTLK_ERR_OK != res) {
+    *la_clpb_out = NULL;
+    return NULL;
+  }
+
+  la_stats = mtlk_clpb_enum_get_next(la_clpb, &la_size);
+  if (la_stats && la_size != sizeof(*la_stats))
+    la_stats = NULL;
+
+  *la_clpb_out = la_clpb;
+  return la_stats;
+}
+
+/* Count STAs with a valid SID in a group (used for OFDMA per-STA BW division). */
+static uint32
+wave_mu_count_stas(const UMI_DBG_HE_MU_GROUP_STATS *group)
+{
+  uint32 j, cnt = 0;
+
+  for (j = 0; j < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; j++) {
+    if (group->stationId[j] != INVALID_SID_FOR_HE_GROUP)
+      cnt++;
+  }
+  return cnt;
+}
+
+/* Locate the LA-stats slot for a given SID.
+ * PlanManager (group->stationId) and StatisticsManager (la_stats->{dl,ul}.staId)
+ * maintain independent slot orderings, so a SID at slot j in one is not
+ * necessarily at slot j in the other. Match by SID value.
+ * Returns the la_stats slot index, or -1 if not found / la_stats is NULL. */
+static int
+wave_mu_find_la_idx(const uint16 *staId_array, uint16 sid)
+{
+  uint32 k;
+
+  if (!staId_array)
+    return -1;
+
+  for (k = 0; k < MAX_STA_IN_GROUP; k++) {
+    if (staId_array[k] == sid)
+      return (int)k;
+  }
+  return -1;
+}
+
+/* --- per-column string formatters ---------------------------------------- */
+
+/* PHY Mbps is provided directly by FW statistics. */
+static void
+wave_mu_fmt_phy_mbps(BOOL valid, uint16 phyRate, char *out, size_t sz)
+{
+  if (valid) {
+    snprintf(out, sz, "%u", (unsigned)phyRate);
+  } else {
+    wave_strcopy(out, "-", sz);
+  }
+}
+
+/* FW provides dataRate in Kbps; display as Mbps with 0.001 precision. */
+static void
+wave_mu_fmt_data_mbps(BOOL valid, uint32 dataRate, char *out, size_t sz)
+{
+  if (valid) {
+    snprintf(out, sz, "%u.%03u", (unsigned)(dataRate / 1000u), (unsigned)(dataRate % 1000u));
+  } else
+    wave_strcopy(out, "-", sz);
+}
+
+/* Air Use percentage with 0.1% resolution.
+ * airUse is an accumulated delta in usec; 200,000 usec = 100% -> divide by 200
+ * to get tenths-of-percent, then print as "X.Y%". */
+static void
+wave_mu_fmt_air_use(BOOL valid, uint32 airUse, char *out, size_t sz)
+{
+  if (valid) {
+    uint32 pct_10 = airUse / 200;
+    snprintf(out, sz, "%u.%u%%", pct_10 / 10, pct_10 % 10);
+  } else {
+    wave_strcopy(out, "-", sz);
+  }
+}
+
+/* Data Use percentage with 0.1% resolution.
+ * FW accumulates dataUse in µs using the per-PPDU instantaneous PHY rate
+ * (rate-table lookup: currentPhyRate26RU * perUserBwMHz / 2).
+ * Same formula as airUse: tenths-of-percent = dataUse / 200. */
+static void
+wave_mu_fmt_data_use(BOOL valid, uint32 dataUse, char *out, size_t sz)
+{
+  if (valid) {
+    uint32 pct_10 = dataUse / 200;
+    snprintf(out, sz, "%u.%u%%", pct_10 / 10, pct_10 % 10);
+  } else {
+    wave_strcopy(out, "-", sz);
+  }
+}
+
+/* BW in MHz; for OFDMA groups divide equally among the STAs in the group. */
+static void
+wave_mu_fmt_bw(BOOL valid, uint8 muBw, BOOL is_ofdma, uint32 num_sta,
+               char *out, size_t sz)
+{
+  if (valid && muBw < BW_MAX_G7) {
+    uint16 bw_mhz = wave_mu_bw_to_mhz[muBw];
+    if (is_ofdma && num_sta > 0)
+      snprintf(out, sz, "%u", (unsigned)(bw_mhz / num_sta));
+    else
+      snprintf(out, sz, "%u", (unsigned)bw_mhz);
+  } else {
+    wave_strcopy(out, "-", sz);
+  }
+}
+
+/* MCS index from the lower nibble of muMcsNss. */
+static void
+wave_mu_fmt_mcs(BOOL valid, uint8 muMcsNss, char *out, size_t sz)
+{
+  if (valid)
+    snprintf(out, sz, "%u", (unsigned)(muMcsNss & 0x0Fu));
+  else
+    wave_strcopy(out, "-", sz);
+}
+
+/* NSS from the upper nibble of muMcsNss (0-based, +1 for human display). */
+static void
+wave_mu_fmt_nss(BOOL valid, uint8 muMcsNss, char *out, size_t sz)
+{
+  if (valid)
+    snprintf(out, sz, "%u", (unsigned)((muMcsNss & 0xF0u) >> 4) + 1u);
+  else
+    wave_strcopy(out, "-", sz);
+}
+
+/* Percentage of PPDUs of a given type: (numPpdus / totalPpdus) * 100. */
+static void
+wave_mu_fmt_ppdu_pct(BOOL valid, uint32 numPpdus, uint32 totalPpdus, char *out, size_t sz)
+{
+  if (valid && totalPpdus > 0)
+    snprintf(out, sz, "%u%%", numPpdus * 100u / totalPpdus);
+  else
+    wave_strcopy(out, "-", sz);
+}
+
+/* --------------------------------------------------------------------------
+ * DL and UL print functions
+ * -------------------------------------------------------------------------- */
+
+/* Last non-zero airUse/dataUse per group per STA slot.
+ * During SU_VALIDATION the FW does not update these stats (delta == 0);
+ * display the last non-zero sample instead. */
+static uint32 wave_mu_last_dl_air_use [HE_MU_MAX_NUM_OF_GROUPS][MAX_STA_IN_GROUP];
+static uint32 wave_mu_last_dl_data_use[HE_MU_MAX_NUM_OF_GROUPS][MAX_STA_IN_GROUP];
+static uint32 wave_mu_last_ul_air_use [HE_MU_MAX_NUM_OF_GROUPS][MAX_STA_IN_GROUP];
+static uint32 wave_mu_last_ul_data_use[HE_MU_MAX_NUM_OF_GROUPS][MAX_STA_IN_GROUP];
+
+/* Return TRUE when at least one STA in the group has no relevant MU PPDUs yet.
+ * DL/UL and OFDMA/MIMO are selected by the group plan type. */
+static BOOL wave_mu_group_has_sta_without_mu_ppdus(const UMI_DBG_HE_MU_GROUP_STATS *group,
+                                                   const mtlk_wssa_drv_la_mu_he_eht_stats_t *la_stats,
+                                                   BOOL is_dl)
+{
+  uint32 j;
+
+  if (!la_stats)
+    return TRUE;
+
+  for (j = 0; j < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; j++) {
+    uint16 sid = group->stationId[j];
+    int la_idx;
+
+    if (sid == INVALID_SID_FOR_HE_GROUP)
+      continue;
+
+    la_idx = is_dl ? wave_mu_find_la_idx(la_stats->dl.staId, sid)
+                   : wave_mu_find_la_idx(la_stats->ul.staId, sid);
+    if (la_idx < 0)
+      return TRUE;
+
+    if (is_dl) {
+      if (group->planType == WAVE_MU_PLAN_TYPE_DL_OFDMA) {
+        if (la_stats->dl.numOfOfdmaPpdus[la_idx] == 0)
+          return TRUE;
+      } else {
+        if (la_stats->dl.numOfMuMimoPpdus[la_idx] == 0)
+          return TRUE;
+      }
+    } else {
+      if (group->planType == WAVE_MU_PLAN_TYPE_UL_OFDMA) {
+        if (la_stats->ul.numOfOfdmaPpdus[la_idx] == 0)
+          return TRUE;
+      } else {
+        if (la_stats->ul.numOfMuMimoPpdus[la_idx] == 0)
+          return TRUE;
+      }
+    }
+  }
+
+  return FALSE;
+}
+
+/* Check if any STA has dataRate = 0 (statistics not yet updated).
+ * DataRate = 0 means less than 400ms has passed since group creation,
+ * so statistics are still not updated.
+ * Returns TRUE if any STA found with dataRate = 0. */
+static BOOL wave_mu_group_has_sta_with_zero_datarate(const UMI_DBG_HE_MU_GROUP_STATS *group,
+                                                     const mtlk_wssa_drv_la_mu_he_eht_stats_t *la_stats,
+                                                     BOOL is_dl)
+{
+  uint32 j;
+
+  if (!la_stats)
+    return FALSE;
+
+  for (j = 0; j < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; j++) {
+    uint16 sid = group->stationId[j];
+    int la_idx;
+
+    if (sid == INVALID_SID_FOR_HE_GROUP)
+      continue;
+
+    la_idx = is_dl ? wave_mu_find_la_idx(la_stats->dl.staId, sid)
+                   : wave_mu_find_la_idx(la_stats->ul.staId, sid);
+    if (la_idx >= 0) {
+      if (is_dl) {
+        if (la_stats->dl.dataRate[la_idx] == 0)
+          return TRUE;
+      } else {
+        if (la_stats->ul.dataRate[la_idx] == 0)
+          return TRUE;
+      }
+    }
+  }
+
+  return FALSE;
+}
+
+static BOOL wave_df_ui_mu_statistics_print_dl(mtlk_seq_entry_t *s, mtlk_df_t *df,
+                                              const UMI_DBG_HE_MU_GROUP_STATS *group,
+                                              mtlk_clpb_t *stadb_clpb)
+{
+  mtlk_clpb_t *la_clpb = NULL;
+  mtlk_wssa_drv_la_mu_he_eht_stats_t *la_stats;
+  uint32 num_sta_in_group;
+  uint32 j;
+
+  la_stats = wave_mu_la_stats_fetch(df, group->groupId, &la_clpb);
+  num_sta_in_group = wave_mu_count_stas(group);
+
+  if (wave_mu_group_has_sta_without_mu_ppdus(group, la_stats, TRUE)) {
+    if (la_clpb)
+      mtlk_clpb_delete(la_clpb);
+    return FALSE;
+  }
+
+  /* Skip printing if any STA has zero data rate */
+  if (wave_mu_group_has_sta_with_zero_datarate(group, la_stats, TRUE)) {
+    if (la_clpb)
+      mtlk_clpb_delete(la_clpb);
+    return FALSE;
+  }
+
+  mtlk_aux_seq_printf(s, "\ngroupId: %u\nType: %s\n",
+                      group->groupId, wave_mu_plan_type_to_str(group->planType));
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_DL_SEP);
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_DL_ROW_FMT,
+                      "Station Address", "PHY Mbps", "Data Mbps", "Air Use",
+                      "Data Use", "PER", "bw", "mcs", "Nss", "ofdma", "mu-mimo");
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_DL_SEP);
+
+  for (j = 0; j < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; j++) {
+    char mac_str[20], phy_mbps_str[12], data_mbps_str[12];
+    char air_use_str[12], data_use_str[12], per_str[8];
+    char bw_str[8], mcs_str[6], nss_str[6], ofdma_str[8], mimo_str[8];
+    uint16 sid = group->stationId[j];
+    int la_idx;
+    BOOL valid;
+
+    if (INVALID_SID_FOR_HE_GROUP == sid)
+      continue;
+
+    wave_mu_stats_sid_to_mac_str(stadb_clpb, sid, mac_str, sizeof(mac_str));
+
+    la_idx = la_stats ? wave_mu_find_la_idx(la_stats->dl.staId, sid) : -1;
+    valid  = (la_idx >= 0);
+
+    wave_mu_fmt_phy_mbps (valid, valid ? la_stats->dl.phyRate[la_idx]  : 0,
+                phy_mbps_str,  sizeof(phy_mbps_str));
+    wave_mu_fmt_data_mbps(valid, valid ? la_stats->dl.dataRate[la_idx] : 0,
+                          data_mbps_str, sizeof(data_mbps_str));
+    {
+      uint32 dl_air_use  = valid ? la_stats->dl.airUse[la_idx]  : 0;
+      uint32 dl_data_use = valid ? la_stats->dl.dataUse[la_idx] : 0;
+      if (valid && group->groupId < HE_MU_MAX_NUM_OF_GROUPS) {
+        if (dl_air_use != 0)
+          wave_mu_last_dl_air_use[group->groupId][la_idx] = dl_air_use;
+        else
+          dl_air_use = wave_mu_last_dl_air_use[group->groupId][la_idx];
+        if (dl_data_use != 0)
+          wave_mu_last_dl_data_use[group->groupId][la_idx] = dl_data_use;
+        else
+          dl_data_use = wave_mu_last_dl_data_use[group->groupId][la_idx];
+      }
+      wave_mu_fmt_air_use (valid, dl_air_use,  air_use_str,  sizeof(air_use_str));
+      wave_mu_fmt_data_use(valid, dl_data_use, data_use_str, sizeof(data_use_str));
+    }
+
+    if (valid)
+      snprintf(per_str, sizeof(per_str), "%u%%", (unsigned)la_stats->dl.muPER[la_idx]);
+    else
+      wave_strcopy(per_str, "-", sizeof(per_str));
+
+    wave_mu_fmt_bw      (valid, valid ? la_stats->dl.muBw[la_idx]            : BW_MAX_G7,
+                         group->planType == WAVE_MU_PLAN_TYPE_DL_OFDMA,
+                         num_sta_in_group, bw_str, sizeof(bw_str));
+    wave_mu_fmt_mcs     (valid, valid ? la_stats->dl.muMcsNss[la_idx]        : 0,
+                         mcs_str, sizeof(mcs_str));
+    wave_mu_fmt_nss     (valid, valid ? la_stats->dl.muMcsNss[la_idx]        : 0,
+                         nss_str, sizeof(nss_str));
+    wave_mu_fmt_ppdu_pct(valid, valid ? la_stats->dl.numOfOfdmaPpdus[la_idx] : 0,
+                                valid ? la_stats->dl.totalPpdus[la_idx]      : 0,
+                         ofdma_str, sizeof(ofdma_str));
+    wave_mu_fmt_ppdu_pct(valid, valid ? la_stats->dl.numOfMuMimoPpdus[la_idx]: 0,
+                                valid ? la_stats->dl.totalPpdus[la_idx]      : 0,
+                         mimo_str, sizeof(mimo_str));
+
+    mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_DL_ROW_FMT,
+                        mac_str, phy_mbps_str, data_mbps_str,
+                        air_use_str, data_use_str, per_str,
+                        bw_str, mcs_str, nss_str, ofdma_str, mimo_str);
+  }
+
+  if (la_clpb)
+    mtlk_clpb_delete(la_clpb);
+
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_DL_SEP);
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_DL_ROW_FMT,
+                      "(overall)", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-");
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_DL_SEP);
+
+  return TRUE;
+}
+
+static BOOL wave_df_ui_mu_statistics_print_ul(mtlk_seq_entry_t *s, mtlk_df_t *df,
+                                              const UMI_DBG_HE_MU_GROUP_STATS *group,
+                                              mtlk_clpb_t *stadb_clpb)
+{
+  mtlk_clpb_t *la_clpb = NULL;
+  mtlk_wssa_drv_la_mu_he_eht_stats_t *la_stats;
+  uint32 num_sta_in_group;
+  uint32 j;
+
+  la_stats = wave_mu_la_stats_fetch(df, group->groupId, &la_clpb);
+  num_sta_in_group = wave_mu_count_stas(group);
+
+  if (wave_mu_group_has_sta_without_mu_ppdus(group, la_stats, FALSE)) {
+    if (la_clpb)
+      mtlk_clpb_delete(la_clpb);
+    return FALSE;
+  }
+
+  /* Skip printing if any STA has zero data rate */
+  if (wave_mu_group_has_sta_with_zero_datarate(group, la_stats, FALSE)) {
+    if (la_clpb)
+      mtlk_clpb_delete(la_clpb);
+    return FALSE;
+  }
+
+  mtlk_aux_seq_printf(s, "\ngroupId: %u\nType: %s\n",
+                      group->groupId, wave_mu_plan_type_to_str(group->planType));
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_UL_SEP);
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_UL_ROW_FMT,
+                      "Station Address", "PHY Mbps", "Data Mbps", "Air Use",
+                      "Data Use", "bw", "mcs", "Nss", "ofdma", "mu-mimo");
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_UL_SEP);
+
+  for (j = 0; j < HE_MU_MAX_NUM_OF_USERS_PER_GROUP; j++) {
+    char mac_str[20], phy_mbps_str[12], data_mbps_str[12];
+    char air_use_str[12], data_use_str[12];
+    char bw_str[8], mcs_str[6], nss_str[6], ofdma_str[8], mimo_str[8];
+    uint16 sid = group->stationId[j];
+    int la_idx;
+    BOOL valid;
+
+    if (INVALID_SID_FOR_HE_GROUP == sid)
+      continue;
+
+    wave_mu_stats_sid_to_mac_str(stadb_clpb, sid, mac_str, sizeof(mac_str));
+
+    la_idx = la_stats ? wave_mu_find_la_idx(la_stats->ul.staId, sid) : -1;
+    valid  = (la_idx >= 0);
+
+    wave_mu_fmt_phy_mbps (valid, valid ? la_stats->ul.phyRate[la_idx]  : 0,
+                phy_mbps_str,  sizeof(phy_mbps_str));
+    wave_mu_fmt_data_mbps(valid, valid ? la_stats->ul.dataRate[la_idx] : 0,
+                          data_mbps_str, sizeof(data_mbps_str));
+    {
+      uint32 ul_air_use  = valid ? la_stats->ul.airUse[la_idx]  : 0;
+      uint32 ul_data_use = valid ? la_stats->ul.dataUse[la_idx] : 0;
+      if (valid && group->groupId < HE_MU_MAX_NUM_OF_GROUPS) {
+        if (ul_air_use != 0)
+          wave_mu_last_ul_air_use[group->groupId][la_idx] = ul_air_use;
+        else
+          ul_air_use = wave_mu_last_ul_air_use[group->groupId][la_idx];
+        if (ul_data_use != 0)
+          wave_mu_last_ul_data_use[group->groupId][la_idx] = ul_data_use;
+        else
+          ul_data_use = wave_mu_last_ul_data_use[group->groupId][la_idx];
+      }
+      wave_mu_fmt_air_use (valid, ul_air_use,  air_use_str,  sizeof(air_use_str));
+      wave_mu_fmt_data_use(valid, ul_data_use, data_use_str, sizeof(data_use_str));
+    }
+    wave_mu_fmt_bw      (valid, valid ? la_stats->ul.muBw[la_idx]            : BW_MAX_G7,
+                         group->planType == WAVE_MU_PLAN_TYPE_UL_OFDMA,
+                         num_sta_in_group, bw_str, sizeof(bw_str));
+    wave_mu_fmt_mcs     (valid, valid ? la_stats->ul.muMcsNss[la_idx]        : 0,
+                         mcs_str, sizeof(mcs_str));
+    wave_mu_fmt_nss     (valid, valid ? la_stats->ul.muMcsNss[la_idx]        : 0,
+                         nss_str, sizeof(nss_str));
+    wave_mu_fmt_ppdu_pct(valid, valid ? la_stats->ul.numOfOfdmaPpdus[la_idx] : 0,
+                                valid ? la_stats->ul.totalPpdus[la_idx]      : 0,
+                         ofdma_str, sizeof(ofdma_str));
+    wave_mu_fmt_ppdu_pct(valid, valid ? la_stats->ul.numOfMuMimoPpdus[la_idx]: 0,
+                                valid ? la_stats->ul.totalPpdus[la_idx]      : 0,
+                         mimo_str, sizeof(mimo_str));
+
+    mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_UL_ROW_FMT,
+                        mac_str, phy_mbps_str, data_mbps_str,
+                        air_use_str, data_use_str,
+                        bw_str, mcs_str, nss_str, ofdma_str, mimo_str);
+  }
+
+  if (la_clpb)
+    mtlk_clpb_delete(la_clpb);
+
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_UL_SEP);
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_UL_ROW_FMT,
+                      "(overall)", "-", "-", "-", "-", "-", "-", "-", "-", "-");
+  mtlk_aux_seq_printf(s, WAVE_MU_STATS_TABLE_UL_SEP);
+
+  return TRUE;
+}
+
+static BOOL wave_df_ui_mu_statistics_print(mtlk_seq_entry_t *s, mtlk_df_t *df,
+                                           UMI_DBG_HE_MU_GROUP_STATS *mu_groups, uint8 vapid,
+                                           mtlk_clpb_t *stadb_clpb)
+{
+  uint32 i;
+  BOOL printed_any = FALSE;
+
+  for (i = 0; i < HE_MU_MAX_NUM_OF_GROUPS; i++) {
+    const UMI_DBG_HE_MU_GROUP_STATS *group = &mu_groups[i];
+
+    if (group->vapId != vapid)
+      continue;
+    if (HE_MU_GROUP_SET != group->setReset)
+      continue;
+
+    if (WAVE_MU_PLAN_TYPE_IS_DL(group->planType)) {
+      if (wave_df_ui_mu_statistics_print_dl(s, df, group, stadb_clpb))
+        printed_any = TRUE;
+    } else {
+      if (wave_df_ui_mu_statistics_print_ul(s, df, group, stadb_clpb))
+        printed_any = TRUE;
+    }
+  }
+
+  return printed_any;
+}
+
+static int wave_df_ui_mu_statistics(mtlk_seq_entry_t *s, void *data)
+{
+  mtlk_clpb_t *clpb = NULL;
+  mtlk_clpb_t *stadb_clpb = NULL;
+  mtlk_df_t *df = mtlk_df_proc_seq_entry_get_df(s);
+  mtlk_core_ui_get_stadb_status_req_t get_stadb_status_req = {0};
+  mtlk_error_t res = MTLK_ERR_OK;
+  uint32 size;
+  uint32 i;
+  BOOL printed_any;
+  uint8 vapid;
+  BOOL has_groups = FALSE;
+
+  UMI_DBG_HE_MU_GROUP_STATS UmiDbgMuGroupStats[HE_MU_MAX_NUM_OF_GROUPS] = {0};
+  UMI_DBG_HE_MU_GROUP_STATS *group_stats_clpb = NULL;
+
+  vapid = mtlk_vap_get_id_fw(mtlk_df_get_vap_handle(df));
+
+  /* 1. Get MU group plan from FW. */
+  res = _mtlk_df_user_invoke_core(mtlk_df_user_get_master_df(mtlk_df_get_user(df)),
+                                  WAVE_RADIO_REQ_GET_MU_GROUP_PLAN, &clpb, NULL, 0);
+  res = _mtlk_df_user_process_core_retval(res, clpb, WAVE_RADIO_REQ_GET_MU_GROUP_PLAN, FALSE);
+  if (MTLK_ERR_OK != res)
+    goto err_ret;
+
+  group_stats_clpb = mtlk_clpb_enum_get_next(clpb, &size);
+  MTLK_CLPB_TRY_EX(group_stats_clpb, size, sizeof(UmiDbgMuGroupStats))
+    wave_memcpy(&UmiDbgMuGroupStats[0], sizeof(UmiDbgMuGroupStats), group_stats_clpb, size);
+  MTLK_CLPB_FINALLY(res)
+    mtlk_clpb_delete(clpb);
+  MTLK_CLPB_END
+
+  /* 2. Check if any group belongs to this VAP. */
+  for (i = 0; i < HE_MU_MAX_NUM_OF_GROUPS; i++) {
+    if (UmiDbgMuGroupStats[i].vapId == vapid &&
+        HE_MU_GROUP_SET == UmiDbgMuGroupStats[i].setReset) {
+      has_groups = TRUE;
+      break;
+    }
+  }
+
+  if (!has_groups) {
+    mtlk_aux_seq_printf(s, "There are no MU groups\n");
+    goto err_ret;
+  }
+
+  /* 3. Get STA DB so we can resolve SID -> MAC. */
+  get_stadb_status_req.get_hostdb = FALSE;
+  get_stadb_status_req.use_cipher = FALSE;
+#ifdef BEST_EFFORT_TID_SPREADING
+  get_stadb_status_req.get_str_sta_tid_spread_cfg = FALSE;
+#endif
+  res = _mtlk_df_user_invoke_core(df, WAVE_CORE_REQ_GET_STADB_STATUS, &stadb_clpb,
+                                  &get_stadb_status_req, sizeof(get_stadb_status_req));
+  res = _mtlk_df_user_process_core_retval_void(res, stadb_clpb, WAVE_CORE_REQ_GET_STADB_STATUS, FALSE);
+  if (MTLK_ERR_OK != res)
+    goto err_ret;
+
+  printed_any = wave_df_ui_mu_statistics_print(s, df, UmiDbgMuGroupStats, vapid, stadb_clpb);
+  if (!printed_any)
+    mtlk_aux_seq_printf(s, "There are no MU groups\n");
+
+  mtlk_clpb_delete(stadb_clpb);
+
+err_ret:
+  return _mtlk_df_mtlk_to_linux_error_code(res);
+}
 
 static int mtlk_df_ui_he_mu_dump(mtlk_seq_entry_t *s, void *data)
 {
@@ -7922,17 +8788,22 @@ err_ret:
 static int __wave_df_ui_mgmt_tx (struct file *file, const char __user *buffer,
   unsigned long count, void *data, BOOL is_mngmnt, BOOL debug)
 {
-  mtlk_df_t *df = mtlk_df_proc_entry_get_df(data);
-  mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
-  mtlk_vap_handle_t vap_handle = mtlk_df_get_vap_handle(df);
-  struct mtlk_chan_def cd;
-  mtlk_clpb_t *clpb = NULL;
-  char *input = NULL, *pkt = NULL;
-  struct mgmt_tx_params mtp;
   uint64 cookie;
   int res;
   unsigned frame_ctrl, subtype;
   size_t len;
+  struct mtlk_chan_def cd;
+  struct mgmt_tx_params mtp;
+  mtlk_clpb_t *clpb = NULL;
+  char *input = NULL, *pkt = NULL;
+  mtlk_df_t *df = mtlk_df_proc_entry_get_df(data);
+  mtlk_vap_handle_t vap_handle = mtlk_df_get_vap_handle(df);
+  mtlk_core_t *mcore = mtlk_vap_manager_get_master_core(mtlk_df_get_vap_manager(df));
+
+  if (!mcore) {
+    ELOG_V("Master core is NULL");
+    return -EINVAL;
+  }
 
   MTLK_UNREFERENCED_PARAM(vap_handle); /* used for logger only - silent build support */
 
@@ -8368,6 +9239,7 @@ static struct _proc_file_info _proc_files_list[] =
   { "ml_str_sta_tid_spread_cfg", _DEBUG_, _wave_df_ui_ml_str_sta_tid_spread_cfg, NULL },
 #endif
   { "he_mu_groups",       _NODBG_,  mtlk_df_ui_he_mu_dump         , NULL },
+  { "mu_statistics",      _NODBG_,  wave_df_ui_mu_statistics       , NULL },
 #ifdef CONFIG_WAVE_DEBUG
   { "calibration",        _DEBUG_, _mtlk_df_ui_calibration_read   , NULL },
   { "hdk_config",         _DEBUG_, _mtlk_df_ui_hdkconfig_read     , NULL },
@@ -8665,6 +9537,16 @@ mtlk_df_user_create (mtlk_df_t *df, const char *name, struct net_device *ndev_p,
   /* set "secondary" flag */
   df_user->is_secondary_df = is_secondary;
 
+  /* backhaul_sta is only ever bound on secondary df_users (see
+   * mtlk_vap_manager.c), but init the lock unconditionally here rather than
+   * inside _mtlk_df_user_init()'s primary-only MTLK_INIT_TRY block, since
+   * that block (and its slow_ctx allocation) is skipped for secondary df
+   * users. */
+  if (MTLK_ERR_OK != mtlk_osal_lock_init(&df_user->backhaul_sta_lock)) {
+    ELOG_S("%s: failed to init backhaul_sta_lock", name);
+    goto free_ndev;
+  }
+
 #if defined(CONFIG_WAVE_DEBUG) && defined(CONFIG_WIRELESS_EXT)
   if (ndev_p && !df_user->is_secondary_df) {
     /* Configure bcl iwpriv handlers */
@@ -8677,6 +9559,7 @@ mtlk_df_user_create (mtlk_df_t *df, const char *name, struct net_device *ndev_p,
                                 !wave_radio_get_is_zwdfs_radio(wave_vap_radio_get(vap_handle));
 
   if (MTLK_ERR_OK != _mtlk_df_user_init(df_user, name)) {
+    mtlk_osal_lock_cleanup(&df_user->backhaul_sta_lock);
     goto free_ndev;
   }
 
@@ -8693,6 +9576,7 @@ void
 mtlk_df_user_delete (mtlk_df_user_t* df_user)
 {
   _mtlk_df_user_cleanup(df_user);
+  mtlk_osal_lock_cleanup(&df_user->backhaul_sta_lock);
   mtlk_osal_mem_free (df_user);
 }
 
@@ -9840,6 +10724,11 @@ mtlk_df_user_dcdp_remove_mac_addr(mtlk_df_t *df, const uint8 *mac_addr)
     MTLK_ASSERT(NULL != df);
     MTLK_ASSERT(NULL != mac_addr);
 
+    if (__UNLIKELY(NULL == df)) {
+      /* Secondary VAP is gone - nothing to remove from switch MAC table */
+      return;
+    }
+
     if (MTLK_ERR_OK != mtlk_df_ui_dp_disconnect_mac(df, mac_addr)) {
       ILOG1_DY("CID-%04x: [DC DP] - station %Y removal error",
               mtlk_vap_get_oid(mtlk_df_get_vap_handle(df)), mac_addr);
@@ -10093,7 +10982,14 @@ mtlk_df_mcast_notify_sta_connected (mtlk_df_t *df)
 {
 #if MTLK_USE_DIRECTCONNECT_DP_API && defined(DC_DP_F_MC_NEW_STA)
   /* Notify mcast helper when new STA was connected. This event will force host to send IGMP query to all STAs */
-  mtlk_df_user_t* df_user = mtlk_df_get_user(df);
+  mtlk_df_user_t* df_user;
+
+  if (__UNLIKELY(NULL == df)) {
+    /* Secondary VAP is gone - nothing to notify */
+    return MTLK_ERR_OK;
+  }
+
+  df_user = mtlk_df_get_user(df);
   if (df_user->dcdp.mcast_registered == TRUE) {
     struct net_device *ndev = mtlk_df_user_get_ndev(df_user);
     if (DC_DP_FAILURE == dc_dp_register_mcast_module(ndev, THIS_MODULE, NULL, DC_DP_F_MC_NEW_STA)) {
@@ -10198,7 +11094,7 @@ mtlk_df_dcdp_handle_frag_wa_ring (mtlk_dcdp_dev_t *dp_dev)
 }
 
 static int __INLINE
-_mtlk_df_ui_dp_xmit (struct net_device *ndev, mtlk_core_handle_tx_data_t *data, struct dp_subif *tx_subif)
+_mtlk_df_ui_dp_xmit (struct net_device *ndev, mtlk_core_handle_tx_data_t *data, mtlk_dp_subif_t *tx_subif)
 {
   int res;
   int32 wmm_class;
@@ -10231,7 +11127,7 @@ mtlk_df_ui_dp_prepare_and_xmit (mtlk_vap_handle_t vap_handle, mtlk_core_handle_t
     int32 port_id = wave_vap_dcdp_port_get(vap_handle);
     uint8 vap_id  = data->vap_id;
     mtlk_nbuf_t *nbuf = data->nbuf;
-    struct dp_subif tx_subif;
+    mtlk_dp_subif_t tx_subif;
     struct dc_dp_subif dc_dp_subif;
 
     if (wds) nbuf_flags &= ~MTLK_NBUFF_BROADCAST;
@@ -10302,8 +11198,26 @@ mtlk_df_ui_dp_prepare_and_xmit (mtlk_vap_handle_t vap_handle, mtlk_core_handle_t
       }
     }
 
-    return _mtlk_df_ui_dp_xmit(mtlk_df_user_get_ndev(mtlk_df_get_user(mtlk_vap_get_secondary_df(vap_handle, vap_id))),
-                               data, &tx_subif);
+    {
+      /* This is the TX hot path (ndo_start_xmit), genuinely concurrent
+       * with control-plane secondary-VAP teardown - use the refcounted
+       * accessor, not mtlk_vap_get_secondary_df(), so the df can't be
+       * freed out from under us between the get and the xmit call. */
+      mtlk_df_t *secondary_df = mtlk_vap_get_secondary_df_ref(vap_handle, vap_id);
+      int res;
+
+      if (__UNLIKELY(NULL == secondary_df)) {
+        /* Secondary VAP was torn down concurrently (e.g. VAP disable/unbind) -
+           drop the packet instead of dereferencing a gone df/df_user */
+        ELOG_D("Secondary df for vap_id %d is gone, dropping packet", vap_id);
+        return MTLK_ERR_UNKNOWN;
+      }
+
+      res = _mtlk_df_ui_dp_xmit(mtlk_df_user_get_ndev(mtlk_df_get_user(secondary_df)),
+                                 data, &tx_subif);
+      mtlk_df_decref(secondary_df);
+      return res;
+    }
 }
 /**************************************************************************************************************************/
 /*! \brief   Get Meta-SubInterface Integer Identifier (e.g. Station Id) callback. Mostly applicable to DC WLAN peripheral only.
@@ -10556,7 +11470,7 @@ _mtlk_df_dcdp_get_dev_specific_desc_info_cb (
  *   send packet to accelerator - Valid for LitePath Rx case only.
  */
 static int
-_mtlk_df_dcdp_rx_cb (struct net_device *rxif, struct net_device *txif, struct dp_subif *rx_subif, struct sk_buff **pskb, int32_t len, uint32_t flags)
+_mtlk_df_dcdp_rx_cb (struct net_device *rxif, struct net_device *txif, mtlk_dp_subif_t *rx_subif, struct sk_buff **pskb, int32_t len, uint32_t flags)
 {
   int res;
 
@@ -10720,8 +11634,8 @@ static void
 _mtlk_df_dcdp_print_hwcap (const char *msg, uint32 hw_cap)
 {
 #if (IWLWAV_RTLOG_MAX_DLEVEL >= 2)
+  char buf[128] = "";
   #if DC_DP_API_VERSION_CODE >= DC_DP_API_VERSION(4,0,0)
-  char buf[384] = "";
   if (hw_cap & DC_DP_F_HOST_CAP_SG)
     strlcat(buf, "SG|", sizeof(buf));
   if (hw_cap & DC_DP_F_HOST_CAP_IP_CSUM)
@@ -10762,8 +11676,11 @@ _mtlk_df_dcdp_print_hwcap (const char *msg, uint32 hw_cap)
     strlcat(buf, "FRAG_EXCEPT|", sizeof(buf));
   if (hw_cap & DC_DP_F_HOST_CAP_DESC_2DW)
     strlcat(buf, "DESC_2DW|", sizeof(buf));
+  #if DC_DP_API_VERSION_CODE >= DC_DP_API_VERSION(5,2,0)
+  if (hw_cap & DC_DP_F_HOST_CAP_L4S)
+    strlcat(buf, "L4S|", sizeof(buf));
+  #endif /* DC_DP_API_VERSION_CODE >= 5,2,0 */
   #else
-  char buf[128] = "";
   if (hw_cap & DC_DP_F_CAP_TX_FCS)
     strlcat(buf, "TX_FCS|", sizeof(buf));
   if (hw_cap & DC_DP_F_CAP_RX_FCS)
@@ -10776,7 +11693,7 @@ _mtlk_df_dcdp_print_hwcap (const char *msg, uint32 hw_cap)
     strlcat(buf, "LRO|", sizeof(buf));
   if (hw_cap & DC_DP_F_CAP_FRAG_EXCEPT)
     strlcat(buf, "FRAG_EXCEPT|", sizeof(buf));
-  #endif /* DC_DP_API_VERSION_CODE */
+  #endif /* DC_DP_API_VERSION_CODE >= 4,0,0 */
 
   if (buf[0]) {
     size_t len = wave_strlen(buf, sizeof(buf)-1);
@@ -10798,16 +11715,11 @@ _mtlk_df_dcdp_fastpath_dcmode (enum dc_dp_mode_type dc_mode)
       return "MODE_0";
     case DC_DP_MODE_TYPE_1:
       return "MODE_1";
-#ifdef WAVE_DCDP_LGM_FLM_SUPPORTED
+#if defined (WAVE_DCDP_LGM_FLM_SUPPORTED) || defined (WAVE_DCDP_TOPAZ_SUPPORTED)
     case DC_DP_MODE_TYPE_0_EXT:
       return "MODE_0_EXT";
-#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
-    case DC_DP_MODE_TYPE_1_EXT:
-      return "MODE_1_EXT_TOPAZ";
-#else
     case DC_DP_MODE_TYPE_1_EXT:
       return "MODE_1_EXT";
-#endif
 #endif
     default:
       return "Unknown";
@@ -10967,15 +11879,22 @@ mtlk_df_dcdp_datapath_dev_init (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev)
 #ifdef WAVE_DCDP_LGM_FLM_SUPPORTED
       case DC_DP_MODE_TYPE_0_EXT:
         dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_3; break;
+      case DC_DP_MODE_TYPE_1_EXT:
 #ifdef WAVE_DCDP_TOPAZ_SUPPORTED
-      case DC_DP_MODE_TYPE_1_EXT:
-        dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_5; break; // TODO: add topaz l4s
+        dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_5; break;
 #else
-      case DC_DP_MODE_TYPE_1_EXT:
         dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_2; break;
-#endif
-#endif
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
+#endif /* WAVE_DCDP_LGM_FLM_SUPPORTED */
+      default:
+        ELOG_D("Unsupported DC mode:%u", dp_dev->dp_cap.fastpath.hw_dcmode); break;
     }
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+    if (!mtlk_mmb_drv_get_disable_l4s_param() && wave_mmb_dcdp_topaz_l4s_capable(hw)) {
+        ILOG1_V("Activate L4S Support!");
+        dp_dev->fw_datapath_mode = DATA_PATH_MODE_DC_MODE_6;
+    }
+#endif
   }
 }
 
@@ -11077,9 +11996,10 @@ static uint32 _wave_hw_num_radios(mtlk_hw_t *hw)
 #endif
   return num_radios;
 }
+
+/* Register and initialize datapath device */
 int __MTLK_IFUNC
 mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk_dcdp_init_info_t *dp_init /*, BOOL is_recovery*/)
-/* Register and initialize datapath device */
 {
   int res = MTLK_ERR_OK;
   uint8                   dev_port;
@@ -11096,6 +12016,15 @@ mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk
 
 #ifdef MTLK_LGM_PLATFORM_FPGA
   ILOG0_V("MTLK_LGM_PLATFORM_FPGA: use single port/single band");
+#endif
+#ifdef MTLK_TOPAZ_PLATFORM_FPGA
+  if (mtlk_mmb_fastpath_available(hw) == FALSE) {
+    ILOG0_V("MTLK_TOPAZ_PLATFORM_FPGA: use internal SW path");
+    mtlk_df_dcdp_release_buflist(dp_dev);
+    dp_dev->dp_mode = MTLK_DC_DP_MODE_UNREGISTERED;
+    dp_dev->dp_port_flags = 0;
+    return MTLK_ERR_OK;
+  }
 #endif
 
   num_radios = _wave_hw_num_radios(hw);
@@ -11203,10 +12132,9 @@ mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk
     dp_dev->dp_resources.tx_num_bufs_req = MIN(dp_dev->dp_config.tx_bufs, dp_init->num_of_pds);
 #endif
 
-    if (wave_mmb_dcdp_4umt_cntr_mode(hw))
+    dp_dev->dp_resources.num_dccntr = MTLK_DCDP_DCCNTR_NUM; /* Default number of DC counters. */
+    if (wave_mmb_dcdp_4umt_lgm_cntr_mode(hw))
       dp_dev->dp_resources.num_dccntr = MTLK_DCDP_DCCNTR_NUM_4UMT;
-    else
-      dp_dev->dp_resources.num_dccntr = MTLK_DCDP_DCCNTR_NUM; /* Number of DC counters. For WAVE500 it is 1 always */
     dp_dev->dp_resources.dccntr = dp_dev->dp_dccntr; /* assign static array */
     memset(dp_dev->dp_resources.dccntr, 0, dp_dev->dp_resources.num_dccntr * sizeof(struct dc_dp_dccntr));
     TRACE_PARAM_INT(dp_dev->dp_resources.num_bufs_req);
@@ -11262,8 +12190,6 @@ mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk
     dp_dev->dp_resources.dccntr[0].dev2soc_deq_dccntr_len     = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
     dp_dev->dp_resources.dccntr[0].dev2soc_ret_enq_dccntr_len = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
 
-    // TODO: Request L4S if supported by DCDP
-
     if (MTLK_DC_DP_CNTR_MODE_BIG_ENDIAN == dp_init->cntr_mode) {
       ILOG1_V("Setup BIG-ENDIAN counters");
       dp_dev->dp_resources.dccntr[0].soc_write_dccntr_mode    |= DC_DP_F_DCCNTR_MODE_BIG_ENDIAN;
@@ -11283,12 +12209,26 @@ mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk
     dp_dev->dp_resources.dccntr[0].dev2soc_deq_phys_base     = dp_init->dccntr[0].dev2soc_deq_phys_base;
     dp_dev->dp_resources.dccntr[0].dev2soc_deq_base          = dp_init->dccntr[0].dev2soc_deq_base;
 
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+    if (wave_mmb_dcdp_4umt_topaz(hw)) {
+      ILOG0_V("TOPAZ: 4UMT init");
+      dp_dev->dp_resources.dccntr[0].soc_write_dccntr_mode     |= DC_DP_F_DCCNTR_MODE_4MSG_MODE;
+      dp_dev->dp_resources.dccntr[0].dev_write_dccntr_mode     |= DC_DP_F_DCCNTR_MODE_INCREMENTAL;
+      dp_dev->dp_resources.dccntr[0].dev_write_dccntr_mode     |= DC_DP_F_DCCNTR_MODE_LITTLE_ENDIAN;
+      dp_dev->dp_resources.dccntr[0].dev_write_dccntr_mode     |= DC_DP_F_DCCNTR_MODE_4MSG_MODE;
+      dp_dev->dp_resources.dccntr[0].dev2soc_enq_dccntr_len     = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
+      dp_dev->dp_resources.dccntr[0].soc2dev_ret_enq_dccntr_len = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
+      dp_dev->dp_resources.dccntr[0].dev2soc_ret_deq_dccntr_len = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
+      dp_dev->dp_resources.dccntr[0].soc2dev_deq_dccntr_len     = MTLK_DCDP_DCCNTR_SIZE * MTLK_DCDP_DCCNTR_LENGTH;
+    }
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
+
     if (is_gen7_hw) {
       dp_dev->dp_resources.dccntr[0].dev2soc_dccntr_timer    = 10; //10usec: UMT message interval
     }
 
 #ifdef WAVE_DCDP_4UMT_SUPPORTED
-    if (wave_mmb_dcdp_4umt_cntr_mode(hw)) {
+    if (wave_mmb_dcdp_4umt_lgm_cntr_mode(hw)) {
        dp_dev->dp_resources.dccntr[1] = dp_dev->dp_resources.dccntr[0];
        dp_dev->dp_resources.dccntr[1].soc_write_dccntr_mode     |= DC_DP_F_DCCNTR_MODE_4MSG_MODE;
 
@@ -11369,6 +12309,7 @@ mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk
     /* prepare dp_devspec structure:
     dev_name      - [in] Netdevice Name string
     dev_ctx       - [in] Private device context
+    dev_cap_req   - [in] Peripheral Requirements & Capability
     */
     for (i=0; i < num_radios; i++) {
       if (wave_radio_is_zwdfs_gen6_d2(wave_hw_radio_get(hw, i))) {
@@ -11377,8 +12318,17 @@ mtlk_df_dcdp_datapath_dev_register (mtlk_hw_t *hw, mtlk_dcdp_dev_t *dp_dev, mtlk
       dcdp_reg_flag = DC_DP_F_QOS;
       wave_strcopy(dp_dev->dp_devspec[i].dev_name, dp_dev->dp_ndev[i]->name, sizeof(dp_dev->dp_devspec[i].dev_name));
       dp_dev->dp_devspec[i].dev_ctx = NULL;
+#ifdef WAVE_DCDP_TOPAZ_SUPPORTED
+      dp_dev->dp_devspec[i].dev_cap_req &= ~DC_DP_F_DEV_REQ_L4S_EN;
+      if (dp_dev->fw_datapath_mode == DATA_PATH_MODE_DC_MODE_6) {
+        dp_dev->dp_devspec[i].dev_cap_req |= DC_DP_F_DEV_REQ_L4S_EN;
+      }
+#endif /* WAVE_DCDP_TOPAZ_SUPPORTED */
       TRACE_PARAM_STR(dp_dev->dp_devspec[i].dev_name);
       TRACE_PARAM_PTR(dp_dev->dp_devspec[i].dev_ctx);
+#if DC_DP_API_VERSION_CODE >= DC_DP_API_VERSION(5,2,0)
+      TRACE_PARAM_INT(dp_dev->dp_devspec[i].dev_cap_req);
+#endif /* DC_DP_API_VERSION_CODE >= 5,2,0 */
       if((i > 0) && (flags & DC_DP_F_FASTPATH) && (!zwdfs)) {
         /* DC_DP_F_SHARED_RES to be set for radios(idx > 0) for FastPath */
         dcdp_reg_flag |= DC_DP_F_SHARED_RES;

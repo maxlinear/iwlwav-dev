@@ -68,6 +68,44 @@ int mtlk_df_start(mtlk_df_t *df);
 */
 void mtlk_df_stop(mtlk_df_t *df);
 
+/*! \fn      int mtlk_df_incref(mtlk_df_t *df)
+
+    \brief   Takes a reference on the DF object. Safe to call on a DF
+             obtained under mtlk_vap_get_secondary_df_ref() while the
+             object may be concurrently torn down by another context -
+             the caller is guaranteed the object stays valid until it
+             calls mtlk_df_decref().
+
+    \param   df          DF object
+*/
+int mtlk_df_incref(mtlk_df_t *df);
+
+/*! \fn      void mtlk_df_decref(mtlk_df_t *df)
+
+    \brief   Releases a reference taken by mtlk_df_incref() /
+             mtlk_vap_get_secondary_df_ref(). Must be called exactly once
+             for every successful get. Does NOT free the DF object - only
+             the teardown path (which owns the object) does that, after
+             waiting for all outstanding references to be released.
+
+    \param   df          DF object
+*/
+void mtlk_df_decref(mtlk_df_t *df);
+
+/*! \fn      void mtlk_df_wait_unref(mtlk_df_t *df)
+
+    \brief   Teardown-only: waits (with a bounded timeout) for all
+             references taken via mtlk_df_incref() / mtlk_vap_get_secondary_df_ref()
+             to be released, so it is safe to mtlk_df_delete() the object
+             afterwards. Caller must have already made the object
+             unreachable to new readers (e.g. cleared it out of
+             vap_info->secondary_dfs[] under the array's lock) and dropped
+             its own reference via mtlk_df_decref() before calling this.
+
+    \param   df          DF object
+*/
+void mtlk_df_wait_unref(mtlk_df_t *df);
+
 mtlk_vap_manager_t*
 mtlk_df_get_vap_manager(const mtlk_df_t* df);
 

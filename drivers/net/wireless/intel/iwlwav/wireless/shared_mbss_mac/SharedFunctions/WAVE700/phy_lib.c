@@ -46,6 +46,11 @@
 
 uint32 gDbgDfsWritten = 0;	// ROBERT_DEBUG
 
+// WAVE700 ZWDFS eventType mapping (new radar HW):
+// bit0=unknown(0), bit1=packet(1), bit2=adjacent(2), bit3=radar(3)
+// 0xA => enable packet + radar, disable unknown + adjacent.
+#define ZWDFS_EVENTS_RAM_VERBOSITY_PACKET_AND_RADAR   (0xA)
+
 void PHY_SECURE_WRITE()
 {
 	PHY_WRITE_REG(REG_EMERALD_ENV_SECURE_WRITE, 0, 0xaaaa);
@@ -977,7 +982,7 @@ void PHY_SET_RX_DFS(uint8 isRadarEnabled, uint32 freq, uint8 u8SpectrumMode)
 
 		RxPhyDfsReg0C7.bitFields.pmEventsRamMode = 1;  		// Set RAM mode to 1 (128 words for all subbands)
 //		RxPhyDfsReg0C7.bitFields.pmEventsRamVerbosity = 0xF; 	// enable all types for report
-		RxPhyDfsReg0C7.bitFields.pmEventsRamVerbosity = 0x8; 	// enable only type radar
+		RxPhyDfsReg0C7.bitFields.pmEventsRamVerbosity = ZWDFS_EVENTS_RAM_VERBOSITY_PACKET_AND_RADAR;
 
 		PHY_WRITE_REG(REG_DFS_PHY_RXTD_ANT_PHY_RXTD_ANT_REG50, 0, RxPhyDfsAntReg50.val);
 		PHY_WRITE_REG(REG_DFS_PHY_RX_TD_PHY_RXTD_REG05,0, RxPhyDfsReg05.val);
@@ -1025,7 +1030,7 @@ void PhyConfigureAndDisableDfsHw(uint32 freq, uint8 u8SpectrumMode)
 
 	RxPhyDfsReg0C7.bitFields.pmEventsRamMode = 1;  		// Set RAM mode to 1 (128 words for all subbands)
 //		RxPhyDfsReg0C7.bitFields.pmEventsRamVerbosity = 0xF; 	// enable all types for report
-	RxPhyDfsReg0C7.bitFields.pmEventsRamVerbosity = 0x8; 	// enable only type radar
+	RxPhyDfsReg0C7.bitFields.pmEventsRamVerbosity = ZWDFS_EVENTS_RAM_VERBOSITY_PACKET_AND_RADAR;
 
 	PHY_WRITE_REG(REG_DFS_PHY_RXTD_ANT_PHY_RXTD_ANT_REG50, 0, RxPhyDfsAntReg50.val);
 	PHY_WRITE_REG(REG_DFS_PHY_RX_TD_PHY_RXTD_REG05,0, RxPhyDfsReg05.val);

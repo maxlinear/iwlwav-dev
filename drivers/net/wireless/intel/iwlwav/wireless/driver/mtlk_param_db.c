@@ -36,6 +36,25 @@ MTLK_INIT_STEPS_LIST_BEGIN(param_db)
 MTLK_INIT_INNER_STEPS_BEGIN(param_db)
 MTLK_INIT_STEPS_LIST_END(param_db);
 
+static const char * const _wave_pdb_id_names[] = {
+#define PDB_ID(id)          [id] = #id,
+#define PDB_ID_VAL(id, val) [id] = #id,
+#include "core_pdb_ids.h"
+#include "radio_pdb_ids.h"
+#undef PDB_ID
+#undef PDB_ID_VAL
+};
+
+static __INLINE const char *_wave_pdb_id_name(uint32 id)
+{
+  MTLK_STATIC_ASSERT(ARRAY_SIZE(_wave_pdb_id_names) == PARAM_DB_RADIO_LAST_VALUE_ID); /* radio ids follow core ids */
+
+  if (id >= ARRAY_SIZE(_wave_pdb_id_names) || NULL == _wave_pdb_id_names[id])
+    return "?";
+
+  return _wave_pdb_id_names[id];
+}
+
 
 static void _wave_pdb_init_param(mtlk_pdb_value_t * obj, uint32 flags, mtlk_pdb_t* parent) {
   obj->flags = flags;
@@ -99,7 +118,8 @@ static int _wave_pdb_init_values_set(mtlk_pdb_t *obj, mtlk_pdb_initial_value con
       obj->storage[value->id].flags = value->flag;
       obj->storage[value->id].size = value->size;
 
-      ILOG6_DDDDP("id %d, type 0x%x, flag 0x%x, size %d, ptr %p",
+      ILOG6_SDDDDP("%s(%d), type 0x%x, flag 0x%x, size %d, ptr %p",
+                  _wave_pdb_id_name(value->id),
                   value->id,
                   value->type,
                   value->flag,
@@ -361,7 +381,7 @@ wave_pdb_open(mtlk_pdb_t* obj, mtlk_pdb_id_t id) {
   __wave_pdb_incref(obj);
   handle = &obj->storage[id];
   mtlk_osal_lock_release(&obj->db_lock);
-  ILOG4_D("<< open fast handle id(%u) ", id);
+  ILOG4_SD("<< open fast handle %s(%u) ", _wave_pdb_id_name(id), id);
 
   return handle;
 }
@@ -390,7 +410,7 @@ wave_pdb_get_int(mtlk_pdb_t* obj, mtlk_pdb_id_t id)
   value = mtlk_pdb_fast_get_int(handle);
   wave_pdb_close(handle);
 
-  ILOG3_DD("<< get param id(%u) value(%d)", id, value);
+  ILOG3_SDD("<< get param %s(%u) value(%d)", _wave_pdb_id_name(id), id, value);
   return value;
 }
 
@@ -406,7 +426,7 @@ wave_pdb_get_string(mtlk_pdb_t* obj, mtlk_pdb_id_t id, char * value, mtlk_pdb_si
   result = mtlk_pdb_fast_get_string(handle, value, size);
   wave_pdb_close(handle);
 
-  ILOG3_D("<< exit code - %d", result);
+  ILOG3_DSD("<< get string param: res(%d) %s(%u)", result, _wave_pdb_id_name(id), id);
   return result;
 }
 
@@ -425,7 +445,7 @@ wave_pdb_get_binary(mtlk_pdb_t* obj, mtlk_pdb_id_t id, void * buffer, mtlk_pdb_s
     wave_pdb_close(handle);
   }
 
-  ILOG4_D("<< exit code - %d", result);
+  ILOG4_DSD("<< get binary param: res(%d) %s(%u)", result, _wave_pdb_id_name(id), id);
   return result;
 }
 
@@ -440,7 +460,7 @@ wave_pdb_get_mac(mtlk_pdb_t* obj, mtlk_pdb_id_t id, void * mac)
   mtlk_pdb_fast_get_mac(handle, mac);
   wave_pdb_close(handle);
 
-  ILOG3_DY("<< get MAC param: id(%u) MAC(%Y) ", id, mac);
+  ILOG3_SDY("<< get MAC param: %s(%u) MAC(%Y) ", _wave_pdb_id_name(id), id, mac);
 }
 
 unsigned __MTLK_IFUNC
@@ -455,7 +475,7 @@ mtlk_pdb_cmp_mac (mtlk_pdb_t* obj, mtlk_pdb_id_t id, void * mac)
   res = mtlk_pdb_fast_cmp_mac(handle, mac);
   wave_pdb_close(handle);
 
-  ILOG3_DY("<< cmp MAC param: id(%u) MAC(%Y) ", id, mac);
+  ILOG3_SDY("<< cmp MAC param: %s(%u) MAC(%Y) ", _wave_pdb_id_name(id), id, mac);
   return res;
 }
 
@@ -470,7 +490,7 @@ wave_pdb_set_int(mtlk_pdb_t* obj, mtlk_pdb_id_t id, uint32 value) {
   mtlk_pdb_fast_set_int(handle, value);
   wave_pdb_close(handle);
 
-  ILOG1_DD("<< set param: id(%u) value(%d)", id, value);
+  ILOG1_SDD("<< set param: %s(%u) value(%d)", _wave_pdb_id_name(id), id, value);
 }
 
 int __MTLK_IFUNC
@@ -485,7 +505,7 @@ wave_pdb_set_string(mtlk_pdb_t* obj, mtlk_pdb_id_t id, const char * value)
   result = mtlk_pdb_fast_set_string(handle, value);
   wave_pdb_close(handle);
 
-  ILOG1_DDS("<< set string param: res(%d) id(%u) val(%s)", result, id, value);
+  ILOG1_DSDS("<< set string param: res(%d) %s(%u) val(%s)", result, _wave_pdb_id_name(id), id, value);
   return result;
 }
 
@@ -502,7 +522,7 @@ wave_pdb_set_binary(mtlk_pdb_t* obj, mtlk_pdb_id_t id, const void * buffer, mtlk
     wave_pdb_close(handle);
   }
 
-  ILOG1_DD("<< set binary param: res(%d) id(%u) ", result, id);
+  ILOG1_DSD("<< set binary param: res(%d) %s(%u) ", result, _wave_pdb_id_name(id), id);
 
   return result;
 }
@@ -518,5 +538,5 @@ wave_pdb_set_mac(mtlk_pdb_t* obj, mtlk_pdb_id_t id, const void *mac)
   mtlk_pdb_fast_set_mac(handle, mac);
   wave_pdb_close(handle);
 
-  ILOG1_DY("<< set MAC param: id(%u) MAC(%Y) ", id, mac);
+  ILOG1_SDY("<< set MAC param: %s(%u) MAC(%Y) ", _wave_pdb_id_name(id), id, mac);
 }

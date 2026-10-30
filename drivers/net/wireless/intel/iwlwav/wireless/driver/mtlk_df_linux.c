@@ -36,6 +36,15 @@ struct _mtlk_df_t {
   mtlk_df_user_t      *df_user;
   mtlk_vap_handle_t    vap_handle;
 
+  /* Reference count for safe concurrent access from datapath contexts
+   * (RX/TX) while control-plane code may be tearing this DF down
+   * concurrently. Mirrors the sta_entry ref_cnt/ref_cnt_event pattern in
+   * stadb.c (mtlk_sta_incref/decref, mtlk_sta_wait_delete). Slot ownership
+   * (the "created" reference) is released by the teardown path via
+   * mtlk_df_decref() + mtlk_df_wait_unref() before mtlk_df_delete(). */
+  mtlk_atomic_t        ref_cnt;
+  mtlk_osal_event_t    ref_cnt_event;
+
   MTLK_DECLARE_INIT_STATUS;
   MTLK_DECLARE_START_STATUS;
 };
@@ -183,8 +192,15 @@ mtlk_df_t* mtlk_df_create(mtlk_vap_handle_t vap_handle, const char *name, struct
 
   memset(df, 0, sizeof(mtlk_df_t));
 
+  /* Start at 1: this is the slot's own ("created") reference, released by
+   * the teardown path (mtlk_df_decref() in mtlk_vap_del_secondary_vap /
+   * mtlk_vap_del_all_secondary_vaps) before mtlk_df_wait_unref(). */
+  mtlk_osal_atomic_set(&df->ref_cnt, 1);
+  mtlk_osal_event_init(&df->ref_cnt_event);
+
   if(MTLK_ERR_OK != _mtlk_df_init(df, vap_handle, name, ndev, is_secondary))
   {
+    mtlk_osal_event_cleanup(&df->ref_cnt_event);
     mtlk_osal_mem_free(df);
     return NULL;
   }
@@ -194,13 +210,58 @@ mtlk_df_t* mtlk_df_create(mtlk_vap_handle_t vap_handle, const char *name, struct
 
 void mtlk_df_delete(mtlk_df_t *df)
 {
+  mtlk_osal_event_cleanup(&df->ref_cnt_event);
   _mtlk_df_cleanup(df);
   mtlk_osal_mem_free(df);
+}
+
+int
+mtlk_df_incref (mtlk_df_t *df)
+{
+  MTLK_ASSERT(NULL != df);
+  return mtlk_osal_atomic_inc(&df->ref_cnt);
+}
+
+void
+mtlk_df_decref (mtlk_df_t *df)
+{
+  uint32 ref_cnt;
+
+  MTLK_ASSERT(NULL != df);
+  ref_cnt = mtlk_osal_atomic_dec(&df->ref_cnt);
+  if (0 == ref_cnt) {
+    /* Should only happen once per df, when the teardown path's own
+     * reference is the last one released - see mtlk_df_wait_unref(). */
+    mtlk_osal_event_set(&df->ref_cnt_event);
+  }
+}
+
+/* Called only by the teardown path (mtlk_vap_del_secondary_vap /
+ * mtlk_vap_del_all_secondary_vaps), after it has cleared the df out of
+ * vap_info->secondary_dfs[] (under secondary_dfs_lock, so no *new* reader
+ * can find it any more) and dropped its own reference via mtlk_df_decref().
+ * Waits (bounded) for any reader that already grabbed a reference via
+ * mtlk_vap_get_secondary_df_ref() before the clear to finish using it,
+ * mirroring mtlk_sta_wait_delete() in stadb.c. */
+void
+mtlk_df_wait_unref (mtlk_df_t *df)
+{
+  MTLK_ASSERT(NULL != df);
+
+  if (mtlk_osal_atomic_get(&df->ref_cnt)) {
+    int res = mtlk_osal_event_wait(&df->ref_cnt_event, 4000);
+    if (res != MTLK_ERR_OK) {
+      ELOG_D("df teardown: timed out waiting for readers, ref_cnt=%d",
+             mtlk_osal_atomic_get(&df->ref_cnt));
+    }
+  }
 }
 
 mtlk_df_user_t* mtlk_df_get_user(mtlk_df_t *df)
 {
   MTLK_ASSERT(NULL != df);
+  if (__UNLIKELY(NULL == df))
+    return NULL;
   return df->df_user;
 }
 

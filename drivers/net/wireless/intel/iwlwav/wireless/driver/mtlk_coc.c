@@ -31,6 +31,7 @@
 #include "mtlk_df_priv.h"
 #include "core_config.h"
 #include "mtlk_card_types.h"
+#include "hw_mmb_priv.h"
 
 #define LOG_LOCAL_GID   GID_COC
 #define LOG_LOCAL_FID   1
@@ -74,6 +75,8 @@ struct _mtlk_coc_t
   MTLK_DECLARE_INIT_STATUS;
   uint8 restore_bf_mode;
   BOOL restore_bf;
+  struct intel_vendor_event_coc pending_bw_params; /* OMN/BW event held until HAL confirms the antenna change */
+  BOOL bw_params_pending;
 };
 
 struct _mtlk_erp_t
@@ -468,7 +471,11 @@ _mtlk_coc_set_antennas (mtlk_coc_t *coc_obj, const mtlk_coc_antenna_cfg_t *anten
   int res = MTLK_ERR_OK;
   
   MTLK_ASSERT(NULL != coc_obj);
-  MTLK_ASSERT(0 != mtlk_vap_manager_get_active_vaps_number(mtlk_vap_get_manager(coc_obj->vap_handle)));
+  if (0 == mtlk_vap_manager_get_active_vaps_number(mtlk_vap_get_manager(coc_obj->vap_handle))) {
+    WLOG_D("CID-%04x: Skip CoC antenna update: no active VAPs",
+           mtlk_vap_get_oid(coc_obj->vap_handle));
+    return MTLK_ERR_NOT_READY;
+  }
 
   /* Temporary always send antenna config to FW (called after each SET_CHAN),
    * because FW currently has issue that it discards current antenna config
@@ -530,6 +537,29 @@ _mtlk_coc_set_antennas (mtlk_coc_t *coc_obj, const mtlk_coc_antenna_cfg_t *anten
 }
 
 static int
+_wave_coc_send_hal_event (mtlk_coc_t *coc_obj, coc_event_type event)
+{
+  struct mxl_coc_event hal_event;
+  struct wireless_dev *wdev;
+  mtlk_core_t *core = mtlk_vap_get_core(coc_obj->vap_handle);
+  mtlk_coc_antenna_cfg_t antenna_cfg;
+  int res;
+
+  wdev = mtlk_core_get_wdev(core->vap_handle);
+  _mtlk_coc_get_antenna_by_state(coc_obj, coc_obj->pending_state, &antenna_cfg);
+  hal_event.coc_event = event;
+  hal_event.requested_nss = antenna_cfg.num_tx_antennas;
+  ILOG2_DDD("CID-%04x: COC notify HAL: event %d requested_nss %u",
+            mtlk_vap_get_oid(coc_obj->vap_handle), event, hal_event.requested_nss);
+  res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_UPDATE, wdev, &hal_event, sizeof(hal_event));
+  if (MTLK_ERR_OK != res) {
+    ELOG_V("COC HAL event send failed");
+  }
+
+  return res;
+}
+
+static int
 _mtlk_coc_set_interval (mtlk_coc_t *coc_obj, const _mtlk_coc_power_state_t power_state)
 {
   int res = MTLK_ERR_OK;
@@ -550,6 +580,15 @@ _mtlk_coc_set_interval (mtlk_coc_t *coc_obj, const _mtlk_coc_power_state_t power
   return res;
 }
 
+static void
+_wave_coc_hal_request_antennas (mtlk_coc_t *coc_obj, coc_event_type event)
+{
+  ILOG1_DD("CID-%04x: COC HAL_CONTROLLED: halt TA, notify HAL (event %d)",
+           mtlk_vap_get_oid(coc_obj->vap_handle), event);
+  mtlk_ta_crit_stop(coc_obj->ta_crit_handle);
+  (void)_wave_coc_send_hal_event(coc_obj, event);
+}
+
 static int
 _mtlk_coc_auto_mode_process (mtlk_coc_t *coc_obj, mtlk_coc_crit_t *coc_crit)
 {
@@ -564,16 +603,28 @@ _mtlk_coc_auto_mode_process (mtlk_coc_t *coc_obj, mtlk_coc_crit_t *coc_crit)
   int      rssi;
   struct intel_vendor_event_coc  bw_params;
   struct wireless_dev *wdev;
+  mtlk_hw_t *hw;
   mtlk_core_t *core = mtlk_vap_get_core(coc_obj->vap_handle);
+  wave_radio_t *radio = wave_vap_radio_get(coc_obj->vap_handle);
   wdev = mtlk_core_get_wdev(core->vap_handle);
 
   MTLK_ASSERT(NULL != coc_obj);
   MTLK_ASSERT(NULL != coc_crit);
   MTLK_ASSERT(NULL != core);
+  MTLK_ASSERT(NULL != radio);
+
+  hw = mtlk_vap_get_hw(core->vap_handle);
+  MTLK_ASSERT(NULL != hw);
 
   res = mtlk_core_radio_enable_if_needed(core);
   if (MTLK_ERR_OK != res) {
     return res;
+  }
+
+  if (wave_radio_chan_switch_type_get(radio) == ST_CSA)
+  {
+    ILOG1_V("Channel switch in progress, skip COC processing");
+    return MTLK_ERR_OK;
   }
 
   /* 1. TP processing */
@@ -770,21 +821,54 @@ set_state:
 
   if ((current_state != new_state) ) {
    if (current_state != COC_POWER_TRANSIENT_STATE) {
+    wave_radio_t *coc_radio = wave_vap_radio_get(coc_obj->vap_handle);
+    struct mtlk_chan_def *radio_chandef = wave_radio_chandef_get(coc_radio);
+    uint32 current_bw;
+    if (!radio_chandef) {
+      ELOG_D("CID-%04x: COC failed to get radio chandef", mtlk_vap_get_oid(coc_obj->vap_handle));
+      goto FINISH;
+    }
+    /* Use PARAM_DB_RADIO_SPECTRUM_MODE (actual FW operating BW) rather than
+     * radio_chandef->width (configured BW) which may diverge from operating BW.
+     */
+    current_bw = WAVE_RADIO_PDB_GET_INT(coc_radio, PARAM_DB_RADIO_SPECTRUM_MODE);
 
     memset(&bw_params, 0, sizeof(bw_params));
     if ((coc_obj->trans_flag == 1) && (new_state == COC_POWER_1x1_STATE)) {
       bw_params.coc_omn_IE = new_state;
-      /* indicate hostapd to move to 20 Mhz BW */
-      if ((coc_obj->auto_antenna_cfg.bandwidth_flag == COC_BW_SWITCH_DISABLED)) {
-        bw_params.coc_BW = COC_BW_SWITCH_UP;
-      } else {
+      if (coc_obj->auto_antenna_cfg.bandwidth_flag == COC_BW_SWITCH_ENABLED) {
+        /* Check current BW */
+        if (current_bw == CW_20) {
+          ILOG1_DD("CID-%04x: COC BW already 20Mhz (spectrum mode), skip nl event and continue state transition to %d", mtlk_vap_get_oid(coc_obj->vap_handle), new_state);
+          coc_obj->trans_flag = 0;
+          coc_obj->pending_state = new_state;
+          _mtlk_coc_get_antenna_by_state(coc_obj, new_state, &antenna_cfg);
+          res = _mtlk_coc_set_antennas(coc_obj, &antenna_cfg);
+          if (MTLK_ERR_OK != res) {
+            goto FINISH;
+          }
+
+          res = _mtlk_coc_set_interval(coc_obj, new_state);
+          if (MTLK_ERR_OK != res) {
+            goto FINISH;
+          }
+
+          _mtlk_coc_set_state(coc_obj, new_state);
+          goto FINISH;
+        }
         bw_params.coc_BW = COC_BW_SWITCH_DOWN;
-        ILOG1_DD("COC nl event send to Drop BW to 20Mhz %d and send OMN IE  %d", bw_params.coc_BW, bw_params.coc_omn_IE);
+        ILOG1_DDD("CID-%04x: COC nl event send to Drop BW to 20Mhz %d and send OMN IE  %d", mtlk_vap_get_oid(coc_obj->vap_handle), bw_params.coc_BW, bw_params.coc_omn_IE);
       }
       coc_obj->pending_state = new_state;
-      res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev, &bw_params, sizeof(bw_params));
-      if (MTLK_ERR_OK != res) {
-        ELOG_V("COC nl event send failed");
+      if (hw->coc_mode == COC_MODE_HAL_CONTROLLED) {
+        /* Defer: OMN IE must land in the beacon where HAL actually applies the change */
+        coc_obj->pending_bw_params = bw_params;
+        coc_obj->bw_params_pending = TRUE;
+      } else {
+        res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev, &bw_params, sizeof(bw_params));
+        if (MTLK_ERR_OK != res) {
+          ELOG_V("COC nl event send failed");
+        }
       }
       /* when BW is not changed, hostapd doesn't intimate
        * power change to the driver and TA is not restarted.
@@ -792,6 +876,10 @@ set_state:
       if ((coc_obj->auto_antenna_cfg.bandwidth_flag == COC_BW_SWITCH_ENABLED)) {
         ILOG1_D("COC Stop TA and Move coc_state %d", coc_obj->current_state);
         mtlk_ta_crit_stop(coc_obj->ta_crit_handle);
+      }
+      if (hw->coc_mode == COC_MODE_HAL_CONTROLLED) {
+        _wave_coc_hal_request_antennas(coc_obj, COC_EVENT_NSS_DOWN);
+        goto FINISH;
       }
       res = _mtlk_coc_set_interval(coc_obj, COC_POWER_TRANSIENT_STATE);
       if (MTLK_ERR_OK != res) {
@@ -801,22 +889,34 @@ set_state:
       goto FINISH;
     } else if ((new_state > COC_POWER_1x1_STATE) && (current_state != COC_POWER_START_STATE)) {
       /* Upto hostapd to decide which higher BW to set */
-      bw_params.coc_BW = COC_BW_SWITCH_UP;
-      if (wave_radio_chandef_width_get(&wdev->links[0].ap.chandef) != 20)
-        bw_params.coc_BW = 0;
+      bw_params.coc_BW = 0;
+      if (coc_obj->auto_antenna_cfg.bandwidth_flag == COC_BW_SWITCH_ENABLED &&
+          current_bw == CW_20) {
+        bw_params.coc_BW = COC_BW_SWITCH_UP;
+      }
+
       bw_params.coc_omn_IE = new_state;
       if ((new_state == max_antennas) || (new_state == max_rx_antennas)) {
-        /* while going up set antenna first, then update the BW */
-        _mtlk_coc_get_antenna_by_state(coc_obj, new_state, &antenna_cfg);
-        res = _mtlk_coc_set_antennas(coc_obj, &antenna_cfg);
-        if (MTLK_ERR_OK != res) {
-          goto FINISH;
+        /* while going up set antenna first, then update the BW.
+         * In HAL_CONTROLLED mode, HAL applies the antennas itself. */
+        if (hw->coc_mode != COC_MODE_HAL_CONTROLLED) {
+          _mtlk_coc_get_antenna_by_state(coc_obj, new_state, &antenna_cfg);
+          res = _mtlk_coc_set_antennas(coc_obj, &antenna_cfg);
+          if (MTLK_ERR_OK != res) {
+            goto FINISH;
+          }
         }
       }
       ILOG1_DD("COC nl event send to Restore BW %d and send OMN IE %d", bw_params.coc_BW, bw_params.coc_omn_IE);
-      res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev, &bw_params, sizeof(bw_params));
-      if (MTLK_ERR_OK != res) {
-        ELOG_V("COC nl event send failed");
+      if (hw->coc_mode == COC_MODE_HAL_CONTROLLED) {
+        /* Defer: OMN IE must land in the beacon where HAL actually applies the change */
+        coc_obj->pending_bw_params = bw_params;
+        coc_obj->bw_params_pending = TRUE;
+      } else {
+        res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev, &bw_params, sizeof(bw_params));
+        if (MTLK_ERR_OK != res) {
+          ELOG_V("COC nl event send failed");
+        }
       }
       coc_obj->pending_state = new_state;
       /* BW_SWITCH_UP only happens when the antenna config changes from 1x1 to higher antenna config (2x2, 3x3, 4x4),
@@ -827,6 +927,10 @@ set_state:
           (current_state == COC_POWER_1x1_STATE) && (bw_params.coc_BW != 0)) {
         ILOG1_D("COC Stop TA and Move coc_state %d", coc_obj->current_state);
         mtlk_ta_crit_stop(coc_obj->ta_crit_handle);
+      }
+      if (hw->coc_mode == COC_MODE_HAL_CONTROLLED) {
+        _wave_coc_hal_request_antennas(coc_obj, COC_EVENT_NSS_UP);
+        goto FINISH;
       }
       res = _mtlk_coc_set_interval(coc_obj, COC_POWER_TRANSIENT_STATE);
       if (MTLK_ERR_OK != res) {
@@ -1087,13 +1191,21 @@ _mtlk_coc_init (mtlk_coc_t *coc_obj, const mtlk_coc_cfg_t *cfg)
   uint8  num_ants, ant_mask;
   mtlk_error_t res;
   uint32 chip_id = wave_core_get_chip_id(cfg->vap_handle);
+  mtlk_hw_t *hw;
 
   MTLK_ASSERT(NULL != coc_obj);
   MTLK_ASSERT(NULL != cfg->txmm);
 
+  hw = mtlk_vap_get_hw(cfg->vap_handle);
+  MTLK_ASSERT(NULL != hw);
+
   /* Initial state is maximal power mode allowed by hardware */
   coc_obj->vap_handle = cfg->vap_handle;
   coc_obj->txmm = cfg->txmm;
+
+  ILOG0_DS("CID-%04x: INIT: CoC mode set to %s", mtlk_vap_get_oid(coc_obj->vap_handle),
+          (hw->coc_mode == COC_MODE_HAL_CONTROLLED) ? "HAL_CONTROLLED" : "DRIVER_CONTROLLED");
+
   /*Auto CoC should be enabled by default only for LGM platform */
 #ifdef MTLK_LGM_PLATFORM
   /* For ZWDFS do not enable Auto CoC by default */
@@ -1305,10 +1417,14 @@ mtlk_coc_set_power_mode (mtlk_coc_t *coc_obj, const BOOL is_auto_mode)
   wave_radio_t *zwdfs_radio = NULL;
   struct intel_vendor_event_coc coc_params;
   struct wireless_dev *wdev;
+  mtlk_hw_t *hw;
 
   MTLK_ASSERT(NULL != coc_obj);
   wdev = mtlk_core_get_wdev(coc_obj->vap_handle);
   radio = wave_vap_radio_get(coc_obj->vap_handle);
+  hw = mtlk_vap_get_hw(coc_obj->vap_handle);
+  MTLK_ASSERT(NULL != hw);
+
   if (!radio) {
     return MTLK_ERR_UNKNOWN;
   }
@@ -1337,11 +1453,26 @@ mtlk_coc_set_power_mode (mtlk_coc_t *coc_obj, const BOOL is_auto_mode)
         memset(&coc_params, 0, sizeof(coc_params));
         if (coc_obj->auto_antenna_cfg.bandwidth_flag == COC_BW_SWITCH_ENABLED)
           coc_params.coc_BW = COC_BW_SWITCH_UP;
-        else
-          coc_params.coc_BW = coc_obj->bw_params.coc_BW;
-        res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev, &coc_params, sizeof(coc_params));
-        if (MTLK_ERR_OK != res) {
-          ELOG_V("COC nl event send failed");
+        if (hw->coc_mode == COC_MODE_HAL_CONTROLLED) {
+          /* Defer: OMN IE must land in the beacon where HAL actually applies the change */
+          coc_obj->pending_bw_params = coc_params;
+          coc_obj->bw_params_pending = TRUE;
+        } else {
+          res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev, &coc_params, sizeof(coc_params));
+          if (MTLK_ERR_OK != res) {
+            ELOG_V("COC nl event send failed");
+            goto FINISH;
+          }
+        }
+        if (hw->coc_mode == COC_MODE_HAL_CONTROLLED) {
+          ILOG2_DD("CID-%04x: CoC mode is HAL_CONTROLLED, requesting HAL to restore max antennas %d",
+             mtlk_vap_get_oid(coc_obj->vap_handle), coc_obj->hw_antenna_cfg.num_tx_antennas);
+          coc_obj->pending_state = _mtlk_coc_get_max_state_by_ant_num(
+                                coc_obj->hw_antenna_cfg.num_tx_antennas);
+          _mtlk_coc_set_state(coc_obj, COC_POWER_TRANSIENT_STATE);
+          _wave_coc_hal_request_antennas(coc_obj, COC_EVENT_NSS_UP);
+          res = _mtlk_coc_set_interval(coc_obj, COC_POWER_TRANSIENT_STATE);
+          coc_obj->is_auto_mode = is_auto_mode;
           goto FINISH;
         }
         res = _mtlk_coc_set_antennas(coc_obj, &coc_obj->hw_antenna_cfg);
@@ -1571,6 +1702,121 @@ mtlk_coc_set_actual_power_mode(mtlk_coc_t *coc_obj)
 {
   MTLK_ASSERT(NULL != coc_obj);
   return mtlk_coc_set_power_mode(coc_obj, mtlk_coc_get_auto_mode_cfg(coc_obj));
+}
+
+int __MTLK_IFUNC
+wave_coc_set_decision (mtlk_coc_t *coc_obj, uint8 num_tx_antennas, uint8 num_rx_antennas)
+{
+  mtlk_coc_antenna_cfg_t antenna_cfg;
+  mtlk_coc_antenna_cfg_t pending_cfg;
+  struct wireless_dev *wdev;
+  BOOL is_confirm;
+  BOOL nss_really_changed;
+  _mtlk_coc_power_state_t new_state;
+  int res = MTLK_ERR_OK;
+
+  MTLK_ASSERT(NULL != coc_obj);
+  wdev = mtlk_core_get_wdev(coc_obj->vap_handle);
+
+  antenna_cfg.num_tx_antennas = num_tx_antennas;
+  antenna_cfg.num_rx_antennas = num_rx_antennas;
+  new_state = _mtlk_coc_get_max_state_by_ant_num(num_tx_antennas);
+
+  mtlk_osal_lock_acquire(&coc_obj->lock);
+
+  ILOG1_DDD("CID-%04x: COC HAL decision: TX%dxRX%d",
+            mtlk_vap_get_oid(coc_obj->vap_handle), num_tx_antennas, num_rx_antennas);
+
+  if (0 == mtlk_vap_manager_get_active_vaps_number(mtlk_vap_get_manager(coc_obj->vap_handle))) {
+    WLOG_D("CID-%04x: Ignore stale CoC HAL decision: no active VAPs",
+           mtlk_vap_get_oid(coc_obj->vap_handle));
+    res = MTLK_ERR_NOT_READY;
+    goto FINISH;
+  }
+
+  if (coc_obj->pending_state == COC_POWER_START_STATE) {
+      WLOG_DD("CID-%04x: COC HAL decision ignored, state machine not initialized (pending_state=%d)",
+               mtlk_vap_get_oid(coc_obj->vap_handle), coc_obj->pending_state);
+      res = MTLK_ERR_NOT_READY;
+      goto FINISH;
+  }
+
+  _mtlk_coc_get_antenna_by_state(coc_obj, coc_obj->pending_state, &pending_cfg);
+  is_confirm = (coc_mode == COC_MODE_HAL_CONTROLLED) &&
+               (pending_cfg.num_tx_antennas == num_tx_antennas) &&
+               (pending_cfg.num_rx_antennas == num_rx_antennas);
+
+  if (is_confirm) {
+    ILOG1_DD("CID-%04x: COC HAL confirmed antenna change, resuming to state %d",
+             mtlk_vap_get_oid(coc_obj->vap_handle), coc_obj->pending_state);
+
+    res = _mtlk_coc_set_antennas(coc_obj, &pending_cfg);
+    if (MTLK_ERR_OK != res) {
+      goto FINISH;
+    }
+
+    res = _mtlk_coc_set_interval(coc_obj, coc_obj->pending_state);
+    if (MTLK_ERR_OK != res) {
+      goto FINISH;
+    }
+
+    _mtlk_coc_set_state(coc_obj, coc_obj->pending_state);
+    mtlk_ta_crit_start(coc_obj->ta_crit_handle);
+
+    if (coc_obj->bw_params_pending) {
+      /* HAL just confirmed the antenna change: send OMN IE now, same beacon cycle as the switch */
+      res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev,
+                                          &coc_obj->pending_bw_params, sizeof(coc_obj->pending_bw_params));
+      if (MTLK_ERR_OK != res) {
+        ELOG_V("COC nl event send failed");
+      }
+      coc_obj->bw_params_pending = FALSE;
+    }
+
+    goto FINISH;
+  }
+
+  ILOG1_DDD("CID-%04x: COC HAL override: TX%dxRX%d",
+            mtlk_vap_get_oid(coc_obj->vap_handle), num_tx_antennas, num_rx_antennas);
+
+  /* Only announce OMN if this actually changes the live antenna config; an MLO-timeout
+   * reject just restores what's already active and needs no beacon update. */
+  nss_really_changed = (antenna_cfg.num_tx_antennas != coc_obj->current_antenna_cfg.num_tx_antennas) ||
+                       (antenna_cfg.num_rx_antennas != coc_obj->current_antenna_cfg.num_rx_antennas);
+
+  coc_obj->bw_params_pending = FALSE;
+
+  res = _mtlk_coc_set_antennas(coc_obj, &antenna_cfg);
+  if (MTLK_ERR_OK != res) {
+    goto FINISH;
+  }
+
+  if (nss_really_changed) {
+    struct intel_vendor_event_coc bw_params;
+
+    memset(&bw_params, 0, sizeof(bw_params));
+    bw_params.coc_omn_IE = new_state;
+    bw_params.coc_BW = (coc_obj->auto_antenna_cfg.bandwidth_flag == COC_BW_SWITCH_ENABLED) ?
+                        COC_BW_SWITCH_UP : 0;
+    res = wv_ieee80211_vendor_event_coc(LTQ_NL80211_VENDOR_EVENT_COC_BEACON_UPDATE, wdev,
+                                        &bw_params, sizeof(bw_params));
+    if (MTLK_ERR_OK != res) {
+      ELOG_V("COC nl event send failed");
+    }
+  }
+
+  coc_obj->pending_state = new_state;
+  res = _mtlk_coc_set_interval(coc_obj, new_state);
+  if (MTLK_ERR_OK != res) {
+    goto FINISH;
+  }
+
+  _mtlk_coc_set_state(coc_obj, new_state);
+  mtlk_ta_crit_start(coc_obj->ta_crit_handle);
+
+FINISH:
+  mtlk_osal_lock_release(&coc_obj->lock);
+  return res;
 }
 
 mtlk_error_t __MTLK_IFUNC
@@ -1888,7 +2134,8 @@ mtlk_coc_zwdfs_switch_opmode_notify (mtlk_coc_t *coc_obj, BOOL zwdfs_enabled)
 
   MTLK_ASSERT(NULL != coc_obj);
 
-  coc_params.coc_BW = COC_BW_SWITCH_UP;
+  coc_params.coc_BW = (coc_obj->auto_antenna_cfg.bandwidth_flag == COC_BW_SWITCH_ENABLED) ?
+                      COC_BW_SWITCH_UP : 0;
   coc_params.coc_omn_IE = coc_obj->current_antenna_cfg.num_rx_antennas;
   if (zwdfs_enabled) {
     coc_params.coc_is_max_nss = FALSE;

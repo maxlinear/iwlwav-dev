@@ -74,6 +74,7 @@ struct _wv_mac80211_t
 
 enum ww_csa_status {
   WV_CSA_NOT_DONE,
+  WV_CSA_PRE_SWITCH,
   WV_CSA_SUCCESS,
   WV_CSA_FAILED,
 };
@@ -2246,6 +2247,67 @@ _mtlk_nl_to_mtlk_sbdfs_bw (enum nl80211_sb_dfs_bw bw)
   }
 }
 
+static int
+_wv_get_oper_reg_power_dbm(struct ieee80211_hw *hw,
+                           mtlk_df_t *master_df,
+                           const struct cfg80211_chan_def *chandef,
+                           int requested_power_dbm)
+{
+  mtlk_df_user_t *df_user;
+  struct wireless_dev *wdev;
+  mtlk_core_t *core;
+  wave_radio_t *radio;
+  enum chanWidth cw;
+  unsigned center_freq;
+  unsigned lower_freq;
+  unsigned upper_freq;
+  unsigned reg_power_units;
+  int reg_power_dbm;
+  int oper_power_mode;
+
+  if (!hw || !master_df || !chandef || !chandef->chan)
+    return requested_power_dbm;
+
+  if (chandef->chan->band != NL80211_BAND_6GHZ)
+    return requested_power_dbm;
+
+  core = mtlk_vap_get_core(mtlk_df_get_vap_handle(master_df));
+  if (!core)
+    return requested_power_dbm;
+
+  radio = wave_vap_radio_get(core->vap_handle);
+  if (!radio)
+    return requested_power_dbm;
+
+  oper_power_mode = WAVE_RADIO_PDB_GET_INT(radio, PARAM_DB_RADIO_6GHZ_OPER_POWER_MODE);
+  if (oper_power_mode != IEEE80211_6GHZ_CTRL_REG_SP_AP &&
+      oper_power_mode != IEEE80211_6GHZ_CTRL_REG_ISP_AP)
+    return requested_power_dbm;
+
+  cw = nlcw2mtlkcw(chandef->width);
+  center_freq = chandef->center_freq1 ? chandef->center_freq1 : chandef->chan->center_freq;
+  lower_freq = freq2lowfreq(center_freq, cw);
+  upper_freq = freq2highfreq(center_freq, cw);
+
+  if (!lower_freq || !upper_freq)
+    return requested_power_dbm;
+
+  df_user = mtlk_df_get_user(master_df);
+  if (!df_user)
+    return requested_power_dbm;
+
+  wdev = mtlk_df_user_get_wdev(df_user);
+  if (!wdev)
+    return requested_power_dbm;
+
+  reg_power_units = wv_cfg80211_regulatory_limit_get(wdev, lower_freq, upper_freq);
+  if (!reg_power_units)
+    return requested_power_dbm;
+
+  reg_power_dbm = POWER_TO_DBM(reg_power_units);
+  return min(requested_power_dbm, reg_power_dbm);
+}
+
 static mtlk_error_t
 _wv_activate_vif (mtlk_df_user_t *df_user)
 {
@@ -2352,7 +2414,8 @@ _wv_ieee80211_op_config (struct ieee80211_hw *hw, u32 changed)
       ILOG1_V("Not using CSA in channel switch");
     }
 
-    cpd.chandef.power_level = conf->power_level;
+    cpd.chandef.power_level = _wv_get_oper_reg_power_dbm(hw, master_df, chandef,
+                  conf->power_level);
     cpd.block_tx_pre = TRUE;
     cpd.block_tx_post = FALSE; /* TRUE means waiting for radars */
     cpd.reset_stats = TRUE;
@@ -2400,7 +2463,9 @@ _wv_all_vifs_have_completed_csa (wv_mac80211_t *mac80211)
       continue;
 
     active_vif_count++;
-    if (wv_iface_inf->csa_status)
+    if ((wv_iface_inf->csa_status == WV_CSA_SUCCESS ||
+         wv_iface_inf->csa_status == WV_CSA_FAILED) &&
+        mac80211->vif_array[i]->bss_conf.csa_active)
       csa_finish_report_pending_cnt++;
   }
 
@@ -2422,6 +2487,41 @@ _wv_all_vifs_have_completed_csa (wv_mac80211_t *mac80211)
 
   mtlk_osal_timer_cancel_sync(&mac80211->csa_timer);
   return TRUE;
+}
+
+/* Returns TRUE when all active AP VAPs (with chanctx_conf and is_initialized)
+ * have called pre_channel_switch, i.e. csa_status != WV_CSA_NOT_DONE.
+ * Used in pre_channel_switch to determine when to send WAVE_RADIO_REQ_SET_CHAN.
+ * Counts AP VAPs only -- STA VAPs return early in pre_channel_switch and never
+ * set WV_CSA_PRE_SWITCH, so including them would prevent the condition from
+ * ever being reached.
+ */
+static BOOL
+_wv_all_ap_vifs_have_started_csa (wv_mac80211_t *mac80211)
+{
+  int i, ap_total = 0, ap_started = 0;
+  struct wv_vif_priv *wv_iface_inf;
+
+  for (i = 0; i < mac80211->vif_array_size; i++) {
+    if (!mac80211->vif_array[i])
+      continue;
+
+    if (NL80211_IFTYPE_AP != mac80211->vif_array[i]->type)
+      continue;
+
+    wv_iface_inf = (struct wv_vif_priv*)mac80211->vif_array[i]->drv_priv;
+    if (!wv_iface_inf || !wv_iface_inf->is_initialized)
+      continue;
+
+    if (!wv_iface_inf->vif->bss_conf.chanctx_conf)
+      continue;
+
+    ap_total++;
+    if (wv_iface_inf->csa_status != WV_CSA_NOT_DONE)
+      ap_started++;
+  }
+
+  return (ap_total > 0) && (ap_total == ap_started);
 }
 
 void wav_vif_handle_ml_chan_switch_done(wv_mac80211_t *mac80211, uint8 vap_id, uint8 flag)
@@ -2589,7 +2689,35 @@ static void _wv_csa_completed (mtlk_handle_t user_context,
   }
 
   wv_iface_inf = (struct wv_vif_priv*)vif->drv_priv;
-  wv_iface_inf->csa_status = WV_CSA_SUCCESS;
+  if (res == MTLK_ERR_OK)
+    wv_iface_inf->csa_status = WV_CSA_SUCCESS;
+  else
+    wv_iface_inf->csa_status = WV_CSA_FAILED;
+
+  /* WAVE_RADIO_REQ_SET_CHAN is a radio-level FW command sent only once (from
+   * the last AP VAP in pre_channel_switch). _wv_csa_completed therefore fires
+   * only for that one VAP. All other AP VAPs are still at WV_CSA_PRE_SWITCH.
+   * Propagate the FW result to them now so _wv_all_vifs_have_completed_csa()
+   * (which requires SUCCESS or FAILED) returns TRUE and triggers
+   * _wv_all_vifs_csa_finish() immediately without waiting for the 500ms timer.
+   * STA VAPs never reach PRE_SWITCH (they return early in pre_channel_switch)
+   * so they are unaffected by this loop.
+   */
+  {
+    int j;
+    enum ww_csa_status fw_result = wv_iface_inf->csa_status;
+    struct wv_vif_priv *other;
+
+    for (j = 0; j < mac80211->vif_array_size; j++) {
+      if (!mac80211->vif_array[j])
+        continue;
+      other = (struct wv_vif_priv*)mac80211->vif_array[j]->drv_priv;
+      if (!other || !other->is_initialized)
+        continue;
+      if (other->csa_status == WV_CSA_PRE_SWITCH)
+        other->csa_status = fw_result;
+    }
+  }
 
   if (_wv_all_vifs_have_completed_csa(mac80211))
     _wv_all_vifs_csa_finish(mac80211);
@@ -2634,6 +2762,38 @@ _wv_ieee80211_op_pre_channel_switch (struct ieee80211_hw *hw,
     return LINUX_ERR_OK;
   }
 
+  /* Mark this AP VAP's CSA status immediately. If all active AP VAPs are now
+   * at WV_CSA_PRE_SWITCH, this is the last pre_channel_switch call -- proceed
+   * to send WAVE_RADIO_REQ_SET_CHAN. Otherwise return now; the last AP VAP to
+   * call in will send it.
+   *
+   * _wv_all_ap_vifs_have_started_csa() counts only AP VAPs with a non-NULL
+   * chanctx_conf and is_initialized=true. STA VAPs return early above (before
+   * this block) and never set WV_CSA_PRE_SWITCH. VAPs without a channel context
+   * (e.g. the driver master VAP in OneWifi) are excluded automatically.
+   *
+   * This eliminates the race where _wv_csa_completed fires before all VAPs
+   * have called pre_channel_switch (causing "CSA not active!" on some VAPs).
+   */
+  {
+    wv_mac80211_t *mac80211 = (wv_mac80211_t *)hw->priv;
+    wv_iface_inf->csa_status = WV_CSA_PRE_SWITCH;
+    if (!_wv_all_ap_vifs_have_started_csa(mac80211)) {
+      ILOG1_S("%s: Not all AP VAPs have called pre_channel_switch yet, deferring SET_CHAN",
+              ieee80211_vif_to_name(vif));
+      return LINUX_ERR_OK;
+    }
+    /* All active AP VAPs have WV_CSA_PRE_SWITCH. This is the last AP VAP to
+     * call pre_channel_switch -- fall through to send WAVE_RADIO_REQ_SET_CHAN.
+     * _wv_csa_completed sets SUCCESS/FAILED on this VAP and propagates the
+     * same FW result to all other AP VAPs still at PRE_SWITCH, so that
+     * _wv_all_vifs_have_completed_csa() (which requires SUCCESS or FAILED,
+     * not PRE_SWITCH) returns TRUE and triggers _wv_all_vifs_csa_finish()
+     * immediately. */
+    ILOG1_S("%s: All AP VAPs ready, this call sends WAVE_RADIO_REQ_SET_CHAN",
+            ieee80211_vif_to_name(vif));
+  }
+
   ILOG1_SSD("%s: Invoked from %s (%i)", ieee80211_vif_to_name(vif),
             current->comm, current->pid);
 
@@ -2660,7 +2820,8 @@ _wv_ieee80211_op_pre_channel_switch (struct ieee80211_hw *hw,
   memset(&cpd, 0, sizeof(cpd));
   sb_dfs = &cpd.chandef.sb_dfs;
   wave_radio_chandef_copy(&cpd.chandef, chandef);
-  cpd.chandef.power_level = conf->power_level;
+  cpd.chandef.power_level = _wv_get_oper_reg_power_dbm(hw, master_df, chandef,
+                                                        conf->power_level);
   cpd.vap_id = wv_iface_inf->vap_index;
 
   beacon_period = vif->bss_conf.beacon_int;
@@ -2793,7 +2954,8 @@ static int _wv_ieee80211_op_post_channel_switch(struct ieee80211_hw *hw,
   memset(&cpd, 0, sizeof(cpd));
   sb_dfs = &cpd.chandef.sb_dfs;
   wave_radio_chandef_copy(&cpd.chandef, chandef);
-  cpd.chandef.power_level = conf->power_level;
+  cpd.chandef.power_level = _wv_get_oper_reg_power_dbm(hw, master_df, chandef,
+                                                        conf->power_level);
   sb_dfs->sb_dfs_bw = _mtlk_nl_to_mtlk_sbdfs_bw(chandef->sb_dfs.sub_width);
   if (__mtlk_is_sb_dfs_switch(sb_dfs->sb_dfs_bw)) {
     ILOG1_SD("%s: Sub band DFS channel switch, new bandwidth %d",
@@ -2973,7 +3135,8 @@ static void _wv_ieee80211_op_channel_switch (struct ieee80211_hw *hw,
 
   memset(&cpd, 0, sizeof(cpd));
   wave_radio_chandef_copy(&cpd.chandef, chandef);
-  cpd.chandef.power_level = conf->power_level;
+  cpd.chandef.power_level = _wv_get_oper_reg_power_dbm(hw, master_df, chandef,
+                                                        conf->power_level);
 
   cpd.vap_id = mtlk_vap_get_id(master_vap_handle);
 

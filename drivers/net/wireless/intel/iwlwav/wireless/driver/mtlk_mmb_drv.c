@@ -24,6 +24,7 @@
 #include "mtlk_df.h"
 #include "wave_thermal.h"
 #include "fw_recovery.h"
+#include "mtlk_coc.h"
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -36,7 +37,9 @@
 #endif
 
 #if !defined(__i386) && !defined(__x86_64)
+#ifdef CONFIG_LANTIQ
   #include <asm/mach-lantiq/lantiq.h>
+#endif
 #endif
 
 #define LOG_LOCAL_GID   GID_MMBDRV
@@ -55,6 +58,9 @@ MODULE_LICENSE("GPL");
 
 static int ap[MTLK_MAX_HW_ADAPTERS_SUPPORTED]         = {1, 1, 1, 1};
 static int dut[MTLK_MAX_HW_ADAPTERS_SUPPORTED]        = {0, 0, 0, 0};
+
+/* Maps card_idx to its driver object, so core.c can find it. */
+static mtlk_mmb_drv_t *g_mmb_drv_objs[MTLK_MAX_HW_ADAPTERS_SUPPORTED];
 int tx_ring_size[MTLK_MAX_HW_ADAPTERS_SUPPORTED]      = {0, 0, 0, 0};
 int rx_ring_size[MTLK_MAX_HW_ADAPTERS_SUPPORTED]      = {0, 0, 0, 0};
 
@@ -82,12 +88,19 @@ int phy_index_count = 0;
    the value of an element is the net device index */
 int interface_index[PHY_INDEX_CONFIG_LIMIT]           = {0, 2, 4, 6, -1, -1};
 
+#ifdef ONEWIFI_IWLWAV_DEV
+int coc_mode = COC_MODE_HAL_CONTROLLED; /* Default COC mode is HAL controlled for RDK-B */
+#else
+int coc_mode = COC_MODE_DRIVER_CONTROLLED;
+#endif
+
 #ifdef MTLK_DEBUG
 extern int step_to_fail;
 int jtag_debugging;
 #endif
 static int disable_11d_hint = 0;
 static int disable_zwdfs = 0;
+static int disable_l4s = 0;
 
 #ifdef CPTCFG_IWLWAV_SET_PM_QOS
 int cpu_dma_latency = MTLK_HW_PM_QOS_DEFAULT; /* Default value of PM_QOS_CPU_DMA_LATENCY */
@@ -108,24 +121,25 @@ module_param_array(band_cfg_sys_mode, int, NULL, 0);
 module_param_array(panic_on_fw_error, int, NULL, 0);
 module_param_array(mgmttx_en, int, NULL, 0);
 module_param_array(phy_index, int, &phy_index_count, 0);
-
 #ifdef MTLK_DEBUG
 module_param(step_to_fail, int, 0);
 module_param(jtag_debugging, int, 0);
 #endif
 module_param(disable_11d_hint, int, 0);
 module_param(disable_zwdfs, int, 0);
+module_param(disable_l4s, int, 0);
 #ifdef CPTCFG_IWLWAV_SET_PM_QOS
 module_param(cpu_dma_latency, int, 0);
 #endif
 #ifdef MTLK_WAVE_700
 module_param(logger_fifo_cfg, int, 0);
 #endif
+module_param(coc_mode, int, 0);
 static BOOL dual_pci_over_all = FALSE;
 static int dual_pci[MTLK_MAX_HW_ADAPTERS_SUPPORTED] = { 0 }; /* all disabled */
 module_param_array(dual_pci, int, NULL, 0);
-MODULE_PARM_DESC(dual_pci, "Control detection of DUAL PCI mode");
 
+MODULE_PARM_DESC(dual_pci, "Control detection of DUAL PCI mode");
 MODULE_PARM_DESC(ap, "Make an access point (including station mode functionality)");
 MODULE_PARM_DESC(dut, "Start driver in device under test (DUT) mode");
 MODULE_PARM_DESC(tx_ring_size, "TX ring buffer size");
@@ -134,20 +148,20 @@ MODULE_PARM_DESC(fastpath, "Enable FastPath");
 MODULE_PARM_DESC(loggersid, "SID for data logger");
 MODULE_PARM_DESC(band_cfg_sys_mode, "Set Band Configuration System Mode");
 MODULE_PARM_DESC(panic_on_fw_error, "Kernel Panic on FW assert Enable flag");
-
 #ifdef MTLK_DEBUG
 MODULE_PARM_DESC(step_to_fail, "Init step to simulate fail");
 MODULE_PARM_DESC(jtag_debugging, "Facilitates JTAG debugging of the WAVE ARCs by increasing timeouts and delaying the release of the UMAC to allow insertion of breakpoints.");
 #endif
 MODULE_PARM_DESC(disable_11d_hint, "Disable 802.11d country hint from beacons");
 MODULE_PARM_DESC(disable_zwdfs, "Disable creating ZWDFS phy in case supported by CAL/PSDB");
+MODULE_PARM_DESC(disable_l4s, "Disable L4S support");
 #ifdef CPTCFG_IWLWAV_SET_PM_QOS
 MODULE_PARM_DESC(cpu_dma_latency, "Power save DMA latency");
 #endif
-
 #ifdef MTLK_WAVE_700
 MODULE_PARM_DESC(logger_fifo_cfg, "HW FIFO Mux config for data logger in WAVE700");
 #endif
+MODULE_PARM_DESC(coc_mode, "Set CoC mode (0 - HAL controlled, 1 - Driver controlled)");
 
 struct _mtlk_mmb_drv_t {
   struct pci_dev        *pdev;
@@ -1041,6 +1055,12 @@ mtlk_mmb_drv_get_disable_zwdfs(void)
   return disable_zwdfs;
 }
 
+uint32 __MTLK_IFUNC
+mtlk_mmb_drv_get_disable_l4s_param (void)
+{
+  return disable_l4s;
+}
+
 #ifdef CPTCFG_IWLWAV_BUS_PCI_PCIE
 struct pci_dev * __MTLK_IFUNC
 mtlk_mmb_drv_get_pci_dev (struct _mtlk_mmb_drv_t *mmb_drv)
@@ -1318,6 +1338,47 @@ void kill_all_tasklets (mtlk_mmb_drv_t *obj)
   }
 }
 
+/* Wait for any running tasklet to finish, then let it run again.
+ * Unlike kill_all_tasklets(), this does not stop the tasklet for good. */
+static void drain_all_tasklets (mtlk_mmb_drv_t *obj)
+{
+  int i;
+
+  MTLK_ASSERT(obj);
+  MTLK_ASSERT(obj->hw_api);
+  MTLK_ASSERT(obj->hw_api->hw);
+
+  for (i = 0; i < obj->nof_irqs; i++) {
+    if (_mmb_drv_is_irqno_required(obj->hw_api->hw, obj->irq_handler_data[i].irq_no)) {
+      tasklet_disable(&obj->irq_tasklet[i]);
+      tasklet_enable(&obj->irq_tasklet[i]);
+    }
+  }
+}
+
+/* Find the driver object for this card and drain its tasklets. */
+void __MTLK_IFUNC mtlk_mmb_drv_drain_tasklets (mtlk_hw_t *hw)
+{
+  uint8 card_idx;
+  mtlk_mmb_drv_t *obj;
+
+  MTLK_ASSERT(hw);
+  card_idx = mtlk_hw_mmb_get_card_idx(hw);
+  MTLK_ASSERT(card_idx < MTLK_MAX_HW_ADAPTERS_SUPPORTED);
+
+  obj = g_mmb_drv_objs[card_idx];
+  if (__LIKELY(obj != NULL))
+    drain_all_tasklets(obj);
+}
+
+/* Remove the card and clear its registry entry. */
+static void
+_mmb_drv_remove_card_and_deregister(mtlk_hw_api_t *hw_api)
+{
+  g_mmb_drv_objs[mtlk_hw_mmb_get_card_idx(hw_api->hw)] = NULL;
+  mtlk_hw_mmb_remove_card(hw_api);
+}
+
 static BOOL
 _hw_state_is_fw_error(mtlk_hw_state_e ohw_state){
   return (ohw_state & (MTLK_HW_STATE_ERROR | MTLK_HW_STATE_EXCEPTION |
@@ -1432,8 +1493,9 @@ _mmb_drv_cleanup(mtlk_mmb_drv_t *obj, BOOL is_rollback)
                       mtlk_eeprom_psdb_parse_stop, (obj->hw_api->hw));
     MTLK_CLEANUP_STEP(mmb_drv, MMB_CCR_INIT, MTLK_OBJ_PTR(obj),
                       mtlk_ccr_cleanup, (&obj->ccr));
+    /* Also clears the registry entry for this card. */
     MTLK_CLEANUP_STEP(mmb_drv, MMB_HW_CARD_CREATE, MTLK_OBJ_PTR(obj),
-                      mtlk_hw_mmb_remove_card, (obj->hw_api));
+                      _mmb_drv_remove_card_and_deregister, (obj->hw_api));
   MTLK_CLEANUP_END(mmb_drv, MTLK_OBJ_PTR(obj));
 }
 
@@ -1574,6 +1636,9 @@ _mmb_drv_init (mtlk_mmb_drv_t *obj, mtlk_card_type_t hw_type)
 
     /* get short HW handle accessor */
     hw = obj->hw_api->hw;
+
+    /* Save this object so it can be found by card index. */
+    g_mmb_drv_objs[mtlk_hw_mmb_get_card_idx(hw)] = obj;
 
     MTLK_INIT_STEP(mmb_drv, MMB_CCR_INIT, MTLK_OBJ_PTR(obj),
                    mtlk_ccr_init, (&obj->ccr, hw_type, hw, obj->bar0, obj->bar1,

@@ -904,6 +904,22 @@ static bool cfg80211_is_wiphy_oper_chan(struct wiphy *wiphy,
 		chandef = wdev_chandef(wdev, 0);
 		wdev_lock(wdev);
 		if (!cfg80211_beaconing_iface_active(wdev)) {
+#ifdef ONEWIFI_IWLWAV_DEV
+		/*
+		 * [RDKB]: When all other interfaces are
+		 * disabled and the primary wlan2.0 interface is changing its
+		 * SSID on a DFS channel, the VAP may fail to come up. During
+		 * the SSID change, cfg80211_beaconing_iface_active() may see
+		 * no beaconing VAPs on the radio and change the DFS state.
+		 * Solution: Treating wlan2 interface as beaconing, so that
+		 * the DFS state does not change and the VAP can come up successfully.
+		 */
+			if (wdev->netdev && !strcmp(wdev->netdev->name, "wlan2") && netif_running(wdev->netdev))
+			{
+				wdev_unlock(wdev);
+				return true;
+			}
+#endif /* ONEWIFI_IWLWAV_DEV */
 			wdev_unlock(wdev);
 			continue;
 		}

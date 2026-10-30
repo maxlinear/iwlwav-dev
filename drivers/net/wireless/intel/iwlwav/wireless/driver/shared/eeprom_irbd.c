@@ -21,6 +21,7 @@
 #include "dataex.h"
 #include "mtlkhal.h"
 #include "mhi_dut.h"
+#include "fw_recovery.h"
 #include "hw_mmb.h"
 #include "eeprom.h"
 
@@ -985,6 +986,13 @@ _mtlk_eeprom_irbd_on_dut_drv_cmd
       err = mtlk_hw_set_prop(mtlk_vap_get_hwapi(obj->vap), MTLK_HW_RESET, NULL, 0);
       if (err != MTLK_ERR_OK) {
         ELOG_D("Failed to trigger reset, error %d", err);
+      } else {
+        mtlk_core_t *core = mtlk_vap_get_core(obj->vap);
+
+        err = wave_rcvry_wait_completion_if_needed(core);
+        if (err != MTLK_ERR_OK) {
+          ELOG_D("DUT recovery wait failed, error %d", err);
+        }
       }
       goto out;
     case DUT_DGM_CHANGE_BAND_REQ:

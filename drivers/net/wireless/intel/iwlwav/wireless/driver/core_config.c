@@ -45,6 +45,7 @@
 #include "mtlk_gpl_helper.h"
 #include "log_drv.h"
 #include "fw_recovery.h"
+#include "vendor_cmds.h"
 
 #define LOG_LOCAL_GID   GID_CORE_CONFIG
 #define LOG_LOCAL_FID   0
@@ -1591,6 +1592,7 @@ core_cfg_internal_request_sid (mtlk_core_t *nic, IEEE_ADDR *addr, uint16 *p_sid)
     ILOG1_DDY("CID-%04x: SID %u is requested for STA %Y", oid, sid, addr->au8Addr);
     res = wave_hw_set_sid_in_use(mtlk_vap_get_hw(vap_handle), sid, mtlk_vap_get_id_fw(vap_handle));
     if (res == MTLK_ERR_OK) {
+      wave_hw_set_sid_mac(mtlk_vap_get_hw(vap_handle), sid, addr);
       *p_sid = sid;
     } else {
       /* a possible error can be handled somehow later */
@@ -8581,8 +8583,8 @@ wave_core_store_fils_discovery_frame (mtlk_handle_t hcore, const void* data, uin
     u8 mbssid_vap = MTLK_CORE_PDB_GET_INT(core, PARAM_DB_CORE_MBSSID_VAP);
     if (mbssid_vap < WAVE_RADIO_OPERATION_MODE_MBSSID_NON_TRANSMIT_VAP) {
       mtlk_pdb_t *radio_pdb = wave_radio_param_db_get(wave_vap_radio_get(core->vap_handle));
-      wave_pdb_set_int(radio_pdb, PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN, size);
-      res = wave_pdb_set_binary(radio_pdb, PARAM_DB_RADIO_FILS_DISCOVERY_FRAME, frame, size);
+      wave_pdb_set_int(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN, size);
+      res = wave_pdb_set_binary(radio_pdb, (mtlk_pdb_id_t)PARAM_DB_RADIO_FILS_DISCOVERY_FRAME, frame, size);
       if (MTLK_ERR_OK == res)
         ILOG1_D("FILS Discovery template saved for mbssid_vap %d", mbssid_vap);
       else
@@ -9296,6 +9298,24 @@ _wave_core_set_ml_configured(mtlk_core_t *core)
 }
 
 static void
+_wave_core_new_mld_vap_notify(mtlk_core_t *core, u8 *mld_mac, u8 num_of_links)
+{
+  mtlk_core_t* master_core = mtlk_core_get_master(core->vap_handle);
+  struct mxl_new_mld_vap new_mld_vap = {0};
+  mtlk_error_t event_res = MTLK_ERR_OK;
+
+  new_mld_vap.num_of_links = num_of_links;
+  mtlk_osal_copy_eth_addresses(new_mld_vap.mld_addr, mld_mac);
+  event_res = wave_nl_send_msg(LTQ_NL80211_VENDOR_EVENT_NEW_MLD_VAP,
+                         mtlk_core_get_wdev(master_core->vap_handle),
+                         &new_mld_vap, sizeof(new_mld_vap));
+  if (event_res != MTLK_ERR_OK) {
+    WLOG_DD("CID-%04x: Failed to send NEW_MLD_VAP notification for MLD setup, res=%d",
+            mtlk_vap_get_oid(master_core->vap_handle), event_res);
+  }
+}
+
+static void
 _wave_core_update_ml_vap_info (mtlk_core_t *core,  struct _mxl_vendor_mld_info *ml_info)
 {
   int radio_id, sib_id, sib_vap_id, result;
@@ -9363,6 +9383,9 @@ _wave_core_update_ml_vap_info (mtlk_core_t *core,  struct _mxl_vendor_mld_info *
   wave_vap_manager_update_ml_vap_info(core->vap_handle, ml_vap_info);
 
   _wave_core_set_ml_configured(core);
+
+  _wave_core_new_mld_vap_notify(core, ml_info->ap_mld_mac,
+                                ml_vap_info.num_of_sibling_vaps + 1); /* +1 for the self link */
 }
 
 mtlk_error_t __MTLK_IFUNC
@@ -9480,6 +9503,23 @@ wave_core_set_ml_sid (mtlk_handle_t hcore, const void *data, uint32 data_size)
   MTLK_CLPB_END
 }
 
+static void
+_wave_core_del_mld_vap_notify(mtlk_core_t *core, u8 *mld_mac)
+{
+  mtlk_core_t* master_core = mtlk_core_get_master(core->vap_handle);
+  struct mxl_del_mld_vap del_mld_vap = {0};
+  mtlk_error_t event_res = MTLK_ERR_OK;
+
+  mtlk_osal_copy_eth_addresses(del_mld_vap.mld_addr, mld_mac);
+  event_res = wave_nl_send_msg(LTQ_NL80211_VENDOR_EVENT_DEL_MLD_VAP,
+                         mtlk_core_get_wdev(master_core->vap_handle),
+                         &del_mld_vap, sizeof(del_mld_vap));
+  if (event_res != MTLK_ERR_OK) {
+    WLOG_DD("CID-%04x: Failed to send DEL_MLD_VAP notification for MLD removal, res=%d",
+            mtlk_vap_get_oid(master_core->vap_handle), event_res);
+  }
+}
+
 mtlk_error_t __MTLK_IFUNC
 wave_core_send_remove_mld (mtlk_core_t *nic, struct mxl_mld_remove *mld_rem)
 {
@@ -9489,6 +9529,7 @@ wave_core_send_remove_mld (mtlk_core_t *nic, struct mxl_mld_remove *mld_rem)
   UMI_DESTROY_MLD  *psUmiDestroyMld;
   volatile uint16  *pStatus;
   struct _mxl_vendor_mld_info ml_info;
+  u8 mld_mac[IEEE_ADDR_LEN] = {0};
   u8 sib_idx;
 
   MTLK_ASSERT(NULL != nic);
@@ -9501,6 +9542,9 @@ wave_core_send_remove_mld (mtlk_core_t *nic, struct mxl_mld_remove *mld_rem)
       goto FINISH;
     }
   }
+
+  if (mld_rem->sendto_fw)
+    wave_pdb_get_mac(mtlk_vap_get_param_db(nic->vap_handle), PARAM_DB_CORE_AP_MLD_MAC, mld_mac);
 
   ml_info.mld_id = MTLK_PARAM_DB_INVALID_UINT8;
   for (sib_idx = 0; sib_idx < NUM_OF_SIBLING_LINKS; sib_idx++)
@@ -9544,6 +9588,7 @@ wave_core_send_remove_mld (mtlk_core_t *nic, struct mxl_mld_remove *mld_rem)
   }
 END:
   wave_ml_vap_info_cleanup(nic->vap_handle);
+  _wave_core_del_mld_vap_notify(nic, mld_mac);
 FINISH:
   if (man_entry) {
     mtlk_txmm_msg_cleanup(&man_msg);
@@ -11310,17 +11355,47 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
 
   /* priority need to be updated only for mld sta in STR mode */
   if (dst_sta && wave_is_mld_sta(dst_sta)) {
-    info = wave_vap_manager_get_str_tid_spreading_info(dst_sta->vap_handle);
-    if (!info || !info->active)
+    if (__UNLIKELY(NULL == dst_sta->vap_handle)) {
+      /* was a NULL-deref crash here - log instead of dereferencing */
+      ELOG_PPD("wave_core_qos_adjust_be_priority: ML dst_sta=%p has NULL vap_handle (mac80211_sta=%p), ref_cnt=%d",
+               dst_sta, wv_sta_entry_get_mac80211_sta(dst_sta),
+               mtlk_osal_atomic_get(&dst_sta->ref_cnt));
+      ELOG_Y("wave_core_qos_adjust_be_priority: affected STA addr %Y",
+             mtlk_sta_get_addr(dst_sta)->au8Addr);
+      return;
+    }
+
+    /* Skip priority adjustment for single-link MLD VAP/STA */
+    if ((mtlk_vap_ml_get_num_of_siblings(dst_sta->vap_handle) == 0) || mtlk_is_single_link_mld_sta(dst_sta))
       return;
 
-    ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(dst_sta);
-    if (!ml_sta_tid_spread_info)
+    /* mtlk_vap_ml_lock_acquire() is held from here through every use of info below, so the fetch can't race wave_ml_vap_info_cleanup() freeing it - that function now holds this same lock for its entire teardown (see WLANRTSYS-98211) and only frees info after releasing it. */
+    mtlk_vap_ml_lock_acquire(dst_sta->vap_handle);
+    info = wave_vap_manager_get_str_tid_spreading_info(dst_sta->vap_handle);
+    if (__UNLIKELY(NULL == info) || __UNLIKELY(FALSE == info->active)) {
+      ELOG_PPD("wave_core_qos_adjust_be_priority: ML dst_sta=%p vap_handle=%p returned NULL tid_spread_info, ref_cnt=%d",
+               dst_sta, dst_sta->vap_handle,
+               mtlk_osal_atomic_get(&dst_sta->ref_cnt));
+      ELOG_Y("wave_core_qos_adjust_be_priority: affected STA addr %Y",
+             mtlk_sta_get_addr(dst_sta)->au8Addr);
+      mtlk_vap_ml_lock_release(dst_sta->vap_handle);
       return;
+    }
+
+    /* dst_sta->lock is held from here through every use of ml_sta_tid_spread_info below, so the fetch below can never race wave_cleanup_ml_sta_info()/_mtlk_sta_ml_info_cleanup() releasing and freeing it out from under us (those acquire the owning sta's own ->lock before clearing its copy of the pointer - see _wave_sta_release_tid_spread_info() in stadb.c). mtlk_osal_mem_alloc() below is GFP_ATOMIC, so it's safe to keep this lock held across it. */
+    mtlk_osal_lock_acquire(&dst_sta->lock);
+    ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(dst_sta);
+    if (!ml_sta_tid_spread_info) {
+      mtlk_osal_lock_release(&dst_sta->lock);
+      mtlk_vap_ml_lock_release(dst_sta->vap_handle);
+      return;
+    }
 
     if (ntohs(ether_header->h_proto) == ETH_P_IP) {
       iph = (struct iphdr *)((mtlk_handle_t)ether_header + sizeof(struct ethhdr));
       if ((iph->protocol != IPPROTO_UDP) && (iph->protocol != IPPROTO_TCP)) {
+        mtlk_osal_lock_release(&dst_sta->lock);
+        mtlk_vap_ml_lock_release(dst_sta->vap_handle);
         return;
       }
       tcph = (struct tcphdr*)((uint8 *)iph + iph->ihl*4);
@@ -11328,43 +11403,48 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
 
       if ((priority == TID0) || (priority == TID3)) {
         MTLK_HASH_ENTRY_T(skb_hash) *h;
+        /* Shared across every linked sta, mutated under a different sta->lock by a sibling - needs its own lock too, nested inside dst_sta->lock. */
+        mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
         high_rate_tid = ml_sta_tid_spread_info->high_rate_tid;
         low_rate_tid = ml_sta_tid_spread_info->low_rate_tid;
+        mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
 
         /* Avoid adding hash entry for end of TCP connection */
         if (iph->protocol == IPPROTO_TCP && (tcph->rst || tcph->fin)) {
           mtlk_df_nbuf_set_priority(nbuf, high_rate_tid);
-          mtlk_osal_lock_acquire(&dst_sta->lock);
           if (!dst_sta->skb_hash.nof_buckets) {
             mtlk_osal_lock_release(&dst_sta->lock);
+            mtlk_vap_ml_lock_release(dst_sta->vap_handle);
             return;
           }
           h = mtlk_hash_find_skb_hash(&dst_sta->skb_hash, &nbuf->hash);
           if (h) {
             /* Cleanup if hash entry exists */
             tid_hash_info = MTLK_CONTAINER_OF(h, tid_hash_map_info, hentry);
-            if (ml_sta_tid_spread_info) {
-              if (tid_hash_info->tid == low_rate_tid && ml_sta_tid_spread_info->curr_load_low_rate_tid)
-                ml_sta_tid_spread_info->curr_load_low_rate_tid--;
-              else if (ml_sta_tid_spread_info->curr_load_high_rate_tid)
-                ml_sta_tid_spread_info->curr_load_high_rate_tid--;
-              if (tid_hash_info->higher_len_rcvd && ml_sta_tid_spread_info->tid_remap_flip)
-                ml_sta_tid_spread_info->tid_remap_flip--;
-              if (ml_sta_tid_spread_info->tid_flip)
-                ml_sta_tid_spread_info->tid_flip--;
-            }
+            mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
+            if (tid_hash_info->tid == low_rate_tid && ml_sta_tid_spread_info->curr_load_low_rate_tid)
+              ml_sta_tid_spread_info->curr_load_low_rate_tid--;
+            else if (ml_sta_tid_spread_info->curr_load_high_rate_tid)
+              ml_sta_tid_spread_info->curr_load_high_rate_tid--;
+            if (tid_hash_info->higher_len_rcvd && ml_sta_tid_spread_info->tid_remap_flip)
+              ml_sta_tid_spread_info->tid_remap_flip--;
+            if (ml_sta_tid_spread_info->tid_flip)
+              ml_sta_tid_spread_info->tid_flip--;
+            mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
             mtlk_hash_remove_skb_hash(&dst_sta->skb_hash, &tid_hash_info->hentry);
             mtlk_osal_lock_release(&dst_sta->lock);
+            mtlk_vap_ml_lock_release(dst_sta->vap_handle);
             mtlk_osal_mem_free(tid_hash_info);
             return;
           }
           mtlk_osal_lock_release(&dst_sta->lock);
+          mtlk_vap_ml_lock_release(dst_sta->vap_handle);
           return;
         }
 
-        mtlk_osal_lock_acquire(&dst_sta->lock);
         if (!dst_sta->skb_hash.nof_buckets) {
           mtlk_osal_lock_release(&dst_sta->lock);
+          mtlk_vap_ml_lock_release(dst_sta->vap_handle);
           return;
         }
         h = mtlk_hash_find_skb_hash(&dst_sta->skb_hash, &nbuf->hash);
@@ -11373,6 +11453,7 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
           tid_hash_info = MTLK_CONTAINER_OF(h, tid_hash_map_info, hentry);
           tid_hash_info->timestamp = mtlk_osal_timestamp_to_ms(mtlk_osal_timestamp());
           if (iph->protocol == IPPROTO_TCP) {
+            mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
             if ((ntohs(iph->tot_len) < LOW_RATE_TID_IP_HDRLEN_THOLD) && !(tid_hash_info->higher_len_rcvd)) {
                if (tid_hash_info->tid == high_rate_tid) {
                  tid_hash_info->tid = low_rate_tid;
@@ -11411,20 +11492,22 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
                else
                   ml_sta_tid_spread_info->curr_load_low_rate_tid++;
            }
+            mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
           }
           mtlk_df_nbuf_set_priority(nbuf, tid_hash_info->tid);
-          mtlk_osal_lock_release(&dst_sta->lock);
         } else {
-          mtlk_osal_lock_release(&dst_sta->lock);
-          /* add new hash_entry if nbuf->hash is not known */
+          /* add new hash_entry if nbuf->hash is not known; GFP_ATOMIC alloc is safe while holding dst_sta->lock */
           tid_hash_info = mtlk_osal_mem_alloc(sizeof(tid_hash_map_info), WAVE_MEM_TAG_TID_LINK_SPREADING);
           if (tid_hash_info == NULL) {
             ELOG_D("CID-%04x: Can't allocate memory for tid_hash_info", mtlk_vap_get_oid(dst_sta->vap_handle));
+            mtlk_osal_lock_release(&dst_sta->lock);
+            mtlk_vap_ml_lock_release(dst_sta->vap_handle);
             return;
           }
           memset(tid_hash_info, 0, sizeof(*tid_hash_info));
           tid_hash_info->timestamp = mtlk_osal_timestamp_to_ms(mtlk_osal_timestamp());
           tid_hash_info->skb_hash = nbuf->hash;
+          mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
           ml_sta_tid_spread_info->tid_flip++;
           /* dynamic tid to link spreading */
           if (info->tid_spreading_mode == TID_SPREAD_DYNAMIC)
@@ -11460,14 +11543,15 @@ wave_core_qos_adjust_be_priority (sta_entry *dst_sta, mtlk_nbuf_t *nbuf)
           } else {
             ml_sta_tid_spread_info->curr_load_low_rate_tid++;
           }
+          mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
           /* update the new priority in nbuf */
           mtlk_df_nbuf_set_priority(nbuf, tid_hash_info->tid);
-          mtlk_osal_lock_acquire(&dst_sta->lock);
           mtlk_hash_insert_skb_hash(&dst_sta->skb_hash, &nbuf->hash, &tid_hash_info->hentry);
-          mtlk_osal_lock_release(&dst_sta->lock);
         }
       }
     }
+    mtlk_osal_lock_release(&dst_sta->lock);
+    mtlk_vap_ml_lock_release(dst_sta->vap_handle);
   }
 }
 #endif
@@ -13489,15 +13573,19 @@ _wave_core_store_set_str_tid_link_spreading_config (mtlk_core_t *core, mtlk_str_
   MTLK_ASSERT(core != NULL);
 
   vap_handle = core->vap_handle;
-  ml_vap_tid_spread_info = wave_vap_manager_get_str_tid_spreading_info(vap_handle);
-  if (!ml_vap_tid_spread_info) {
-    ELOG_D("CID-%04x: not an ml vap", mtlk_vap_get_oid(vap_handle));
-    return MTLK_ERR_VALUE;
-  }
 
   if (!tid_spreading_cfg) {
     ELOG_D("CID-%04x: tid_spreading_cfg is invalid", mtlk_vap_get_oid(vap_handle));
     return MTLK_ERR_PARAMS;
+  }
+
+  /* Held for the whole function - ml_vap_tid_spread_info is shared with sibling VAPs and read from the TX datapath (wave_core_qos_adjust_be_priority), which takes this same lock before fetching it. */
+  mtlk_vap_ml_lock_acquire(vap_handle);
+  ml_vap_tid_spread_info = wave_vap_manager_get_str_tid_spreading_info(vap_handle);
+  if (!ml_vap_tid_spread_info) {
+    ELOG_D("CID-%04x: not an ml vap", mtlk_vap_get_oid(vap_handle));
+    mtlk_vap_ml_lock_release(vap_handle);
+    return MTLK_ERR_VALUE;
   }
 
   ILOG1_DS("CID-%04x: STR TID to link spreading %s", mtlk_vap_get_oid(vap_handle), tid_spreading_cfg->cfg.enable ? "enable" : "disable");
@@ -13515,12 +13603,17 @@ _wave_core_store_set_str_tid_link_spreading_config (mtlk_core_t *core, mtlk_str_
       while (h) {
         sta = MTLK_CONTAINER_OF(h, sta_entry, hentry);
         if (sta && wave_is_mld_sta(sta)) {
+          /* stadb->lock does not serialize against sta teardown (which releases/frees this field under sta->lock, not stadb->lock) - need sta->lock too. */
+          mtlk_osal_lock_acquire(&sta->lock);
           ml_sta_tid_spread_info = wave_get_str_sta_tid_spreading_info(sta);
           if (ml_sta_tid_spread_info) {
+            mtlk_osal_lock_acquire(&ml_sta_tid_spread_info->lock);
             ml_sta_tid_spread_info->high_eff_rate_tid_percent = 0;
             ml_sta_tid_spread_info->low_eff_rate_tid_percent = 0;
             wave_core_set_assigned_tid_to_link(ml_sta_tid_spread_info, ml_vap_tid_spread_info->high_bw_vap);
+            mtlk_osal_lock_release(&ml_sta_tid_spread_info->lock);
           }
+          mtlk_osal_lock_release(&sta->lock);
         }
         h = mtlk_hash_enum_next_ieee_addr(&stadb->hash, &e);
       }
@@ -13533,6 +13626,7 @@ _wave_core_store_set_str_tid_link_spreading_config (mtlk_core_t *core, mtlk_str_
     ml_vap_tid_spread_info->tid_split_ratio = tid_spreading_cfg->cfg.ratio;
   }
 
+  mtlk_vap_ml_lock_release(vap_handle);
   return MTLK_ERR_OK;
 }
 
@@ -14217,6 +14311,7 @@ _wave_core_set_allow_3addr_mcast (mtlk_core_t *core, BOOL allow_3addr_mcast)
   man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(vap_handle), NULL);
   if (NULL == man_entry) {
     ELOG_D("CID-%04x: No man entry available", mtlk_vap_get_oid(vap_handle));
+    mtlk_sta_decref(sta); /* De-reference of get_ap */
     return MTLK_ERR_NO_RESOURCES;
   }
 
@@ -14239,6 +14334,7 @@ _wave_core_set_allow_3addr_mcast (mtlk_core_t *core, BOOL allow_3addr_mcast)
     MTLK_CORE_PDB_SET_INT(core, PARAM_DB_CORE_ALLOW_3ADDR_MCAST, allow_3addr_mcast);
   }
 
+  mtlk_sta_decref(sta); /* De-reference of get_ap */
   mtlk_txmm_msg_cleanup(&man_msg);
   return res;
 }
@@ -15871,6 +15967,152 @@ wave_core_get_mru_tx_power_enable (mtlk_handle_t hcore, const void *data, uint32
   res = _wave_core_get_mru_tx_power_enable(core, &enable);
   if (MTLK_ERR_OK == res) {
     MTLK_CFG_SET_ITEM(&cfg, mru_tx_power_enable, enable);
+  }
+
+  return mtlk_clpb_push_res_data(clpb, res, &cfg, sizeof(cfg));
+}
+
+#define ZWDFS_NOISE_SUPPRESS_DEFAULT_PACKET_TH 100
+
+static mtlk_error_t
+_wave_core_send_zwdfs_noise_suppress_req (mtlk_core_t *core, const wave_zwdfs_noise_suppress_t *cfg)
+{
+  mtlk_txmm_msg_t   man_msg;
+  mtlk_txmm_data_t *man_entry;
+  UMI_SET_ZWDFS_NOISE_SUPPRESS *mac_msg;
+  mtlk_error_t res;
+  unsigned oid = mtlk_vap_get_oid(core->vap_handle);
+
+  man_entry = mtlk_txmm_msg_init_with_empty_data(&man_msg, mtlk_vap_get_txmm(core->vap_handle), NULL);
+  if (!man_entry) {
+    ELOG_D("CID-%04x: Can not get TXMM slot", oid);
+    return MTLK_ERR_NO_RESOURCES;
+  }
+
+  man_entry->id           = UM_MAN_SET_ZWDFS_NOISE_SUPPRESS_REQ;
+  man_entry->payload_size = sizeof(UMI_SET_ZWDFS_NOISE_SUPPRESS);
+  mac_msg = (UMI_SET_ZWDFS_NOISE_SUPPRESS *)man_entry->payload;
+  memset(mac_msg, 0, sizeof(*mac_msg));
+  mac_msg->enable            = (uint8)cfg->enable;
+  mac_msg->noisyWifiPacketTh = (uint16)cfg->packet_th;
+
+  res = mtlk_txmm_msg_send_blocked(&man_msg, MTLK_MM_BLOCKED_SEND_TIMEOUT);
+  if ((MTLK_ERR_OK != res) || (UMI_OK != mac_msg->status)) {
+    ELOG_DDD("CID-%04x: UM_MAN_SET_ZWDFS_NOISE_SUPPRESS_REQ failed, res=%d status=%hhu",
+             oid, res, mac_msg->status);
+    if (UMI_OK != mac_msg->status) res = MTLK_ERR_MAC;
+  }
+
+  mtlk_txmm_msg_cleanup(&man_msg);
+  return res;
+}
+
+static mtlk_error_t
+_wave_core_set_zwdfs_noise_suppress (mtlk_core_t *core, const wave_zwdfs_noise_suppress_t *cfg_in)
+{
+  wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
+  wave_zwdfs_noise_suppress_t cfg = *cfg_in;
+  mtlk_error_t res;
+
+  /* D8: only the radio that actually owns the ZWDFS background chain */
+  if (!wave_radio_get_is_zwdfs_background_supp(radio)) {
+    return MTLK_ERR_NOT_SUPPORTED;
+  }
+
+  if (cfg.enable > 1) {
+    ELOG_DD("CID-%04x: ZWDFS noise suppress enable must be 0 or 1 (got %u)",
+            mtlk_vap_get_oid(core->vap_handle), cfg.enable);
+    return MTLK_ERR_PARAMS;
+  }
+
+  if (MTLK_PARAM_DB_VALUE_IS_INVALID(cfg.packet_th)) {
+    /* Threshold argument omitted by the caller - preserve the currently configured value (D1). */
+    wave_zwdfs_noise_suppress_t existing_cfg;
+    mtlk_pdb_size_t existing_cfg_size = sizeof(existing_cfg);
+    if (MTLK_ERR_OK == WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_ZWDFS_NOISE_SUPPRESS, &existing_cfg, &existing_cfg_size)) {
+      cfg.packet_th = existing_cfg.packet_th;
+    } else {
+      cfg.packet_th = ZWDFS_NOISE_SUPPRESS_DEFAULT_PACKET_TH;
+    }
+  } else if (cfg.packet_th > ZWDFS_NOISE_SUPPRESS_MAX_PACKET_TH) {
+    ELOG_DD("CID-%04x: Incorrect ZWDFS noise suppress packet threshold %u",
+            mtlk_vap_get_oid(core->vap_handle), cfg.packet_th);
+    return MTLK_ERR_PARAMS;
+  }
+
+  res = _wave_core_send_zwdfs_noise_suppress_req(core, &cfg);
+  if (MTLK_ERR_OK == res) {
+    WAVE_RADIO_PDB_SET_BINARY(radio, PARAM_DB_RADIO_ZWDFS_NOISE_SUPPRESS, &cfg, sizeof(cfg));
+  }
+  return res;
+}
+
+static mtlk_error_t
+_wave_core_get_zwdfs_noise_suppress (mtlk_core_t *core, wave_zwdfs_noise_suppress_t *cfg)
+{
+  mtlk_pdb_size_t cfg_size = sizeof(*cfg);
+  wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
+
+  if (!wave_radio_get_is_zwdfs_background_supp(radio)) {
+    return MTLK_ERR_NOT_SUPPORTED;
+  }
+
+  return WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_ZWDFS_NOISE_SUPPRESS, cfg, &cfg_size);
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_recover_zwdfs_noise_suppress (mtlk_core_t *core)
+{
+  wave_zwdfs_noise_suppress_t cfg;
+  mtlk_pdb_size_t cfg_size = sizeof(cfg);
+  wave_radio_t *radio = wave_vap_radio_get(core->vap_handle);
+
+  if (!wave_radio_get_is_zwdfs_background_supp(radio)) {
+    return MTLK_ERR_OK;
+  }
+  WAVE_RADIO_PDB_GET_BINARY(radio, PARAM_DB_RADIO_ZWDFS_NOISE_SUPPRESS, &cfg, &cfg_size);
+  return _wave_core_send_zwdfs_noise_suppress_req(core, &cfg);
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_set_zwdfs_noise_suppress (mtlk_handle_t hcore, const void *data, uint32 data_size)
+{
+  mtlk_error_t res = MTLK_ERR_OK;
+  mtlk_core_t *core = (mtlk_core_t *)hcore;
+  wave_zwdfs_noise_suppress_cfg_t *cfg = NULL;
+  uint32 cfg_size;
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **)data;
+
+  MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
+
+  cfg = mtlk_clpb_enum_get_next(clpb, &cfg_size);
+  MTLK_CLPB_TRY(cfg, cfg_size)
+  MTLK_CFG_START_CHEK_ITEM_AND_CALL()
+    MTLK_CFG_CHECK_ITEM_AND_CALL(cfg, zwdfs_noise_suppress, _wave_core_set_zwdfs_noise_suppress,
+                                (core, &cfg->zwdfs_noise_suppress), res);
+
+    MTLK_CFG_END_CHEK_ITEM_AND_CALL()
+  MTLK_CLPB_FINALLY(res)
+    return mtlk_clpb_push_res(clpb, res);
+  MTLK_CLPB_END
+}
+
+mtlk_error_t __MTLK_IFUNC
+wave_core_get_zwdfs_noise_suppress (mtlk_handle_t hcore, const void *data, uint32 data_size)
+{
+  mtlk_error_t res;
+  wave_zwdfs_noise_suppress_cfg_t cfg;
+  wave_zwdfs_noise_suppress_t zwdfs_noise_suppress;
+  mtlk_core_t *core = (mtlk_core_t *)hcore;
+  mtlk_clpb_t *clpb = *(mtlk_clpb_t **)data;
+
+  MTLK_ASSERT(sizeof(mtlk_clpb_t*) == data_size);
+
+  memset(&cfg, 0, sizeof(cfg));
+  memset(&zwdfs_noise_suppress, 0, sizeof(zwdfs_noise_suppress));
+  res = _wave_core_get_zwdfs_noise_suppress(core, &zwdfs_noise_suppress);
+  if (MTLK_ERR_OK == res) {
+    MTLK_CFG_SET_ITEM(&cfg, zwdfs_noise_suppress, zwdfs_noise_suppress);
   }
 
   return mtlk_clpb_push_res_data(clpb, res, &cfg, sizeof(cfg));

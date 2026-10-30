@@ -75,12 +75,19 @@ get_back_guard_len(struct mem_obj *mem)
   return mem_leak_get_full_allocation_size(mem->size) - MTLK_MEM_ALLOC_ALIGN - mem->size;
 }
 
+#if LINUX_VERSION_IS_GEQ(6,6,0)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattribute-warning"
+#endif
 static void 
 guards_set (struct mem_obj *mem)
 {
-  memset(GET_FGUARD_POS(mem), FRONT_GUARD_CHAR, FRONT_GUARD_LEN);
-  memset(GET_BGUARD_POS(mem), BACK_GUARD_CHAR,  get_back_guard_len(mem));
+  memset((void *)GET_FGUARD_POS(mem), FRONT_GUARD_CHAR, FRONT_GUARD_LEN);
+  memset((void *)GET_BGUARD_POS(mem), BACK_GUARD_CHAR,  get_back_guard_len(mem));
 }
+#if LINUX_VERSION_IS_GEQ(6,6,0)
+#pragma GCC diagnostic pop
+#endif
 
 static void 
 guards_check (struct mem_obj *mem)

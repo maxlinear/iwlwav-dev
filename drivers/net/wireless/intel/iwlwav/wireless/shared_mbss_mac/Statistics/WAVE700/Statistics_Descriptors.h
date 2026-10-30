@@ -58,7 +58,7 @@ typedef uint16		StaId;
 #define MAX_NUM_OF_SP_BAND_0_700 			(128)	// number of SPs in Band_0 for wave700 only  - beware - also defined in twtManager.h
 #define MAX_NUM_OF_SP_BAND_1_700			(64)	// number of SPs in Band_1 for wave700 only  - beware - also defined in twtManager.h
 #define MAX_NUM_OF_SP_BAND_2_700			(128)	// number of SPs in Band_2 for wave700 only  - beware - also defined in twtManager.h
-#define MAX_NUM_OF_MU_STA_STATS_ENTRIES_GEN7	(192) // MAX_NUM_OF_HE_MU_UL_GROUPS(12) * MAX_OFDMA_STAS_IN_GROUP(8) * 2 (Due to StatisticsManager not synced with HeGroupManager)
+#define MAX_NUM_OF_MU_STA_STATS_ENTRIES_GEN7	(96) // MAX_NUM_OF_HE_MU_UL_GROUPS(12) * MAX_OFDMA_STAS_IN_GROUP(4) * 2 (Due to StatisticsManager not synced with HeGroupManager)
 #define MAX_NUM_OF_MIMO_STA_STATS_ENTRIES_GEN7   (96) // MAX_NUM_OF_HE_MU_UL_GROUPS(12) * MAX_MIMO_STAS_IN_GROUP(4)  * 2 (Due to StatisticsManager not synced with HeGroupManager)
 #define REDUCED_SPATIAL_STREAMS_SIZE_GEN7        (2) // A reduced number of SPATIAL streams done to reduce the memory footprint of the DL MIMO statistics
 #define REDUCED_MCS_SIZE_GEN7                    (4) // A reduced number of MCS done to reduce the memory footprint of the DL MIMO statistics
@@ -692,11 +692,23 @@ typedef struct
     uint16 heMuFastProbeTriggeredCnt[MAX_STA_IN_GROUP];
     uint16 heMuFastProbeNotFinishedCnt[MAX_STA_IN_GROUP];
     uint16 heMuCollisionDetectedCnt[MAX_STA_IN_GROUP];
+	uint16 phyRate[MAX_STA_IN_GROUP];
+	uint32 dataRate[MAX_STA_IN_GROUP];
+    uint16 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+    uint16 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+    uint16 totalPpdus[MAX_STA_IN_GROUP];
+    uint16 reserved1; /* explicit padding for uint32 airUse alignment */
+    uint32 airUse[MAX_STA_IN_GROUP];
+    uint32 dataUse[MAX_STA_IN_GROUP];
+    uint8  muPER[MAX_STA_IN_GROUP];
+    uint8  muBw[MAX_STA_IN_GROUP];
+    uint8  muMcsNss[MAX_STA_IN_GROUP];
     StaId  staId[MAX_STA_IN_GROUP];
     int8   targetRssi[MAX_STA_IN_GROUP];
     int8   txPower[MAX_STA_IN_GROUP];
     uint8  mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS_GEN7];
     uint8  groupId;
+    uint8  reserved2[3]; /* explicit padding for 4-byte struct alignment */
 #ifdef CPU_ARC
 } LinkAdaptationMuHeEhtDLStatistics_t;
 #else
@@ -711,12 +723,23 @@ typedef struct
     uint16 rxPPDUsCnt[MAX_STA_IN_GROUP];
     uint16 changedWpCnt[MAX_STA_IN_GROUP];
     uint16 collisionDetectedCnt[MAX_STA_IN_GROUP];
+	uint16 phyRate[MAX_STA_IN_GROUP];
+	uint32 dataRate[MAX_STA_IN_GROUP];
+    uint16 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+    uint16 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+    uint16 totalPpdus[MAX_STA_IN_GROUP];
+    uint16 reserved1; /* explicit padding for uint32 airUse alignment */
+    uint32 airUse[MAX_STA_IN_GROUP];
+    uint32 dataUse[MAX_STA_IN_GROUP];
+    uint8  muBw[MAX_STA_IN_GROUP];
+    uint8  muMcsNss[MAX_STA_IN_GROUP];
     StaId  staId[MAX_STA_IN_GROUP];
     int8   targetRSSI[MAX_STA_IN_GROUP];
     uint8  longTermErrorRate[MAX_STA_IN_GROUP];
     uint8  workingPointErrorRate[MAX_STA_IN_GROUP];
     uint8  mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS_GEN7];
     uint8  groupId;
+    uint8  reserved2[3]; /* explicit padding for 4-byte struct alignment */
 #ifdef CPU_ARC
 } LinkAdaptationMuHeEhtULStatistics_t;
 #else

@@ -114,6 +114,7 @@ enum {
   /* COC configuration */
   PRM_ID_COC_POWER_MODE,
   PRM_ID_COC_AUTO_PARAMS,
+  PRM_ID_COC_HAL_DECISION,
 
   /* MBSS configuration */
   PRM_ID_VAP_ADD,
@@ -280,6 +281,7 @@ enum {
 #endif /* WAVE_ENABLE_PIE */
   PRM_ID_SCS_ENABLE,
   PRM_ID_MSCS_ENABLE,
+  PRM_ID_ZWDFS_NOISE_SUPPRESS,
 
   PRM_ID_RADIO_LAST
 };
@@ -424,6 +426,13 @@ BOOL
 mtlk_df_user_backhaul_sta_is_set(mtlk_df_user_t *df_user);
 BOOL
 mtlk_df_user_is_equal_backhaul_sta(mtlk_df_user_t *df_user, sta_entry * sta);
+/* Atomic compound ops - use these instead of composing is_set()/is_equal()
+ * with a separate set() call, which is racy (see mtlk_vap_manager.c
+ * mtlk_vap_bind_backhaul_sta(_to_secondary_vap)()/mtlk_vap_unbind_backhaul_sta()). */
+BOOL
+mtlk_df_user_set_backhaul_sta_if_unset(mtlk_df_user_t *df_user, sta_entry *new_sta);
+BOOL
+mtlk_df_user_clear_backhaul_sta_if_equal(mtlk_df_user_t *df_user, sta_entry *expected_sta);
 mtlk_error_t
 mtlk_df_user_push_backhaul_sta_to_pending_list(mtlk_df_user_t *df_user, sta_entry *backhaul_sta);
 BOOL

@@ -161,7 +161,7 @@ typedef struct {
   uint32 mbssid_sub_part_len[MAX_MBSSID_SUB_PARTS];
 } ml_mbss_critical_update_info_t;
 
-void static _wave_check_and_free_mbssid_buffer (mtlk_hw_t *hw, uint32 *p_mbssid_dma_addr, uint8  **p_mbssid_critical_update, int *p_len)
+void static _wave_check_and_free_mbssid_buffer (mtlk_hw_t *hw, dma_addr_t *p_mbssid_dma_addr, uint8  **p_mbssid_critical_update, int *p_len)
 {
   if (!mtlk_hw_type_is_gen7(hw))
     return;
@@ -527,14 +527,7 @@ static void _wave_beacon_update_eht_mld_info(mtlk_core_t *core, UMI_BEACON_SET *
     ml_critical_update->max_chan_switch_time = 0;
   }
 
-
-  if (!ml_critical_update->mbss_info.use_mbss_info || !mbss_info) {
-    ILOG1_D("CID-%04x: No MBSS info available", mtlk_vap_get_oid(core->vap_handle));
-    goto finish;
-  }
-
-  memset(psUmiBeacon->u8MbssidSubIdxToVapId, INVALID_IDX_TO_VAP_ID, sizeof(psUmiBeacon->u8MbssidSubIdxToVapId));
-
+  /* Check and set MBSS non-TX critical update flags first */
   if (ml_critical_update->flags & NON_TX_BSS_CRITICAL_UPDATE_COMMON) {
     if (!psUmiBeacon->u32partMbssidAddr) {
       ELOG_D("CID-%04x: MbssidAddr not provided", mtlk_vap_get_oid(core->vap_handle));
@@ -543,6 +536,19 @@ static void _wave_beacon_update_eht_mld_info(mtlk_core_t *core, UMI_BEACON_SET *
     MTLK_BFIELD_SET(u8Flags, CRITICAL_UPDATE_NON_TX_BSS, 1);
     if (ml_critical_update->flags & NON_TX_BSS_CRITICAL_UPDATE_CSA) {
       MTLK_BFIELD_SET(u8Flags, CRITICAL_UPDATE_SYNC_WITH_CSA, 1);
+    }
+  }
+
+  /* Use mbss info to insert IEs by FW into ML IEs in MBSSID */
+  if (!ml_critical_update->mbss_info.use_mbss_info || !mbss_info) {
+    ILOG1_D("CID-%04x: No MBSS info available", mtlk_vap_get_oid(core->vap_handle));
+    goto finish;
+  }
+
+  memset(psUmiBeacon->u8MbssidSubIdxToVapId, INVALID_IDX_TO_VAP_ID, sizeof(psUmiBeacon->u8MbssidSubIdxToVapId));
+
+  if (ml_critical_update->flags & NON_TX_BSS_CRITICAL_UPDATE_COMMON) {
+    if (ml_critical_update->flags & NON_TX_BSS_CRITICAL_UPDATE_CSA) {
       for (idx = 0; idx < MAX_MBSSID_SUB_PARTS; idx++) {
         psUmiBeacon->u16part5SubLen[idx] = (uint16)mbss_info->mbssid_sub_part_len[idx];
         psUmiBeacon->u16partMbssidSubLen[idx] = (uint16)mbss_info->mbssid_sub_part_len[idx];
@@ -890,7 +896,7 @@ _wave_beacon_prepare_mbssid_sub_parts(mtlk_core_t *core, uint8 *mbss_ie, int buf
 static mtlk_error_t
 _wave_alloc_and_map_mbssid_buffer(mtlk_core_t *core, mtlk_hw_t *hw,
     uint8 *mbssid_src, int mbssid_buf_len,
-    uint8 **pp_mbssid_critical_update, uint32 *p_mbssid_dma_addr)
+  uint8 **pp_mbssid_critical_update, dma_addr_t *p_mbssid_dma_addr)
 {
   mtlk_error_t res;
   uint16 oid = mtlk_vap_get_oid(core->vap_handle);
@@ -930,12 +936,13 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
   mtlk_txmm_msg_t   man_msg;
 #ifdef MTLK_WAVE_700
   uint8             *p_mbssid_critical_update = NULL;
-  uint32            mbssid_dma_addr = 0;
+  dma_addr_t        mbssid_dma_addr = 0;
   int               mbssid_start_offset = 0;
   int               mbssid_buf_len = 0;
   struct mxl_vendor_ml_critical_update ml_critical_update = {0};
   mtlk_pdb_size_t ml_critical_update_len;
   ml_mbss_critical_update_info_t mbss_info = {0};
+  uint8             use_mbss_info = 0;
   mtlk_error_t      res;
 #endif
   int               part1_len;
@@ -976,13 +983,14 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
     MTLK_CORE_PDB_GET_BINARY(core, PARAM_DB_CORE_BSS_CRITICAL_UPDATE,
         &ml_critical_update, &ml_critical_update_len);
 
+    use_mbss_info = ml_critical_update.mbss_info.use_mbss_info;
     /* Process only if MBSSID IE exists */
     if (part5_len) {
       mbssid_buf_len = part5_len;
       mbssid_start_offset = part1_len + part2_len + part3_len + part4_len;
 
       /* Non-TX MBSS Critical Update CSA or MCST */
-      if (ml_critical_update.flags & (NON_TX_BSS_CRITICAL_UPDATE_CSA | ML_NON_TX_BSS_PER_STA_PROF_MCST)) {
+      if (use_mbss_info && (ml_critical_update.flags & (NON_TX_BSS_CRITICAL_UPDATE_CSA | ML_NON_TX_BSS_PER_STA_PROF_MCST))) {
         res = _wave_beacon_prepare_mbssid_sub_parts(core, tmpl->ptr + mbssid_start_offset,
                                                     mbssid_buf_len, &ml_critical_update,
                                                     &mbss_info, &p_mbssid_critical_update);
@@ -1003,7 +1011,7 @@ static int _wave_beacon_man_template_push(mtlk_core_t *core, beacon_template_t *
           }
         }
         /* General Non-TX MBSS Critical Update Common */
-      } else if (ml_critical_update.flags & NON_TX_BSS_CRITICAL_UPDATE_COMMON) {
+      } else if (!use_mbss_info && (ml_critical_update.flags & NON_TX_BSS_CRITICAL_UPDATE_COMMON)) {
         res = _wave_alloc_and_map_mbssid_buffer(core, hw, tmpl->ptr + mbssid_start_offset,
             mbssid_buf_len, &p_mbssid_critical_update, &mbssid_dma_addr);
         if (res != MTLK_ERR_OK) {
@@ -1496,39 +1504,35 @@ _wave_beacon_template_parsing_ies(mtlk_core_t *core, mtlk_beacon_data_t *beacon_
 
   /* HE Capabilities IE */
   {
-    /* Find first occurrence of IE_EXTENSION out of three for each,
-                                        capabilities, operation and EDCA elements. */
-    const u8 *he_cap_ie = cfg80211_find_ie(IE_EXTENSION, beacon_data->tail, beacon_data->tail_len);
+    const u8 *he_cap_ie = cfg80211_find_ext_ie(WLAN_EID_EXT_HE_CAPABILITY, beacon_data->tail, beacon_data->tail_len);
 
     if (he_cap_ie)
     {
-      if (WLAN_EID_HE_CAP_EXT == he_cap_ie[WLAN_EID_EXTENSION_ID_OFFSET]) {
-        set_bss_flags |= MTLK_BFIELD_VALUE(VAP_ADD_FLAGS_HE, 1, uint8);
-        /* Check the B2 of the Channel Width Set, size of NSS MCS depends on it */
-        if (MTLK_U_BITS_GET(he_cap_ie[IE_HE_PHY_CHANNEL_WIDTH_SET_OFFSET], HE_PHY_CHANNEL_WIDTH_SET_B2, 1)) {
-          wave_pdb_set_binary(param_db_core, PARAM_DB_CORE_HE_MCS_NSS, he_cap_ie + IE_HE_MCS_NSS_OFFSET, HE_MCS_NSS_160MHZ_LEN);
-          is_he_160mhz_supported = TRUE;
-          mtlk_dump(1, &he_cap_ie[IE_HE_MCS_NSS_OFFSET], HE_MCS_NSS_160MHZ_LEN, "dump of 160MHz HE_MCS_NSS:");
-        } else {
-          wave_pdb_set_binary(param_db_core, PARAM_DB_CORE_HE_MCS_NSS, he_cap_ie + IE_HE_MCS_NSS_OFFSET, HE_MCS_NSS_80MHZ_LEN);
-          mtlk_dump(1, &he_cap_ie[IE_HE_MCS_NSS_OFFSET], HE_MCS_NSS_80MHZ_LEN, "dump of HE_MCS_NSS:");
-        }
-
-        if(MTLK_U_BITS_GET(he_cap_ie[IE_HE_MAC_TWT_RESPONDER_OFFSET], HE_MAC_TWT_RESPONDER_SUPPORT, HE_MAC_TWT_RESPONDER_SUPPORT_WIDTH)) {
-            wave_pdb_set_int(param_db_core, PARAM_DB_CORE_TWT_OPERATION_MODE, HE_MAC_TWT_RESPONDER_SUPPORTED);
-            ILOG2_D("CID-%04x: PARAM_DB_CORE_TWT_OPERATION_MODE = 1", mtlk_vap_get_oid(core->vap_handle));
-        }
-
-	/* Broadcast TWT support stored in the PDB core */
-        if(MTLK_U_BITS_GET(he_cap_ie[IE_HE_MAC_BCAST_TWT_RESPONDER_OFFSET], HE_MAC_BCAST_TWT_RESPONDER_SUPPORT, 
-                           HE_MAC_BCAST_TWT_RESPONDER_SUPPORT_WIDTH)) {
-            wave_pdb_set_int(param_db_core, PARAM_DB_CORE_BCAST_TWT_OPERATION_MODE, HE_MAC_BCAST_TWT_RESPONDER_SUPPORTED);
-            ILOG2_D("CID-%04x: PARAM_DB_CORE_BCAST_TWT_OPERATION_MODE = 1", mtlk_vap_get_oid(core->vap_handle));
-        }
-
+      set_bss_flags |= MTLK_BFIELD_VALUE(VAP_ADD_FLAGS_HE, 1, uint8);
+      /* Check the B2 of the Channel Width Set, size of NSS MCS depends on it */
+      if (MTLK_U_BITS_GET(he_cap_ie[IE_HE_PHY_CHANNEL_WIDTH_SET_OFFSET], HE_PHY_CHANNEL_WIDTH_SET_B2, 1)) {
+        wave_pdb_set_binary(param_db_core, PARAM_DB_CORE_HE_MCS_NSS, he_cap_ie + IE_HE_MCS_NSS_OFFSET, HE_MCS_NSS_160MHZ_LEN);
+        is_he_160mhz_supported = TRUE;
+        mtlk_dump(1, &he_cap_ie[IE_HE_MCS_NSS_OFFSET], HE_MCS_NSS_160MHZ_LEN, "dump of 160MHz HE_MCS_NSS:");
       } else {
-        ELOG_DDD("Extension ID %d Offset %d Expected %d", he_cap_ie[WLAN_EID_EXTENSION_ID_OFFSET], WLAN_EID_EXTENSION_ID_OFFSET, WLAN_EID_HE_CAP_EXT);
+        wave_pdb_set_binary(param_db_core, PARAM_DB_CORE_HE_MCS_NSS, he_cap_ie + IE_HE_MCS_NSS_OFFSET, HE_MCS_NSS_80MHZ_LEN);
+        mtlk_dump(1, &he_cap_ie[IE_HE_MCS_NSS_OFFSET], HE_MCS_NSS_80MHZ_LEN, "dump of HE_MCS_NSS:");
       }
+
+      if(MTLK_U_BITS_GET(he_cap_ie[IE_HE_MAC_TWT_RESPONDER_OFFSET], HE_MAC_TWT_RESPONDER_SUPPORT, HE_MAC_TWT_RESPONDER_SUPPORT_WIDTH)) {
+          wave_pdb_set_int(param_db_core, PARAM_DB_CORE_TWT_OPERATION_MODE, HE_MAC_TWT_RESPONDER_SUPPORTED);
+          ILOG2_D("CID-%04x: PARAM_DB_CORE_TWT_OPERATION_MODE = 1", mtlk_vap_get_oid(core->vap_handle));
+      }
+
+      /* Broadcast TWT support stored in the PDB core */
+      if(MTLK_U_BITS_GET(he_cap_ie[IE_HE_MAC_BCAST_TWT_RESPONDER_OFFSET], HE_MAC_BCAST_TWT_RESPONDER_SUPPORT,
+                         HE_MAC_BCAST_TWT_RESPONDER_SUPPORT_WIDTH)) {
+          wave_pdb_set_int(param_db_core, PARAM_DB_CORE_BCAST_TWT_OPERATION_MODE, HE_MAC_BCAST_TWT_RESPONDER_SUPPORTED);
+          ILOG2_D("CID-%04x: PARAM_DB_CORE_BCAST_TWT_OPERATION_MODE = 1", mtlk_vap_get_oid(core->vap_handle));
+      }
+    } else {
+      ILOG1_D("CID-%04x: HE Capabilities IE not found in beacon tail - non-HE BSS or unexpected beacon content",
+              mtlk_vap_get_oid(core->vap_handle));
     }
   }
 
@@ -1793,7 +1797,7 @@ mtlk_error_t _wave_unsolicited_frame_template_push(mtlk_core_t *core, u8 const *
   frame_head_t              *tmp = NULL;
   uint16                    oid = mtlk_vap_get_oid(core->vap_handle);
   uint8                     *templ = NULL;
-  uint32                    dma_addr = 0;
+  dma_addr_t                dma_addr = 0;
   uint8                     buf_index = 0;
   uint8                     free_index = 0;
   wave_radio_t              *radio = wave_vap_radio_get(core->vap_handle);
@@ -1803,7 +1807,7 @@ mtlk_error_t _wave_unsolicited_frame_template_push(mtlk_core_t *core, u8 const *
   unsolicit_tx_frame_info_t *p_frame_info = &frame_info;
   mtlk_pdb_size_t           size = sizeof(unsolicit_tx_frame_info_t);
 
-  pdb_ret = wave_pdb_get_binary(radio_param_db, PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO, (void *)p_frame_info, &size);
+  pdb_ret = wave_pdb_get_binary(radio_param_db, (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO, (void *)p_frame_info, &size);
   if (pdb_ret != MTLK_ERR_OK) {
     ELOG_D("Unable to retrieve unsolicited tx frame info from Param DB! res = %d", pdb_ret);
     return MTLK_ERR_UNKNOWN;
@@ -1874,7 +1878,7 @@ mtlk_error_t _wave_unsolicited_frame_template_push(mtlk_core_t *core, u8 const *
   free_index = (err == MTLK_ERR_OK) ? GET_OTHER_UNSOLICIT_TX_BUF_INDEX(buf_index) : buf_index;
   wave_unsolicited_frame_templ_unmap_free(core, p_frame_info, free_index);
   p_frame_info->buf_index = free_index;
-  pdb_ret = wave_pdb_set_binary(radio_param_db, PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO, (const void *)p_frame_info,
+  pdb_ret = wave_pdb_set_binary(radio_param_db, (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_TX_FRAME_INFO, (const void *)p_frame_info,
                                 sizeof(unsolicit_tx_frame_info_t));
   mtlk_txmm_msg_cleanup(&man_msg);
   if (pdb_ret != MTLK_ERR_OK) {
@@ -1906,13 +1910,13 @@ mtlk_error_t _wave_unsolicited_frame_template_push_wrap( mtlk_core_t *core)
   }
   MTLK_ASSERT(NULL != radio_param_db);
   mode = wave_pdb_get_int(radio_param_db,
-                          PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_MODE);
+                          (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_MODE);
   duration = wave_pdb_get_int(radio_param_db,
-                              PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_DURATION);
+                              (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_DURATION);
   if (mode == WAVE_UNSOLICITED_FRAME_CFG_MODE_PROBE_RESP) {
     time_stamp_offset = TIME_STAMP_OFFSET_IN_PROBE_RESP;
     len = wave_pdb_get_int(radio_param_db,
-                           PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL_LEN);
+                           (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL_LEN);
     if (len)
       buf = mtlk_osal_mem_alloc(len, MTLK_MEM_TAG_BEACON_DATA);
 
@@ -1921,12 +1925,12 @@ mtlk_error_t _wave_unsolicited_frame_template_push_wrap( mtlk_core_t *core)
       send_umi_msg = false;
     } else {
       wave_pdb_get_binary(radio_param_db,
-                          PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL,
+                          (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL,
                           (void *)buf, &len);
        mtlk_dump(2, buf, len, "PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL before UM_MAN_SET_UNSOLICITED_REQ");
     }
   } else if (mode == WAVE_UNSOLICITED_FRAME_CFG_MODE_FILS_DISC) {
-    len = wave_pdb_get_int(radio_param_db, PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN);
+    len = wave_pdb_get_int(radio_param_db, (mtlk_pdb_id_t)PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN);
 
     if (len)
       buf = mtlk_osal_mem_alloc(len, MTLK_MEM_TAG_BEACON_DATA);
@@ -1936,7 +1940,7 @@ mtlk_error_t _wave_unsolicited_frame_template_push_wrap( mtlk_core_t *core)
       send_umi_msg = false;
     } else {
       wave_pdb_get_binary(radio_param_db,
-                          PARAM_DB_RADIO_FILS_DISCOVERY_FRAME,
+                          (mtlk_pdb_id_t)PARAM_DB_RADIO_FILS_DISCOVERY_FRAME,
                           (void *)buf, &len);
       frame_type = FILS_DISCOVERY_FRAME;
       time_stamp_offset = TIME_STAMP_OFFSET_IN_FILS_DISC;
@@ -1981,9 +1985,9 @@ int wave_beacon_man_set_unsolicited_frame_tx(mtlk_handle_t hcore, const void *da
       mode = unsolicited_frame_cfg->cfg.mode;
       duration = unsolicited_frame_cfg->cfg.duration;
       wave_pdb_set_int(param_db_radio,
-                       PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_MODE, mode);
+                       (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_MODE, mode);
       wave_pdb_set_int(param_db_radio,
-                       PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_DURATION, duration);
+                       (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_FRAME_CFG_DURATION, duration);
       ILOG1_DD("Unsolicited frame config received with mode = %d and duration = %d", mode, duration);
       _wave_unsolicited_frame_template_push_wrap(core);
 
@@ -2252,10 +2256,10 @@ int wave_beacon_man_beacon_set(mtlk_handle_t hcore, const void* data, uint32 dat
             probe_resp_templ = _wave_reset_ssid_in_probe_response_templ(core->slow_ctx->probe_resp_templ, probe_resp_templ_len);
           if (probe_resp_templ) {
             wave_pdb_set_int(param_db_radio,
-                             PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL_LEN,
+                             (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL_LEN,
                              probe_resp_templ_len);
             wave_pdb_set_binary(param_db_radio,
-                                PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL,
+                                (mtlk_pdb_id_t)PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL,
                                 probe_resp_templ,
                                 probe_resp_templ_len);
             if (hidden)
@@ -2342,7 +2346,6 @@ int wave_beacon_man_template_ind_handle(mtlk_handle_t hcore, const void *data, u
                               tmpl->dma_addr, tmpl->alloced_size, MTLK_DATA_TO_DEVICE);
     tmpl->dma_addr = 0;
   }
-
   /* if emergency buffer was used in radio module for current VAP */
   if (vap_idx == bmgr_priv->for_vap_idx) {
     /* put emergency template to the current one */

@@ -48,6 +48,9 @@
 #endif /* CONFIG_DMA_MIXCOHERENT */
 #endif /* LINUX_VERSION_IS_GEQ */
 #include  <linux/if_arp.h>
+#ifdef MTLK_TOPAZ_PLATFORM
+#include <linux/cache.h>
+#endif
 
 #include "mem_leak.h"
 #include "compat.h"
@@ -77,6 +80,10 @@
 
 
 #define mtlk_osal_emergency_print(fmt, ...) printk("[MTLKD] " fmt "\n", ##__VA_ARGS__)
+
+#if defined(CONFIG_DMA_MIXCOHERENT) && defined(MTLK_TOPAZ_PLATFORM)
+#error "CONFIG_DMA_MIXCOHERENT and MTLK_TOPAZ_PLATFORM are mutually exclusive"
+#endif
 
 MTLK_DECLARE_OBJPOOL(g_objpool);
 
@@ -140,16 +147,21 @@ void __MTLK_IFUNC mtlk_osal_sync_cache (void *buffer, uint32 size, mtlk_data_dir
 #endif
 
 /* Give ownership of the memory area to PCIe device */
-uint32  __MTLK_IFUNC
+dma_addr_t  __MTLK_IFUNC
 mtlk_osal_map_to_phys_addr (void                  *dev_ctx,
                             void                  *buffer,
                             uint32                 size,
                             mtlk_data_direction_e  direction);
 
-/* Return ownership of the memory area back to CPU */
+/* Return ownership of the memory area back to CPU.
+ * addr must be the full dma_addr_t returned by mtlk_osal_map_to_phys_addr().
+ * On platforms with a >32-bit DMA mask (e.g. Topaz) truncating it to uint32
+ * makes dma_unmap_single() reverse the dma-ranges offset from a corrupted
+ * address, producing an invalid physical address and a panic in
+ * dcache_inval_poc(). */
 static __INLINE void
 mtlk_osal_unmap_phys_addr (void                  *dev_ctx,
-                           uint32                 addr,
+                           dma_addr_t             addr,
                            uint32                 size,
                            mtlk_data_direction_e  direction)
 {
@@ -158,10 +170,24 @@ mtlk_osal_unmap_phys_addr (void                  *dev_ctx,
 #ifdef CONFIG_DMA_MIXCOHERENT
     dma_unmap_single_attrs(dev_ctx, addr, size, direction, DMA_ATTR_NON_CONSISTENT);
 #else
-    dma_unmap_single(dev_ctx, addr, size, direction);
+    dma_unmap_single(dev_ctx, addr, size, (enum dma_data_direction)direction);
 #endif
   }
 }
+
+#ifdef MTLK_TOPAZ_PLATFORM
+static __INLINE void
+wave_osal_mem_dma_sync_for_device (void *dev_ctx, dma_addr_t dma_addr, uint32 size, enum dma_data_direction dir)
+{
+  dma_sync_single_for_device(dev_ctx, dma_addr, size, dir);
+}
+
+static __INLINE void
+wave_osal_mem_dma_sync_for_cpu (void *dev_ctx, dma_addr_t dma_addr, uint32 size, enum dma_data_direction dir)
+{
+  dma_sync_single_for_cpu(dev_ctx, dma_addr, size, dir);
+}
+#endif /* MTLK_TOPAZ_PLATFORM */
 
 #ifdef CPTCFG_IWLWAV_ENABLE_OBJPOOL
 
@@ -187,8 +213,10 @@ mtlk_osal_mem_dma_alloc (uint32 size, uint32 tag)
 static __INLINE int
 mtlk_osal_mem_dma_check_availability (void *dev_ctx)
 {
-  /* Wave device is 32-bit addressing device*/
-#ifdef CPTCFG_IWLWAV_X86_PUMA7_WAVE600_NOSNOOP
+  /* Wave device is 32-bit addressing device */
+#ifdef MTLK_TOPAZ_PLATFORM
+  return (dma_set_mask_and_coherent(dev_ctx, DMA_BIT_MASK(36))) ? MTLK_ERR_NO_RESOURCES : MTLK_ERR_OK;
+#elif defined(CPTCFG_IWLWAV_X86_PUMA7_WAVE600_NOSNOOP)
   return (dma_set_mask(dev_ctx, DMA_BIT_MASK(32))) ? MTLK_ERR_NO_RESOURCES : MTLK_ERR_OK;
 #else
   return (dma_set_mask_and_coherent(dev_ctx, DMA_BIT_MASK(32))) ? MTLK_ERR_NO_RESOURCES : MTLK_ERR_OK;
@@ -198,8 +226,13 @@ mtlk_osal_mem_dma_check_availability (void *dev_ctx)
 /* Allocate DMA coherent memory which is visible for both CPU and device.
  * Typical usage is mailbox, DMA descriptors, rings, etc. */
 #ifdef CPTCFG_IWLWAV_ENABLE_OBJPOOL
+
 #define mtlk_osal_mem_dma_alloc_coherent(drv_ctx, size, dma_addr)  _mtlk_osal_mem_dma_alloc_coherent((drv_ctx), (size), (dma_addr), (MTLK_SLID))
+#ifdef MTLK_TOPAZ_PLATFORM
+#define wave_osal_mem_dma_alloc_noncoherent(drv_ctx, size, dma_addr, dir)  _wave_osal_mem_dma_alloc_noncoherent((drv_ctx), (size), (dma_addr), (dir), (MTLK_SLID))
+#else
 #define wave_osal_mem_dma_alloc_noncoherent(drv_ctx, size, dma_addr)  _wave_osal_mem_dma_alloc_noncoherent((drv_ctx), (size), (dma_addr), (MTLK_SLID))
+#endif
 
 static __INLINE void*
 _mtlk_osal_mem_dma_alloc_coherent (void *dev_ctx, uint32 size, dma_addr_t *dma_addr, mtlk_slid_t caller_slid)
@@ -211,6 +244,23 @@ _mtlk_osal_mem_dma_alloc_coherent (void *dev_ctx, uint32 size, dma_addr_t *dma_a
   (*dma_addr) += guard_offset;
   return out_buf;
 }
+
+#ifdef MTLK_TOPAZ_PLATFORM
+static __INLINE void*
+_wave_osal_mem_dma_alloc_noncoherent (void *dev_ctx, uint32 size, dma_addr_t *dma_addr, enum dma_data_direction dir, mtlk_slid_t caller_slid)
+{
+  void *out_buf;
+  uintptr_t guard_offset;
+  size_t full_size = mem_leak_get_full_allocation_size(size);
+  void *buf = dma_alloc_noncoherent(dev_ctx, full_size, dma_addr, dir, GFP_KERNEL);
+  if (!buf)
+    return NULL;
+  out_buf = mem_leak_handle_allocated_buffer(buf, size, caller_slid);
+  guard_offset = out_buf - buf;
+  (*dma_addr) += guard_offset;
+  return out_buf;
+}
+#endif
 
 #ifdef CONFIG_DMA_MIXCOHERENT
 static __INLINE void*
@@ -235,6 +285,16 @@ mtlk_osal_mem_dma_alloc_coherent (void *dev_ctx, uint32 size, dma_addr_t *dma_ad
 {
   return dma_alloc_coherent(dev_ctx, size, dma_addr, GFP_ATOMIC | GFP_DMA);
 }
+
+#ifdef MTLK_TOPAZ_PLATFORM
+wave_osal_mem_dma_alloc_noncoherent (void *dev_ctx, uint32 size, dma_addr_t *dma_addr, enum dma_data_direction dir)
+{
+  void *addr = dma_alloc_noncoherent(dev_ctx, size, dma_addr, dir, GFP_KERNEL);
+  if (!addr)
+    return NULL;
+  return addr;
+}
+#endif
 
 #ifdef CONFIG_DMA_MIXCOHERENT
 static __INLINE void*
@@ -267,6 +327,26 @@ mtlk_osal_mem_dma_free_coherent (void *dev_ctx, uint32 size, void *buffer, dma_a
   }
 }
 
+#ifdef MTLK_TOPAZ_PLATFORM
+/* Free memory previously allocated by wave_osal_mem_dma_alloc_noncoherent(). */
+static __INLINE void
+wave_osal_mem_dma_free_noncoherent (void *dev_ctx, uint32 size, void *buffer, dma_addr_t dma_addr, enum dma_data_direction dir)
+{
+  if (buffer) {
+    /* Unlike with CPU memory allocators, calling dma_free_attrs() with a NULL buffer is not safe. */
+    #ifdef CPTCFG_IWLWAV_ENABLE_OBJPOOL
+      void *buf = mem_leak_handle_buffer_to_free(buffer);
+      uintptr_t guard_offset = buffer - buf;
+      size_t full_size = mem_leak_get_full_allocation_size(size);
+      dma_addr -= guard_offset;
+      dma_free_noncoherent(dev_ctx, full_size, buf, dma_addr, dir);
+    #else
+      dma_free_noncoherent(dev_ctx, full_size, buf, dma_addr, dir);
+	 #endif /* CPTCFG_IWLWAV_ENABLE_OBJPOOL */
+  }
+}
+#endif
+
 #ifdef CONFIG_DMA_MIXCOHERENT
 /* Free memory previously allocated by wave_osal_mem_dma_alloc_noncoherent(). */
 static __INLINE void
@@ -284,7 +364,7 @@ wave_osal_mem_dma_free_noncoherent (void *dev_ctx, uint32 size, void *buffer, dm
     #else
       set_memory_wb((unsigned long)buffer, PAGE_ALIGN(size) >> PAGE_SHIFT);
       dma_free_attrs(dev_ctx, size, buffer, dma_addr, DMA_ATTR_NON_CONSISTENT);
-    #endif
+	 #endif /* CPTCFG_IWLWAV_ENABLE_OBJPOOL */
   }
 }
 #endif

@@ -110,6 +110,7 @@ enum ltq_nl80211_vendor_subcmds {
   LTQ_NL80211_VENDOR_SUBCMD_GET_COC_POWER_MODE,
   LTQ_NL80211_VENDOR_SUBCMD_SET_COC_AUTO_PARAMS,
   LTQ_NL80211_VENDOR_SUBCMD_GET_COC_AUTO_PARAMS,
+  LTQ_NL80211_VENDOR_SUBCMD_SET_COC_DECISION,
   LTQ_NL80211_VENDOR_SUBCMD_SET_PCOC_POWER_MODE,
   LTQ_NL80211_VENDOR_SUBCMD_GET_PCOC_POWER_MODE,
   LTQ_NL80211_VENDOR_SUBCMD_SET_PCOC_AUTO_PARAMS,
@@ -427,6 +428,8 @@ enum ltq_nl80211_vendor_subcmds {
   LTQ_NL80211_VENDOR_SUBCMD_GET_VW_TEST_MODE,
   LTQ_NL80211_VENDOR_SUBCMD_SET_MRU_TX_POWER_ENABLE,
   LTQ_NL80211_VENDOR_SUBCMD_GET_MRU_TX_POWER_ENABLE,
+  LTQ_NL80211_VENDOR_SUBCMD_SET_ZWDFS_NOISE_SUPPRESS,
+  LTQ_NL80211_VENDOR_SUBCMD_GET_ZWDFS_NOISE_SUPPRESS,
   LTQ_NL80211_VENDOR_SUBCMD_SET_PBAC,
   LTQ_NL80211_VENDOR_SUBCMD_SET_AQM_STA_EN,
   LTQ_NL80211_VENDOR_SUBCMD_GET_AQM_STA_EN,
@@ -466,6 +469,9 @@ enum ltq_nl80211_vendor_events {
   LTQ_NL80211_VENDOR_EVENT_DYNAMIC_WMM_UPDATE  = 17,
   LTQ_NL80211_VENDOR_EVENT_REGDB_INFO_UPDATE   = 18,
   LTQ_NL80211_VENDOR_EVENT_RX_MEASURE          = 19,
+  LTQ_NL80211_VENDOR_EVENT_NEW_MLD_VAP         = 20,
+  LTQ_NL80211_VENDOR_EVENT_DEL_MLD_VAP         = 21,
+  LTQ_NL80211_VENDOR_EVENT_COC_UPDATE          = 22,
 };
 
 
@@ -478,6 +484,7 @@ enum ltq_nl80211_vendor_events {
 #define COUNTRY_CODE_MAX_LEN                  3
 /* Maximum possible number of antennas for statistics in driver */
 #define WAVE_STAT_MAX_ANTENNAS                5
+#define ZWDFS_NOISE_SUPPRESS_MAX_PACKET_TH    65535
 #define INTEL_CSA_DEAUTH_TX_TIME_ARR_SIZE     2
 #define INTEL_CSA_DEAUTH_TX_TIME_UC_IDX       0
 #define INTEL_CSA_DEAUTH_TX_TIME_MC_IDX       1
@@ -1002,6 +1009,7 @@ struct mxl_ml_sta_add_param {
   u8 assoc_link_bitmap;
   u16 eml_capab;
   u8 num_of_sim_links;
+  u8 nstr_pair_present;
   u8 mld_id;
   u16 aid;
 } __attribute__ ((packed));
@@ -1191,4 +1199,27 @@ struct mxl_mscs_add_req {
   u32 stream_timeout;
 }__attribute__ ((packed));
 
+struct mxl_new_mld_vap {
+  u8 mld_addr[ETH_ALEN];
+  u8 num_of_links;
+} __attribute__ ((packed));
+
+struct mxl_del_mld_vap {
+  u8 mld_addr[ETH_ALEN];
+} __attribute__ ((packed));
+
+typedef enum {
+  COC_EVENT_NSS_DOWN = 1,
+  COC_EVENT_NSS_UP
+}coc_event_type;
+
+struct mxl_coc_event {
+  coc_event_type coc_event;
+  u8 requested_nss; /* target num TX antennas for this event, for HAL-side MLO coordination */
+} __attribute__ ((packed));
+
+struct mxl_coc_hal_decision {
+  u8 num_tx;
+  u8 num_rx;
+} __attribute__ ((packed));
 #endif /* _VENDOR_CMDS_H_ */

@@ -352,6 +352,8 @@ typedef enum{
 	DUT_GET_RX_RATE_CFM,
 	DUT_SET_CLIPPER_REQ,
 	DUT_SET_CLIPPER_CFM,
+    DUT_GET_PADET_MODE_REQ,
+    DUT_GET_PADET_MODE_CFM,
 	// Dut Tx Module Messages
 	DUT_START_TX_REQ	= 0x200,
 	DUT_START_TX_CFM,
@@ -401,7 +403,8 @@ typedef enum
 	DUT_DGM_GET_NV_FLASH_NAME_CFM,
 	DUT_DGM_CHANGE_BAND_REQ,
 	DUT_DGM_CHANGE_BAND_CFM,
-	DUT_DGM_RECOVERY_REQ
+	DUT_DGM_RECOVERY_REQ,
+	DUT_DGM_RECOVERY_CFM
 } dutDriverGeneralMsgId_e;
 
 typedef enum
@@ -1078,6 +1081,13 @@ typedef struct _UMI_RX_MEASURE_REPORT
 	uint32 captures_rem;
 	uint8 evm[4];
 } __MTLK_PACKED UMI_RX_MEASURE_REPORT;
+
+//-----  Tx Get PA detect mode - to see if linear regression, or log regression. REQ\CFM----------//
+typedef struct dutTxPaDetMode {
+	uint8 antMask;
+	uint8 PaDetMode[DUT_4ANT_ARRAY];
+} __MTLK_PACKED dutTxPaDetMode_t;
+
 #define MTLK_PACK_OFF
 #include "mtlkpack.h"
 

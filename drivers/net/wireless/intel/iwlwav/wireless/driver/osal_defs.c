@@ -192,7 +192,7 @@ _mtlk_osal_hrtimer_init (mtlk_osal_hrtimer_t    *timer,
   mtlk_rmlock_init(&timer->rmlock);
   mtlk_rmlock_acquire(&timer->rmlock); /* Acquire RM Lock initially */
   mtlk_osal_lock_init(&timer->sync_lock);
-  hrtimer_init(&timer->hr_timer, CLOCK_MONOTONIC, mode);
+  hrtimer_init(&timer->hr_timer, CLOCK_MONOTONIC, (enum hrtimer_mode)mode);
   timer->hr_timer.function = __mtlk_osal_hrtimer_hw_interrupt_clb;
 
   timer->clb               = clb;
@@ -215,7 +215,7 @@ _mtlk_osal_hrtimer_set (mtlk_osal_hrtimer_t *timer,
   timer->stop = FALSE;                 /* Mark timer active         */
   timer->cancelled = FALSE;
   mtlk_rmlock_acquire(&timer->rmlock); /* Acquire RM Lock on arming */
-  hrtimer_start(&timer->hr_timer, nsec, mode);
+  hrtimer_start(&timer->hr_timer, nsec, (enum hrtimer_mode)mode);
 
   return MTLK_ERR_OK;
 }
@@ -356,7 +356,7 @@ mtlk_osal_sync_cache (void *buffer, uint32 size, mtlk_data_direction_e  directio
 
 
 /* Give ownership of the memory area to PCIe device */
-uint32 __MTLK_IFUNC
+dma_addr_t __MTLK_IFUNC
 mtlk_osal_map_to_phys_addr (void                  *dev_ctx,
                             void                  *buffer,
                             uint32                 size,
@@ -372,13 +372,15 @@ mtlk_osal_map_to_phys_addr (void                  *dev_ctx,
 #ifdef CONFIG_DMA_MIXCOHERENT
   dma_addr = dma_map_single_attrs(dev_ctx, buffer, size, direction, DMA_ATTR_NON_CONSISTENT);
 #else
-  dma_addr = dma_map_single(dev_ctx, buffer, size, direction);
+  dma_addr = dma_map_single(dev_ctx, buffer, size, (enum dma_data_direction)direction); /* topaz */
 #endif
   if (dma_mapping_error(dev_ctx, dma_addr)) {
     /* DMA mapping error. We have to unmap this buffer and return NULL */
-    dma_unmap_single(dev_ctx, dma_addr, size, direction);
+    dma_unmap_single(dev_ctx, dma_addr, size, (enum dma_data_direction)direction);
     return 0x0;
   }
+
+#ifndef MTLK_TOPAZ_PLATFORM
   if (sizeof(dma_addr_t) > sizeof(uint32) && 0 != (dma_addr >> 32)) {
 #ifdef CONFIG_WAVE_DEBUG
     ELOG_PP("dma_addr not in 32-bit range! virt:%p: dma_addr:%p", buffer, (void*)dma_addr);
@@ -387,9 +389,10 @@ mtlk_osal_map_to_phys_addr (void                  *dev_ctx,
 #endif
     /* DMA mapping error: on 64-bit system we got 64-bit address.
        We have to unmap this buffer and return NULL */
-    dma_unmap_single(dev_ctx, dma_addr, size, direction);
+    dma_unmap_single(dev_ctx, dma_addr, size, (enum dma_data_direction)direction);
     return 0x0;
   }
+#endif
   return dma_addr;
 }
 

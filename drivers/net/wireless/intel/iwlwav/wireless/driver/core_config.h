@@ -330,6 +330,9 @@ mtlk_error_t __MTLK_IFUNC wave_core_get_fixed_rate_thermal (mtlk_handle_t hcore,
 mtlk_error_t __MTLK_IFUNC wave_core_set_mru_tx_power_enable (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC wave_core_get_mru_tx_power_enable (mtlk_handle_t hcore, const void *data, uint32 data_size);
 mtlk_error_t __MTLK_IFUNC wave_core_recover_mru_tx_power_enable (mtlk_core_t *core);
+mtlk_error_t __MTLK_IFUNC wave_core_set_zwdfs_noise_suppress (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_get_zwdfs_noise_suppress (mtlk_handle_t hcore, const void *data, uint32 data_size);
+mtlk_error_t __MTLK_IFUNC wave_core_recover_zwdfs_noise_suppress (mtlk_core_t *core);
 
 mtlk_error_t __MTLK_IFUNC wave_core_get_is_zwdfs_background_supp (mtlk_handle_t hcore, const void* data, uint32 data_size);
 

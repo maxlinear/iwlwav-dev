@@ -111,7 +111,7 @@ _mtlk_scs_match_rules (mtlk_core_t *core, mtlk_nbuf_t* nbuf, uint16* ppriority)
     case ETH_P_IP:
       iph = (struct iphdr *)(nbuf->data + sizeof(struct ethhdr));
       if (!iph)
-        return ret;
+        goto FINISH;
 
       iphdrlen = iph->ihl*4;
       wave_memcpy(&tuple.u.ipv4.src_ip, MTLK_IP4_ALEN, &iph->saddr, MTLK_IP4_ALEN);
@@ -134,7 +134,7 @@ _mtlk_scs_match_rules (mtlk_core_t *core, mtlk_nbuf_t* nbuf, uint16* ppriority)
     case ETH_P_IPV6:
       ip6h = (struct ipv6hdr *)(nbuf->data + sizeof(struct ethhdr));
       if (!ip6h)
-        return ret;
+        goto FINISH;
 
       wave_memcpy(&tuple.u.ipv6.src_ip, MTLK_IP6_ALEN, &ip6h->saddr, MTLK_IP6_ALEN);
       wave_memcpy(&tuple.u.ipv6.dst_ip, MTLK_IP6_ALEN, &ip6h->daddr, MTLK_IP6_ALEN);
@@ -154,7 +154,7 @@ _mtlk_scs_match_rules (mtlk_core_t *core, mtlk_nbuf_t* nbuf, uint16* ppriority)
       }
       break;
     default:
-      return ret;
+      goto FINISH;
   }
 
   mtlk_osal_lock_acquire(&sta->scs_db.scs_list_lock);

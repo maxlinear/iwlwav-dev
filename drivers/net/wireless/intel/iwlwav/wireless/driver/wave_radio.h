@@ -204,6 +204,16 @@ typedef struct
         uint32 heMuFastProbeNotFinishedCnt[MAX_STA_IN_GROUP];
         uint32 heMuCollisionDetectedCnt[MAX_STA_IN_GROUP];
         uint32 mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS_GEN7];
+        uint32 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+        uint32 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+        uint32 totalPpdus[MAX_STA_IN_GROUP];
+        uint32 airUse[MAX_STA_IN_GROUP];
+        uint32 dataUse[MAX_STA_IN_GROUP];
+        uint16 phyRate[MAX_STA_IN_GROUP];
+        uint32 dataRate[MAX_STA_IN_GROUP];
+        uint8  muPER[MAX_STA_IN_GROUP];
+        uint8  muBw[MAX_STA_IN_GROUP];
+        uint8  muMcsNss[MAX_STA_IN_GROUP];
     } dl;
 
     struct {
@@ -214,6 +224,15 @@ typedef struct
         uint32 changedWpCnt[MAX_STA_IN_GROUP];
         uint32 collisionDetectedCnt[MAX_STA_IN_GROUP];
         uint32 mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS_GEN7];
+        uint32 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+        uint32 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+        uint32 totalPpdus[MAX_STA_IN_GROUP];
+        uint32 airUse[MAX_STA_IN_GROUP];
+        uint32 dataUse[MAX_STA_IN_GROUP];
+        uint16 phyRate[MAX_STA_IN_GROUP];
+        uint32 dataRate[MAX_STA_IN_GROUP];
+        uint8  muBw[MAX_STA_IN_GROUP];
+        uint8  muMcsNss[MAX_STA_IN_GROUP];
     } ul;
   };
 } wave_mu_he_eht_la_stats32_t;
@@ -229,6 +248,11 @@ typedef struct
         uint16 heMuFastProbeNotFinishedCnt[MAX_STA_IN_GROUP];
         uint16 heMuCollisionDetectedCnt[MAX_STA_IN_GROUP];
         uint8  mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS_GEN7];
+        uint16 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+        uint16 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+        uint16 totalPpdus[MAX_STA_IN_GROUP];
+        uint32 airUse[MAX_STA_IN_GROUP];
+        uint32 dataUse[MAX_STA_IN_GROUP];
     } dl;
 
     struct {
@@ -239,6 +263,11 @@ typedef struct
         uint16 changedWpCnt[MAX_STA_IN_GROUP];
         uint16 collisionDetectedCnt[MAX_STA_IN_GROUP];
         uint8  mcsHistogram[MAX_STA_IN_GROUP][MAX_MCS_GEN7];
+        uint16 numOfMuMimoPpdus[MAX_STA_IN_GROUP];
+        uint16 numOfOfdmaPpdus[MAX_STA_IN_GROUP];
+        uint16 totalPpdus[MAX_STA_IN_GROUP];
+        uint32 airUse[MAX_STA_IN_GROUP];
+        uint32 dataUse[MAX_STA_IN_GROUP];
     } ul;
   };
 } wave_mu_he_eht_la_stats_t;
@@ -502,9 +531,9 @@ int wave_radio_get_cur_channel_stats (wave_radio_t *radio, struct net_device *nd
 int wave_radio_get_radio_phy_rx_stats (wave_radio_t *radio, struct net_device *ndev, const void *data, int total_len);
 int wave_radio_get_dynamic_bw_stats (wave_radio_t *radio, struct net_device *ndev, const void *data, int total_len);
 int wave_radio_get_la_mu_vht_stats (wave_radio_t *radio, struct net_device *ndev, const void *data, int total_len);
-void __MTLK_IFUNC wave_radio_on_rcvry_reset_mu_group_stats (wave_radio_t *radio);
 #endif /* CONFIG_WAVE_DEBUG */
 
+void __MTLK_IFUNC wave_radio_on_rcvry_reset_mu_group_stats (wave_radio_t *radio);
 int wave_radio_he_operation_get(wave_radio_t *radio, struct wiphy *wiphy, struct wireless_dev *wdev);
 int wave_radio_he_non_advertised_get(wave_radio_t *radio, struct wiphy *wiphy, struct wireless_dev *wdev);
 
@@ -519,22 +548,22 @@ void __MTLK_IFUNC _wave_radio_set_11n_acax_compat (wave_radio_t *radio, int valu
 int __MTLK_IFUNC wave_radio_get_11n_acax_compat (wave_radio_t *radio);
 
 #define WAVE_RADIO_PDB_GET_INT(radio, id) \
-  wave_pdb_get_int(wave_radio_param_db_get((radio)), (id))
+  wave_pdb_get_int(wave_radio_param_db_get((radio)), (mtlk_pdb_id_t)(id))
 
 #define WAVE_RADIO_PDB_GET_UINT(radio, id) \
-  (unsigned)wave_pdb_get_int(wave_radio_param_db_get((radio)), (id))
+  (unsigned)wave_pdb_get_int(wave_radio_param_db_get((radio)), (mtlk_pdb_id_t)(id))
 
 #define WAVE_RADIO_PDB_SET_INT(radio, id, value) \
-  wave_pdb_set_int(wave_radio_param_db_get((radio)), (id), (unsigned)(value))
+  wave_pdb_set_int(wave_radio_param_db_get((radio)), (mtlk_pdb_id_t)(id), (unsigned)(value))
 
 #define WAVE_RADIO_PDB_SET_UINT(radio, id, value) \
   wave_pdb_set_int(wave_radio_param_db_get((radio)), (id), (value))
 
 #define WAVE_RADIO_PDB_GET_BINARY(radio, id, buf, size) \
-  wave_pdb_get_binary(wave_radio_param_db_get((radio)), (id), (buf), (size))
+  wave_pdb_get_binary(wave_radio_param_db_get((radio)), (mtlk_pdb_id_t)(id), (buf), (size))
 
 #define WAVE_RADIO_PDB_SET_BINARY(radio, id, value, size) \
-  wave_pdb_set_binary(wave_radio_param_db_get((radio)), (id), (value), (size))
+  wave_pdb_set_binary(wave_radio_param_db_get((radio)), (mtlk_pdb_id_t)(id), (value), (size))
 
 #define WAVE_RADIO_PDB_GET_MAC(radio, id, mac) \
   wave_pdb_get_mac(wave_radio_param_db_get((radio)), (id), (mac))

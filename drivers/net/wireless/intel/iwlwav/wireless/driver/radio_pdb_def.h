@@ -79,6 +79,7 @@ static const iwpriv_cca_th_t wave_radio_initial_cca_threshold = { { -62, -62, -7
 static const iwpriv_cca_adapt_t wave_radio_initial_cca_intervals = { 0, 0, -1, 10, 5, 30, 60 };
 static const uint32  wave_radio_initial_radio_mode = WAVE_RADIO_ON; /* Radio is ON */
 static const uint32  wave_radio_initial_mru_tx_power_enable = 0; /* Disabled by default */
+static const wave_zwdfs_noise_suppress_t wave_radio_initial_zwdfs_noise_suppress = { 1, 100 }; /* Enabled, default threshold - matches today's behaviour */
 static const uint32  wave_radio_initial_radar_rssi_thresh_cfg = WAVE_RADAR_DETECTION_RSSI_TH_INVALID;
 static const uint32  wave_radio_initial_fils_beacon_flag = 1;
 static const uint32  wave_radio_initial_bf_mode = 0;
@@ -143,9 +144,7 @@ static const wave_radio_reg_data_t wave_radio_initial_reg_data = {
 
 static const FIXED_POWER wave_radio_initial_fixed_pwr = {MTLK_PARAM_DB_INVALID_UINT8, 0, 0, 0, 0, {0}};
 /* DEBUG PARAMS INITIAL VALUES */
-#ifdef CONFIG_WAVE_DEBUG
 static const UMI_DBG_HE_MU_GROUP_STATS wave_radio_umi_dbg_mu_group_stats[HE_MU_MAX_NUM_OF_GROUPS] = {{0}};
-#endif
 
 static const mtlk_pdb_initial_value wave_radio_parameters[] =
 {
@@ -201,6 +200,7 @@ static const mtlk_pdb_initial_value wave_radio_parameters[] =
   {PARAM_DB_RADIO_MODE_CURRENT,                               PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_radio_mode),     &wave_radio_initial_radio_mode},
   {PARAM_DB_RADIO_MODE_REQUESTED,                             PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_radio_mode),     &wave_radio_initial_radio_mode},
   {PARAM_DB_RADIO_MRU_TX_POWER_ENABLE,                        PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_mru_tx_power_enable),     &wave_radio_initial_mru_tx_power_enable},
+  {PARAM_DB_RADIO_ZWDFS_NOISE_SUPPRESS,                       PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_zwdfs_noise_suppress),    &wave_radio_initial_zwdfs_noise_suppress},
   {PARAM_DB_RADIO_ACS_UPDATE_TO,                              PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_zero_int),       &wave_radio_initial_zero_int},
   {PARAM_DB_RADIO_MU_OPERATION,                               PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32), &wave_radio_initial_invalid_uint32},
   {PARAM_DB_RADIO_RADAR_RSSI_TH,                              PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_radar_rssi_thresh_cfg), &wave_radio_initial_radar_rssi_thresh_cfg},
@@ -269,8 +269,8 @@ static const mtlk_pdb_initial_value wave_radio_parameters[] =
 /* DEBUG PARAMS */
 #ifdef CONFIG_WAVE_DEBUG
   {PARAM_DB_RADIO_TEST_BUS_MODE,                              PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_invalid_uint32),       &wave_radio_initial_invalid_uint32},
+ #endif
   {PARAM_DB_RADIO_PLAN_MU_GROUP_STATS,                        PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_umi_dbg_mu_group_stats),       &wave_radio_umi_dbg_mu_group_stats},
-#endif
   {PARAM_DB_RADIO_FILS_DISCOVERY_FRAME,                       PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(struct ieee80211_mgmt),                   wave_radio_initial_fils_discovery_params},
   {PARAM_DB_RADIO_FILS_DISCOVERY_FRAME_LEN,                   PARAM_DB_TYPE_INT,     PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(wave_radio_initial_zero_int),             &wave_radio_initial_zero_int},
   {PARAM_DB_RADIO_UNSOLICIT_PROBE_RESP_TEMPL,                 PARAM_DB_TYPE_BINARY,  PARAM_DB_VALUE_FLAG_NO_FLAG,  sizeof(struct ieee80211_mgmt),                   wave_radio_initial_unsolicit_probe_resp_templ},
